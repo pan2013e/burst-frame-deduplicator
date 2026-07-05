@@ -1,0 +1,971 @@
+{
+  "fixture": "original_burst_frames",
+  "asset_zip": "assets/original_burst_frames.zip",
+  "extracted_dir": "work/original_burst_frames",
+  "asset_count": 120,
+  "resolution": "5776x4336",
+  "source_form": "Metadata-stripped full-resolution JPEG copies made from the original camera files. Local source paths and camera metadata are not included.",
+  "privacy_review": "Aircraft-against-sky burst. No people, documents, screens, license plates, or private locations visible in contact sheet review.",
+  "assets": [
+    {
+      "file": "frame_0001.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "6ff6e26b676c2cef",
+      "suggested_action": "reject",
+      "rank": 120,
+      "score": 0.196271
+    },
+    {
+      "file": "frame_0002.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "8d90ec836189fda3",
+      "suggested_action": "reject",
+      "rank": 116,
+      "score": 0.212149
+    },
+    {
+      "file": "frame_0003.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "ff9978de19b803e8",
+      "suggested_action": "reject",
+      "rank": 114,
+      "score": 0.216212
+    },
+    {
+      "file": "frame_0004.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "33349231e02d9955",
+      "suggested_action": "reject",
+      "rank": 108,
+      "score": 0.244772
+    },
+    {
+      "file": "frame_0005.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "eec6418864e99b83",
+      "suggested_action": "reject",
+      "rank": 99,
+      "score": 0.26667
+    },
+    {
+      "file": "frame_0006.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "3533a7dcaf05eeb6",
+      "suggested_action": "reject",
+      "rank": 98,
+      "score": 0.270788
+    },
+    {
+      "file": "frame_0007.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e8a62d0dfdcd8b08",
+      "suggested_action": "reject",
+      "rank": 106,
+      "score": 0.252326
+    },
+    {
+      "file": "frame_0008.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "2bb700c3540e9212",
+      "suggested_action": "reject",
+      "rank": 103,
+      "score": 0.258672
+    },
+    {
+      "file": "frame_0009.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "f0cf73d073b381c0",
+      "suggested_action": "reject",
+      "rank": 102,
+      "score": 0.259979
+    },
+    {
+      "file": "frame_0010.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "5e63885f506fe9d1",
+      "suggested_action": "reject",
+      "rank": 93,
+      "score": 0.284584
+    },
+    {
+      "file": "frame_0011.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "30d1830a7a31e23a",
+      "suggested_action": "reject",
+      "rank": 92,
+      "score": 0.293962
+    },
+    {
+      "file": "frame_0012.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "4be2290c0ac02ed7",
+      "suggested_action": "reject",
+      "rank": 87,
+      "score": 0.318278
+    },
+    {
+      "file": "frame_0013.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "717991df05dcb9d8",
+      "suggested_action": "reject",
+      "rank": 84,
+      "score": 0.321492
+    },
+    {
+      "file": "frame_0014.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c6eac51f64931e80",
+      "suggested_action": "reject",
+      "rank": 85,
+      "score": 0.319944
+    },
+    {
+      "file": "frame_0015.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e889f3628e85b704",
+      "suggested_action": "reject",
+      "rank": 78,
+      "score": 0.332198
+    },
+    {
+      "file": "frame_0016.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "942cceab8d3b06bc",
+      "suggested_action": "reject",
+      "rank": 79,
+      "score": 0.331384
+    },
+    {
+      "file": "frame_0017.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "bf5d4e70952f0b9c",
+      "suggested_action": "reject",
+      "rank": 70,
+      "score": 0.369468
+    },
+    {
+      "file": "frame_0018.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e6b9f0148b4f0736",
+      "suggested_action": "reject",
+      "rank": 67,
+      "score": 0.373804
+    },
+    {
+      "file": "frame_0019.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "598fad05c1c9d090",
+      "suggested_action": "reject",
+      "rank": 63,
+      "score": 0.38248
+    },
+    {
+      "file": "frame_0020.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "83e2eccaaade67b7",
+      "suggested_action": "reject",
+      "rank": 55,
+      "score": 0.390947
+    },
+    {
+      "file": "frame_0021.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "bbcfeb91ac179619",
+      "suggested_action": "reject",
+      "rank": 62,
+      "score": 0.383082
+    },
+    {
+      "file": "frame_0022.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "643ea3c9feb7db85",
+      "suggested_action": "reject",
+      "rank": 72,
+      "score": 0.355621
+    },
+    {
+      "file": "frame_0023.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "887e7bb34eb58018",
+      "suggested_action": "reject",
+      "rank": 68,
+      "score": 0.37312
+    },
+    {
+      "file": "frame_0024.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "3f8305aa8aff1f4c",
+      "suggested_action": "reject",
+      "rank": 66,
+      "score": 0.375942
+    },
+    {
+      "file": "frame_0025.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "303e96ead6cad071",
+      "suggested_action": "reject",
+      "rank": 56,
+      "score": 0.390133
+    },
+    {
+      "file": "frame_0026.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "2e2aad54198896d7",
+      "suggested_action": "reject",
+      "rank": 54,
+      "score": 0.394765
+    },
+    {
+      "file": "frame_0027.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "f64e43f65f7f701d",
+      "suggested_action": "reject",
+      "rank": 53,
+      "score": 0.395563
+    },
+    {
+      "file": "frame_0028.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "56b6b5500192c33e",
+      "suggested_action": "reject",
+      "rank": 51,
+      "score": 0.398572
+    },
+    {
+      "file": "frame_0029.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "b13075e3bed1ea0e",
+      "suggested_action": "reject",
+      "rank": 57,
+      "score": 0.389532
+    },
+    {
+      "file": "frame_0030.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e7162ed91ecc0669",
+      "suggested_action": "reject",
+      "rank": 71,
+      "score": 0.366464
+    },
+    {
+      "file": "frame_0031.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "477761b5448f5a6b",
+      "suggested_action": "reject",
+      "rank": 76,
+      "score": 0.337747
+    },
+    {
+      "file": "frame_0032.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c41926a4c7618e10",
+      "suggested_action": "reject",
+      "rank": 81,
+      "score": 0.328318
+    },
+    {
+      "file": "frame_0033.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "0f021eeb5bc05db1",
+      "suggested_action": "reject",
+      "rank": 88,
+      "score": 0.316027
+    },
+    {
+      "file": "frame_0034.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "91d5840d89c9dd5c",
+      "suggested_action": "reject",
+      "rank": 90,
+      "score": 0.294373
+    },
+    {
+      "file": "frame_0035.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e01e282a54f75896",
+      "suggested_action": "reject",
+      "rank": 95,
+      "score": 0.281455
+    },
+    {
+      "file": "frame_0036.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "33f25b00ac7931ca",
+      "suggested_action": "reject",
+      "rank": 100,
+      "score": 0.26167
+    },
+    {
+      "file": "frame_0037.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e41714a2bf36117b",
+      "suggested_action": "reject",
+      "rank": 111,
+      "score": 0.232859
+    },
+    {
+      "file": "frame_0038.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e4fd313022344836",
+      "suggested_action": "reject",
+      "rank": 115,
+      "score": 0.216118
+    },
+    {
+      "file": "frame_0039.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e76953444efbd7e7",
+      "suggested_action": "reject",
+      "rank": 113,
+      "score": 0.224478
+    },
+    {
+      "file": "frame_0040.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "9179745c78a25f52",
+      "suggested_action": "reject",
+      "rank": 112,
+      "score": 0.23238
+    },
+    {
+      "file": "frame_0041.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "b6c33064a40e5fca",
+      "suggested_action": "reject",
+      "rank": 101,
+      "score": 0.261005
+    },
+    {
+      "file": "frame_0042.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "9ff83597de569d41",
+      "suggested_action": "reject",
+      "rank": 96,
+      "score": 0.277132
+    },
+    {
+      "file": "frame_0043.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "eda99a110e825208",
+      "suggested_action": "reject",
+      "rank": 119,
+      "score": 0.20003
+    },
+    {
+      "file": "frame_0044.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "375961be932264a8",
+      "suggested_action": "reject",
+      "rank": 107,
+      "score": 0.245992
+    },
+    {
+      "file": "frame_0045.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "f7bcc58bb36245d6",
+      "suggested_action": "reject",
+      "rank": 83,
+      "score": 0.321926
+    },
+    {
+      "file": "frame_0046.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "79ee9d9e2b9b9247",
+      "suggested_action": "reject",
+      "rank": 74,
+      "score": 0.344801
+    },
+    {
+      "file": "frame_0047.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "ba124badde9dd512",
+      "suggested_action": "reject",
+      "rank": 69,
+      "score": 0.37107
+    },
+    {
+      "file": "frame_0048.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "13b9311d9b109011",
+      "suggested_action": "reject",
+      "rank": 45,
+      "score": 0.40232
+    },
+    {
+      "file": "frame_0049.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "ed7f471d42ce59e6",
+      "suggested_action": "reject",
+      "rank": 60,
+      "score": 0.38576
+    },
+    {
+      "file": "frame_0050.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7cf217c3dd20f773",
+      "suggested_action": "reject",
+      "rank": 52,
+      "score": 0.397724
+    },
+    {
+      "file": "frame_0051.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c1433ee417b5059a",
+      "suggested_action": "reject",
+      "rank": 43,
+      "score": 0.413606
+    },
+    {
+      "file": "frame_0052.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "8797ed79968a67d9",
+      "suggested_action": "reject",
+      "rank": 42,
+      "score": 0.414024
+    },
+    {
+      "file": "frame_0053.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "4ce9fc74d5825e03",
+      "suggested_action": "reject",
+      "rank": 46,
+      "score": 0.402001
+    },
+    {
+      "file": "frame_0054.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "22c3ec11b69a06f5",
+      "suggested_action": "reject",
+      "rank": 48,
+      "score": 0.400295
+    },
+    {
+      "file": "frame_0055.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "06fff2b09cf5e432",
+      "suggested_action": "reject",
+      "rank": 49,
+      "score": 0.399642
+    },
+    {
+      "file": "frame_0056.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "11b2b25ebeeb9a52",
+      "suggested_action": "reject",
+      "rank": 44,
+      "score": 0.409916
+    },
+    {
+      "file": "frame_0057.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e07133629b6fd8e0",
+      "suggested_action": "reject",
+      "rank": 39,
+      "score": 0.431355
+    },
+    {
+      "file": "frame_0058.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "77a282ef5d5a5732",
+      "suggested_action": "reject",
+      "rank": 38,
+      "score": 0.452558
+    },
+    {
+      "file": "frame_0059.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "2b328c6e39cebe95",
+      "suggested_action": "reject",
+      "rank": 37,
+      "score": 0.472291
+    },
+    {
+      "file": "frame_0060.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "98662deeb36d56d5",
+      "suggested_action": "reject",
+      "rank": 35,
+      "score": 0.486302
+    },
+    {
+      "file": "frame_0061.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "bd25826e24774ec6",
+      "suggested_action": "reject",
+      "rank": 31,
+      "score": 0.503752
+    },
+    {
+      "file": "frame_0062.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "b6cd14ef96747b22",
+      "suggested_action": "reject",
+      "rank": 30,
+      "score": 0.508229
+    },
+    {
+      "file": "frame_0063.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "5e39452103d44f82",
+      "suggested_action": "reject",
+      "rank": 28,
+      "score": 0.515783
+    },
+    {
+      "file": "frame_0064.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "58c976e5e8aaadab",
+      "suggested_action": "reject",
+      "rank": 21,
+      "score": 0.545006
+    },
+    {
+      "file": "frame_0065.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "921bbf40f2e71c40",
+      "suggested_action": "reject",
+      "rank": 20,
+      "score": 0.5467
+    },
+    {
+      "file": "frame_0066.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "35c7750542dfc55c",
+      "suggested_action": "reject",
+      "rank": 22,
+      "score": 0.543002
+    },
+    {
+      "file": "frame_0067.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "cbd03a22efdb9abc",
+      "suggested_action": "reject",
+      "rank": 23,
+      "score": 0.539671
+    },
+    {
+      "file": "frame_0068.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "82cffb72d9577a4a",
+      "suggested_action": "reject",
+      "rank": 25,
+      "score": 0.532511
+    },
+    {
+      "file": "frame_0069.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "62cd2f47e5da4f29",
+      "suggested_action": "reject",
+      "rank": 29,
+      "score": 0.509069
+    },
+    {
+      "file": "frame_0070.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "75a575a9bccdd4cb",
+      "suggested_action": "reject",
+      "rank": 33,
+      "score": 0.496327
+    },
+    {
+      "file": "frame_0071.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "1bf2a62d6bf6152f",
+      "suggested_action": "reject",
+      "rank": 26,
+      "score": 0.529467
+    },
+    {
+      "file": "frame_0072.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "5f978b514aca6230",
+      "suggested_action": "reject",
+      "rank": 27,
+      "score": 0.51972
+    },
+    {
+      "file": "frame_0073.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "b333ad42a12b3d86",
+      "suggested_action": "reject",
+      "rank": 19,
+      "score": 0.559952
+    },
+    {
+      "file": "frame_0074.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "2ab0f8bd9adc1f3c",
+      "suggested_action": "reject",
+      "rank": 17,
+      "score": 0.592915
+    },
+    {
+      "file": "frame_0075.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "734cac60e8aa501e",
+      "suggested_action": "reject",
+      "rank": 14,
+      "score": 0.621813
+    },
+    {
+      "file": "frame_0076.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "81a4ffd81b4515d8",
+      "suggested_action": "reject",
+      "rank": 12,
+      "score": 0.642576
+    },
+    {
+      "file": "frame_0077.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7e758d1953228f57",
+      "suggested_action": "review",
+      "rank": 6,
+      "score": 0.679646
+    },
+    {
+      "file": "frame_0078.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "67dddb0d3e824eda",
+      "suggested_action": "review",
+      "rank": 5,
+      "score": 0.690253
+    },
+    {
+      "file": "frame_0079.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "1406629b711f5436",
+      "suggested_action": "keep",
+      "rank": 3,
+      "score": 0.706709
+    },
+    {
+      "file": "frame_0080.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "d2834ae21712100b",
+      "suggested_action": "keep",
+      "rank": 2,
+      "score": 0.708473
+    },
+    {
+      "file": "frame_0081.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "8173247435642991",
+      "suggested_action": "keep",
+      "rank": 1,
+      "score": 0.714657
+    },
+    {
+      "file": "frame_0082.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "d775e318029ef416",
+      "suggested_action": "review",
+      "rank": 4,
+      "score": 0.694881
+    },
+    {
+      "file": "frame_0083.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "575eb64b6338d87f",
+      "suggested_action": "reject",
+      "rank": 7,
+      "score": 0.667817
+    },
+    {
+      "file": "frame_0084.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "9b76dd54ff020ceb",
+      "suggested_action": "reject",
+      "rank": 8,
+      "score": 0.663237
+    },
+    {
+      "file": "frame_0085.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "dfaefc92211b3653",
+      "suggested_action": "reject",
+      "rank": 9,
+      "score": 0.663118
+    },
+    {
+      "file": "frame_0086.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "221bb9dc825e95ad",
+      "suggested_action": "reject",
+      "rank": 10,
+      "score": 0.651723
+    },
+    {
+      "file": "frame_0087.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "56388f4e90d2bc84",
+      "suggested_action": "reject",
+      "rank": 11,
+      "score": 0.643068
+    },
+    {
+      "file": "frame_0088.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c70442cc7da0577f",
+      "suggested_action": "reject",
+      "rank": 13,
+      "score": 0.640523
+    },
+    {
+      "file": "frame_0089.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "fd3ec366bbce0cb7",
+      "suggested_action": "reject",
+      "rank": 15,
+      "score": 0.614914
+    },
+    {
+      "file": "frame_0090.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "760105e8c855f23f",
+      "suggested_action": "reject",
+      "rank": 16,
+      "score": 0.603151
+    },
+    {
+      "file": "frame_0091.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7946b43bfa260f8f",
+      "suggested_action": "reject",
+      "rank": 18,
+      "score": 0.578745
+    },
+    {
+      "file": "frame_0092.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7e028ef7e001cf74",
+      "suggested_action": "reject",
+      "rank": 24,
+      "score": 0.535037
+    },
+    {
+      "file": "frame_0093.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "701e2a777675ccb9",
+      "suggested_action": "reject",
+      "rank": 32,
+      "score": 0.501479
+    },
+    {
+      "file": "frame_0094.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "439aed24f5fe7109",
+      "suggested_action": "reject",
+      "rank": 36,
+      "score": 0.473865
+    },
+    {
+      "file": "frame_0095.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "9c21fcaf0a793df5",
+      "suggested_action": "reject",
+      "rank": 40,
+      "score": 0.421636
+    },
+    {
+      "file": "frame_0096.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "525334be109365b3",
+      "suggested_action": "reject",
+      "rank": 50,
+      "score": 0.399101
+    },
+    {
+      "file": "frame_0097.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "aa3f357ceb540e86",
+      "suggested_action": "reject",
+      "rank": 47,
+      "score": 0.401485
+    },
+    {
+      "file": "frame_0098.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "ffc0f9cff4f64454",
+      "suggested_action": "reject",
+      "rank": 34,
+      "score": 0.492564
+    },
+    {
+      "file": "frame_0099.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "1a9512358c7c465e",
+      "suggested_action": "reject",
+      "rank": 41,
+      "score": 0.415726
+    },
+    {
+      "file": "frame_0100.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7bf406a55d5cf2b2",
+      "suggested_action": "reject",
+      "rank": 73,
+      "score": 0.347515
+    },
+    {
+      "file": "frame_0101.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "74d9490810bea9ac",
+      "suggested_action": "reject",
+      "rank": 75,
+      "score": 0.340925
+    },
+    {
+      "file": "frame_0102.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "216e36e3784d5775",
+      "suggested_action": "reject",
+      "rank": 65,
+      "score": 0.377839
+    },
+    {
+      "file": "frame_0103.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "a7588154dd9874a6",
+      "suggested_action": "reject",
+      "rank": 58,
+      "score": 0.389056
+    },
+    {
+      "file": "frame_0104.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "4c0d94f0cc851d6a",
+      "suggested_action": "reject",
+      "rank": 110,
+      "score": 0.235711
+    },
+    {
+      "file": "frame_0105.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c27e3cb3e39ea4a6",
+      "suggested_action": "reject",
+      "rank": 118,
+      "score": 0.205257
+    },
+    {
+      "file": "frame_0106.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "633e289fe0e1f6f7",
+      "suggested_action": "reject",
+      "rank": 117,
+      "score": 0.206038
+    },
+    {
+      "file": "frame_0107.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "35413003eed525dc",
+      "suggested_action": "reject",
+      "rank": 109,
+      "score": 0.242444
+    },
+    {
+      "file": "frame_0108.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "8c835c04b442d1ea",
+      "suggested_action": "reject",
+      "rank": 80,
+      "score": 0.329832
+    },
+    {
+      "file": "frame_0109.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "55058f1d1bf4e063",
+      "suggested_action": "reject",
+      "rank": 94,
+      "score": 0.283805
+    },
+    {
+      "file": "frame_0110.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "9bfe9515e3340fcb",
+      "suggested_action": "reject",
+      "rank": 104,
+      "score": 0.256125
+    },
+    {
+      "file": "frame_0111.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "4ec1080344b03cfd",
+      "suggested_action": "reject",
+      "rank": 105,
+      "score": 0.255102
+    },
+    {
+      "file": "frame_0112.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "a8d3726c40eb913a",
+      "suggested_action": "reject",
+      "rank": 97,
+      "score": 0.273892
+    },
+    {
+      "file": "frame_0113.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "b519f7c31db1bc20",
+      "suggested_action": "reject",
+      "rank": 91,
+      "score": 0.294203
+    },
+    {
+      "file": "frame_0114.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "4644d17e43fcda24",
+      "suggested_action": "reject",
+      "rank": 89,
+      "score": 0.314194
+    },
+    {
+      "file": "frame_0115.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "19179c8a86b772c0",
+      "suggested_action": "reject",
+      "rank": 82,
+      "score": 0.322951
+    },
+    {
+      "file": "frame_0116.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "7f3839d6ef615ce8",
+      "suggested_action": "reject",
+      "rank": 86,
+      "score": 0.318752
+    },
+    {
+      "file": "frame_0117.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "6382ee8b78233e19",
+      "suggested_action": "reject",
+      "rank": 77,
+      "score": 0.333097
+    },
+    {
+      "file": "frame_0118.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "c7a29a24a9c0fdc8",
+      "suggested_action": "reject",
+      "rank": 64,
+      "score": 0.379825
+    },
+    {
+      "file": "frame_0119.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "e7d20778fa6a4573",
+      "suggested_action": "reject",
+      "rank": 61,
+      "score": 0.384878
+    },
+    {
+      "file": "frame_0120.jpg",
+      "source_cluster_id": 911,
+      "source_asset_id_hash": "8871efae075e106d",
+      "suggested_action": "reject",
+      "rank": 59,
+      "score": 0.388007
+    }
+  ]
+}

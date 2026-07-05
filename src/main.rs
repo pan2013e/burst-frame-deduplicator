@@ -1,0 +1,239 @@
+#![allow(unexpected_cfgs)]
+
+mod artifacts;
+mod assets;
+mod decode;
+mod detector;
+mod features;
+mod metadata;
+#[cfg(all(target_os = "macos", feature = "metal-accel"))]
+mod metal_accel;
+mod pipeline;
+mod server;
+mod types;
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use anyhow::Context;
+use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::pipeline::run_scan;
+use crate::types::{AccelerationPreference, DetectorPreference, ScanOptions};
+
+#[derive(Debug, Parser)]
+#[command(
+    version,
+    about = "Generic burst-frame deduplicator for RAW/JPEG photo bursts"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Scan a folder or mounted SD card and write review artifacts.
+    Scan {
+        /// Source folder, for example /Volumes/CARD/DCIM.
+        root: PathBuf,
+        /// Output run directory. Defaults to a timestamped folder under ./runs.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        options: ScanArgs,
+    },
+    /// Scan and then serve the local review UI.
+    App {
+        /// Source folder, for example /Volumes/CARD/DCIM.
+        root: PathBuf,
+        /// Output run directory. Defaults to a timestamped folder under ./runs.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        #[arg(long)]
+        open: bool,
+        #[command(flatten)]
+        options: ScanArgs,
+    },
+    /// Serve the local review UI for an existing run directory.
+    Serve {
+        /// Existing run directory containing manifest.json.
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        #[arg(long)]
+        open: bool,
+    },
+    /// Re-export keep/reject CSVs and move script after review decisions changed.
+    Export {
+        /// Existing run directory containing manifest.json and review_state.json.
+        #[arg(long)]
+        run: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct ScanArgs {
+    /// Long edge used for the first-pass scoring preview.
+    #[arg(long, default_value_t = 1280)]
+    preview_size: u32,
+    /// Long edge used for targeted high-resolution refinement of close candidates.
+    #[arg(long, default_value_t = 2048)]
+    refine_size: u32,
+    /// Maximum high-resolution refinement candidates per burst cluster.
+    #[arg(long, default_value_t = 6)]
+    refine_candidates_per_cluster: usize,
+    /// Disable targeted high-resolution refinement.
+    #[arg(long)]
+    no_refine: bool,
+    /// Long edge used for generated review thumbnails.
+    #[arg(long, default_value_t = 320)]
+    thumb_size: u32,
+    /// Maximum filename counter gap before splitting a burst.
+    #[arg(long, default_value_t = 12)]
+    max_seq_gap: i64,
+    /// Maximum adjacent capture/file-time gap in seconds before splitting a burst.
+    #[arg(long, default_value_t = 1.25)]
+    max_time_gap: f64,
+    /// Maximum total time span in seconds for one burst cluster.
+    #[arg(long, default_value_t = 1.80)]
+    max_cluster_span: f64,
+    /// Maximum perceptual hash distance between neighbors before splitting a burst.
+    #[arg(long, default_value_t = 30)]
+    max_hash_gap: u32,
+    /// Fixed keep count per cluster. Omit for automatic cluster-size-based counts.
+    #[arg(long)]
+    keepers_per_cluster: Option<usize>,
+    /// Allow singleton low-quality images to be rejected. Default keeps unique shots.
+    #[arg(long)]
+    cull_singletons: bool,
+    /// Worker count for parallel scoring. Defaults to available logical CPUs.
+    #[arg(long)]
+    workers: Option<usize>,
+    /// Hardware acceleration preference. Current implementation selects CPU/Rayon unless an adapter is available.
+    #[arg(long, value_enum, default_value_t = AccelArg::Auto)]
+    acceleration: AccelArg,
+    /// Local subject detector used to improve completeness/out-of-frame scoring.
+    #[arg(long, value_enum, default_value_t = DetectorArg::Auto)]
+    detector: DetectorArg,
+    /// Skip thumbnail generation.
+    #[arg(long)]
+    no_thumbs: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AccelArg {
+    Auto,
+    Cpu,
+    Metal,
+    Cuda,
+    Opencl,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DetectorArg {
+    Auto,
+    Off,
+    Heuristic,
+    Vision,
+}
+
+impl From<AccelArg> for AccelerationPreference {
+    fn from(value: AccelArg) -> Self {
+        match value {
+            AccelArg::Auto => Self::Auto,
+            AccelArg::Cpu => Self::Cpu,
+            AccelArg::Metal => Self::Metal,
+            AccelArg::Cuda => Self::Cuda,
+            AccelArg::Opencl => Self::OpenCl,
+        }
+    }
+}
+
+impl From<DetectorArg> for DetectorPreference {
+    fn from(value: DetectorArg) -> Self {
+        match value {
+            DetectorArg::Auto => Self::Auto,
+            DetectorArg::Off => Self::Off,
+            DetectorArg::Heuristic => Self::Heuristic,
+            DetectorArg::Vision => Self::Vision,
+        }
+    }
+}
+
+impl From<ScanArgs> for ScanOptions {
+    fn from(value: ScanArgs) -> Self {
+        Self {
+            preview_size: value.preview_size,
+            refine_size: value.refine_size,
+            refine_candidates_per_cluster: value.refine_candidates_per_cluster,
+            disable_refinement: value.no_refine,
+            thumb_size: value.thumb_size,
+            max_seq_gap: value.max_seq_gap,
+            max_time_gap_ms: (value.max_time_gap * 1000.0).round().max(0.0) as i64,
+            max_cluster_span_ms: (value.max_cluster_span * 1000.0).round().max(0.0) as i64,
+            max_hash_gap: value.max_hash_gap,
+            keepers_per_cluster: value.keepers_per_cluster,
+            cull_singletons: value.cull_singletons,
+            workers: value.workers,
+            acceleration: value.acceleration.into(),
+            detector: value.detector.into(),
+            generate_thumbnails: !value.no_thumbs,
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Scan { root, out, options } => {
+            let run_dir = run_scan(&root, out, options.into()).await?;
+            println!("Wrote run artifacts to {}", run_dir.display());
+        }
+        Command::App {
+            root,
+            out,
+            host,
+            port,
+            open,
+            options,
+        } => {
+            let run_dir = run_scan(&root, out, options.into()).await?;
+            serve(run_dir, host, port, open).await?;
+        }
+        Command::Serve {
+            run,
+            host,
+            port,
+            open,
+        } => {
+            serve(run, host, port, open).await?;
+        }
+        Command::Export { run } => {
+            artifacts::export_reviewed_artifacts(&run)
+                .with_context(|| format!("exporting reviewed artifacts from {}", run.display()))?;
+            println!("Updated CSV exports and move script in {}", run.display());
+        }
+    }
+    Ok(())
+}
+
+async fn serve(run: PathBuf, host: String, port: u16, open_browser: bool) -> anyhow::Result<()> {
+    let addr: SocketAddr = format!("{host}:{port}")
+        .parse()
+        .with_context(|| format!("invalid bind address {host}:{port}"))?;
+    let url = format!("http://{addr}");
+    if open_browser {
+        let _ = open::that(&url);
+    }
+    println!("Serving review UI at {url}");
+    server::serve(run, addr).await
+}
