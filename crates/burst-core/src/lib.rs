@@ -4,6 +4,7 @@ use image::{GrayImage, RgbImage, imageops};
 use serde::{Deserialize, Serialize};
 
 const DETECTOR_LONG_EDGE: u32 = 512;
+const DETECTOR_REFINEMENT_LONG_EDGE: u32 = 1024;
 const GLOBAL_DESCRIPTOR_SIZE: u32 = 32;
 const SUBJECT_DESCRIPTOR_SIZE: u32 = 64;
 
@@ -395,7 +396,28 @@ struct Component {
 }
 
 fn robust_bbox(gray: &GrayImage) -> BBoxScore {
-    let small = resize_long_edge(gray, DETECTOR_LONG_EDGE);
+    let coarse = robust_bbox_at(gray, DETECTOR_LONG_EDGE);
+    let coarse_area = bbox_area(&coarse);
+    if gray.width().max(gray.height()) <= DETECTOR_LONG_EDGE
+        || (coarse_area >= 0.025 && coarse.object_confidence >= 0.52)
+    {
+        return coarse;
+    }
+
+    let refined = robust_bbox_at(gray, DETECTOR_REFINEMENT_LONG_EDGE);
+    let agreement = bbox_iou(&coarse, &refined);
+    if refined.object_confidence >= coarse.object_confidence * 0.82
+        && bbox_area(&refined) <= 0.45
+        && (agreement >= 0.20 || coarse.object_confidence < 0.28)
+    {
+        refined
+    } else {
+        coarse
+    }
+}
+
+fn robust_bbox_at(gray: &GrayImage, long_edge: u32) -> BBoxScore {
+    let small = resize_long_edge(gray, long_edge);
     let w = small.width() as usize;
     let h = small.height() as usize;
     if w < 8 || h < 8 {
@@ -485,6 +507,22 @@ fn robust_bbox(gray: &GrayImage) -> BBoxScore {
         object_confidence,
         completeness,
         border_energy_fraction: border_fraction,
+    }
+}
+
+fn bbox_area(bbox: &BBoxScore) -> f64 {
+    ((bbox.x2 - bbox.x1).max(0.0) * (bbox.y2 - bbox.y1).max(0.0)).clamp(0.0, 1.0)
+}
+
+fn bbox_iou(left: &BBoxScore, right: &BBoxScore) -> f64 {
+    let width = (left.x2.min(right.x2) - left.x1.max(right.x1)).max(0.0);
+    let height = (left.y2.min(right.y2) - left.y1.max(right.y1)).max(0.0);
+    let intersection = width * height;
+    let union = bbox_area(left) + bbox_area(right) - intersection;
+    if union > 0.0 {
+        intersection / union
+    } else {
+        0.0
     }
 }
 

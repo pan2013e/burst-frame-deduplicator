@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,8 +15,8 @@ use crate::assets::{AssetInput, discover_assets_with_progress};
 use crate::decode::{decoder_report, load_preview, resize_rgb};
 use crate::detector::{detect_subject, detector_report, merge_detector_metrics};
 use crate::features::{
-    SimilarityFeatures, compare_similarity, hash_distance, score_image, similarity_features,
-    update_subject_focus,
+    SimilarityComparison, SimilarityFeatures, compare_similarity, hash_distance, score_image,
+    similarity_features, update_subject_focus,
 };
 use crate::metadata::read_photo_metadata;
 use crate::progress::{ProgressReporter, ProgressStage};
@@ -461,22 +461,26 @@ fn refine_cluster_candidates(
     let refined = AtomicUsize::new(0);
     let total = candidates.len();
     let refinement_progress = progress.clone();
-    let results: Vec<Option<RefineResult>> = pool.install(|| {
-        candidates
-            .par_iter()
-            .map(|idx| {
-                let result = refine_asset(*idx, &assets[*idx], options);
-                let done = refined.fetch_add(1, Ordering::Relaxed) + 1;
-                refinement_progress.emit(
-                    ProgressStage::Refining,
-                    done,
-                    Some(total),
-                    Some(assets[*idx].representative.rel_path.clone()),
-                );
-                result
-            })
-            .collect()
-    });
+    let batch_size = refinement_batch_size(pool.current_num_threads(), options.refine_size);
+    let mut results = Vec::with_capacity(candidates.len());
+    for batch in candidates.chunks(batch_size) {
+        results.extend(pool.install(|| {
+            batch
+                .par_iter()
+                .map(|idx| {
+                    let result = refine_asset(*idx, &assets[*idx], options);
+                    let done = refined.fetch_add(1, Ordering::Relaxed) + 1;
+                    refinement_progress.emit(
+                        ProgressStage::Refining,
+                        done,
+                        Some(total),
+                        Some(assets[*idx].representative.rel_path.clone()),
+                    );
+                    result
+                })
+                .collect::<Vec<_>>()
+        }));
+    }
 
     let mut applied = 0usize;
     for result in results.into_iter().flatten() {
@@ -490,6 +494,18 @@ fn refine_cluster_candidates(
         applied += 1;
     }
     applied
+}
+
+fn refinement_batch_size(worker_count: usize, long_edge: u32) -> usize {
+    const MEMORY_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const ESTIMATED_WORKING_BYTES_PER_PIXEL: u64 = 32;
+    let estimated_per_frame = u64::from(long_edge)
+        .saturating_mul(u64::from(long_edge))
+        .saturating_mul(ESTIMATED_WORKING_BYTES_PER_PIXEL)
+        .max(1);
+    (MEMORY_BUDGET_BYTES / estimated_per_frame)
+        .max(1)
+        .min(worker_count.max(1) as u64) as usize
 }
 
 fn refinement_candidates(
@@ -848,6 +864,7 @@ fn build_near_duplicate_groups(
     for (burst_zero, burst) in bursts.iter().enumerate() {
         let burst_id = burst_zero + 1;
         let mut current: Vec<usize> = Vec::new();
+        let mut comparison_cache = HashMap::new();
         for idx in burst {
             assets[*idx].burst_id = burst_id;
             assets[*idx].similarity.subject_confidence = features[*idx].confidence;
@@ -860,7 +877,13 @@ fn build_near_duplicate_groups(
                 if invalid || scene_change {
                     true
                 } else {
-                    !fits_complete_link(&current, *idx, features, options.max_duplicate_distance)
+                    !fits_complete_link(
+                        &current,
+                        *idx,
+                        features,
+                        options.max_duplicate_distance,
+                        &mut comparison_cache,
+                    )
                 }
             } else {
                 false
@@ -872,6 +895,7 @@ fn build_near_duplicate_groups(
                     assets,
                     features,
                     options.max_duplicate_distance,
+                    &mut comparison_cache,
                 ));
             }
             current.push(*idx);
@@ -883,6 +907,7 @@ fn build_near_duplicate_groups(
                 assets,
                 features,
                 options.max_duplicate_distance,
+                &mut comparison_cache,
             ));
         }
     }
@@ -894,10 +919,11 @@ fn fits_complete_link(
     candidate: usize,
     features: &[SimilarityFeatures],
     threshold: f64,
+    cache: &mut HashMap<(usize, usize), SimilarityComparison>,
 ) -> bool {
-    current.iter().all(|member| {
-        compare_similarity(&features[*member], &features[candidate]).distance <= threshold
-    })
+    current
+        .iter()
+        .all(|member| cached_similarity(*member, candidate, features, cache).distance <= threshold)
 }
 
 fn finalize_similarity_group(
@@ -906,6 +932,7 @@ fn finalize_similarity_group(
     assets: &mut [AssetRecord],
     features: &[SimilarityFeatures],
     threshold: f64,
+    cache: &mut HashMap<(usize, usize), SimilarityComparison>,
 ) -> IndexGroup {
     let mut confidence_sum = 0.0;
     let mut max_distance: f64 = 0.0;
@@ -921,7 +948,7 @@ fn finalize_similarity_group(
             if position == other_position {
                 continue;
             }
-            let comparison = compare_similarity(&features[*idx], &features[*other]);
+            let comparison = cached_similarity(*idx, *other, features, cache);
             max_distance = max_distance.max(comparison.distance);
             if nearest
                 .as_ref()
@@ -954,6 +981,22 @@ fn finalize_similarity_group(
         similarity_confidence,
         max_distance,
     }
+}
+
+fn cached_similarity(
+    left: usize,
+    right: usize,
+    features: &[SimilarityFeatures],
+    cache: &mut HashMap<(usize, usize), SimilarityComparison>,
+) -> SimilarityComparison {
+    let key = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    *cache
+        .entry(key)
+        .or_insert_with(|| compare_similarity(&features[left], &features[right]))
 }
 
 fn explanations_for(
@@ -1117,7 +1160,9 @@ fn benchmark(stage: &str, elapsed_ms: f64, items: Option<usize>) -> BenchmarkRep
 
 #[cfg(test)]
 mod tests {
-    use super::{fits_complete_link, keep_count_for_cluster};
+    use std::collections::HashMap;
+
+    use super::{fits_complete_link, keep_count_for_cluster, refinement_batch_size};
     use crate::features::SimilarityFeatures;
 
     fn features(mask_start: usize) -> SimilarityFeatures {
@@ -1138,9 +1183,10 @@ mod tests {
     #[test]
     fn complete_link_prevents_similarity_chaining() {
         let features = vec![features(0), features(5), features(10)];
-        assert!(fits_complete_link(&[0], 1, &features, 0.32));
-        assert!(fits_complete_link(&[1], 2, &features, 0.32));
-        assert!(!fits_complete_link(&[0, 1], 2, &features, 0.32));
+        let mut cache = HashMap::new();
+        assert!(fits_complete_link(&[0], 1, &features, 0.32, &mut cache));
+        assert!(fits_complete_link(&[1], 2, &features, 0.32, &mut cache));
+        assert!(!fits_complete_link(&[0, 1], 2, &features, 0.32, &mut cache));
     }
 
     #[test]
@@ -1148,5 +1194,12 @@ mod tests {
         assert_eq!(keep_count_for_cluster(1, None), 1);
         assert_eq!(keep_count_for_cluster(120, None), 1);
         assert_eq!(keep_count_for_cluster(5, Some(2)), 2);
+    }
+
+    #[test]
+    fn high_resolution_refinement_respects_the_memory_budget() {
+        assert_eq!(refinement_batch_size(8, 2048), 8);
+        assert_eq!(refinement_batch_size(8, 4096), 4);
+        assert_eq!(refinement_batch_size(8, 8192), 1);
     }
 }

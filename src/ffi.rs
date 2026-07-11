@@ -12,7 +12,9 @@ use crate::artifacts::{
     ensure_review_state, export_reviewed_artifacts, read_manifest, upsert_decision,
 };
 use crate::decode::load_preview;
-use crate::operations::move_rejects;
+use crate::operations::{
+    MoveStatus, move_rejects, read_move_status, resolve_available_source, restore_moved,
+};
 use crate::pipeline::run_scan;
 use crate::progress::{ProgressReporter, ProgressUpdate};
 use crate::types::{FileKind, ReviewState, RunManifest, ScanOptions, UserDecision};
@@ -42,6 +44,7 @@ struct ReviewPayload {
     run_dir: PathBuf,
     manifest: RunManifest,
     review: ReviewState,
+    move_status: MoveStatus,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +71,14 @@ struct PreviewResponse {
 #[derive(Deserialize)]
 struct MoveRequest {
     run_dir: PathBuf,
+    destination: Option<PathBuf>,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+struct RestoreRequest {
+    run_dir: PathBuf,
+    asset_ids: Option<Vec<String>>,
     confirmed: bool,
 }
 
@@ -80,7 +91,7 @@ struct Envelope<T: Serialize> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bfd_api_version() -> u32 {
-    1
+    2
 }
 
 #[unsafe(no_mangle)]
@@ -174,7 +185,26 @@ pub unsafe extern "C" fn bfd_export_run(request_json: *const c_char) -> *mut c_c
 pub unsafe extern "C" fn bfd_move_rejects(request_json: *const c_char) -> *mut c_char {
     ffi_call(|| {
         let request: MoveRequest = parse_request(request_json)?;
-        move_rejects(&request.run_dir, request.confirmed)
+        move_rejects(
+            &request.run_dir,
+            request.destination.as_deref(),
+            request.confirmed,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Restores previously moved files to their original paths from a UTF-8 JSON request.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string.
+pub unsafe extern "C" fn bfd_restore_rejects(request_json: *const c_char) -> *mut c_char {
+    ffi_call(|| {
+        let request: RestoreRequest = parse_request(request_json)?;
+        let selected = request
+            .asset_ids
+            .map(|ids| ids.into_iter().collect::<std::collections::HashSet<_>>());
+        restore_moved(&request.run_dir, selected.as_ref(), request.confirmed)
     })
 }
 
@@ -192,10 +222,12 @@ pub unsafe extern "C" fn bfd_free_string(value: *mut c_char) {
 fn load_review_payload(run_dir: PathBuf) -> anyhow::Result<ReviewPayload> {
     let manifest = read_manifest(&run_dir)?;
     let review = ensure_review_state(&run_dir, &manifest)?;
+    let move_status = read_move_status(&run_dir)?;
     Ok(ReviewPayload {
         run_dir,
         manifest,
         review,
+        move_status,
     })
 }
 
@@ -206,9 +238,10 @@ fn prepare_preview(request: &PreviewRequest) -> anyhow::Result<PreviewResponse> 
         .iter()
         .find(|asset| asset.id == request.asset_id)
         .ok_or_else(|| anyhow!("asset not found: {}", request.asset_id))?;
+    let source_path = resolve_available_source(&request.run_dir, &asset.representative.path)?;
     if asset.representative.kind != FileKind::Raw {
         return Ok(PreviewResponse {
-            path: asset.representative.path.clone(),
+            path: source_path,
             generated: false,
         });
     }
@@ -224,11 +257,7 @@ fn prepare_preview(request: &PreviewRequest) -> anyhow::Result<PreviewResponse> 
         });
     }
 
-    let decoded = load_preview(
-        &asset.representative.path,
-        &asset.representative.extension,
-        max_long_edge,
-    )?;
+    let decoded = load_preview(&source_path, &asset.representative.extension, max_long_edge)?;
     let file =
         fs::File::create(&output).with_context(|| format!("creating {}", output.display()))?;
     let mut encoder = JpegEncoder::new_with_quality(file, 92);

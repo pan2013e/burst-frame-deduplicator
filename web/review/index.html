@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title></title>
+  <link rel="stylesheet" href="/review.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <h1 id="appTitle"></h1>
+      <div id="sourceLabel" class="source-label"></div>
+    </div>
+    <div class="header-tools">
+      <label class="search-control">
+        <span aria-hidden="true">⌕</span>
+        <input id="searchInput" type="search">
+      </label>
+      <select id="filterSelect"></select>
+      <details id="localeMenu" class="locale-menu">
+        <summary id="localeButton" aria-haspopup="menu">文/A</summary>
+        <div class="locale-popover" role="menu">
+          <button type="button" data-locale="en" role="menuitem"></button>
+          <button type="button" data-locale="zh-CN" role="menuitem"></button>
+        </div>
+      </details>
+      <button type="button" id="saveButton" class="primary"></button>
+    </div>
+  </header>
+
+  <main>
+    <section id="summaryStrip" class="summary-strip" aria-live="polite"></section>
+    <section id="clusters" class="clusters"></section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <div id="viewer" class="viewer" hidden aria-hidden="true" tabindex="-1">
+    <div class="viewer-bar">
+      <button type="button" id="previousButton" class="icon-button">←</button>
+      <button type="button" id="nextButton" class="icon-button">→</button>
+      <div id="viewerTitle" class="viewer-title"></div>
+      <label class="viewer-keep"><input id="viewerKeep" type="checkbox"> <span id="viewerKeepText"></span></label>
+      <button type="button" id="zoomOutButton" class="icon-button">−</button>
+      <button type="button" id="zoomInButton" class="icon-button">+</button>
+      <button type="button" id="fitButton" class="icon-button">⛶</button>
+      <button type="button" id="closeViewerButton" class="icon-button">×</button>
+    </div>
+    <div id="viewerViewport" class="viewer-viewport">
+      <img id="viewerImage" alt="" hidden>
+      <div id="viewerLoading" class="viewer-loading" hidden><span class="spinner"></span><b></b></div>
+      <div id="viewerError" class="viewer-error" hidden></div>
+    </div>
+  </div>
+
+  <dialog id="saveDialog" class="save-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <h2 id="saveDialogTitle"></h2>
+          <p id="saveDialogSubtitle"></p>
+        </div>
+        <button type="submit" class="icon-button" id="closeSaveButton">×</button>
+      </header>
+      <div id="saveStats" class="save-stats"></div>
+      <div id="operationStatus" class="operation-status" hidden></div>
+
+      <section class="destination-section">
+        <label for="destinationInput" id="destinationLabel"></label>
+        <div class="destination-row">
+          <input id="destinationInput" type="text" autocomplete="off">
+          <button type="button" id="refreshScriptsButton" class="secondary"></button>
+        </div>
+      </section>
+
+      <section class="script-section">
+        <div class="script-toolbar">
+          <div class="tabs" role="tablist">
+            <button type="button" id="posixTab" role="tab" data-script="posix"></button>
+            <button type="button" id="powershellTab" role="tab" data-script="powershell"></button>
+          </div>
+          <button type="button" id="copyScriptButton" class="secondary"></button>
+        </div>
+        <pre id="scriptCode" tabindex="0"></pre>
+      </section>
+
+      <footer class="dialog-actions">
+        <button type="button" id="exportJsonButton" class="secondary"></button>
+        <span class="action-spacer"></span>
+        <button type="button" id="restoreButton" class="secondary" hidden></button>
+        <button type="button" id="moveButton" class="danger"></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog" class="dialog-shell compact">
+      <h2 id="confirmTitle"></h2>
+      <p id="confirmMessage"></p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="secondary" id="confirmCancel"></button>
+        <span class="action-spacer"></span>
+        <button type="submit" value="confirm" class="danger" id="confirmAction"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/review.js"></script>
+</body>
+</html>
