@@ -175,7 +175,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "burst-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "image",
  "serde",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "burst-frame-deduplicator"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -191,9 +191,11 @@ dependencies = [
  "chrono",
  "clap",
  "csv",
+ "cudarc",
  "image",
  "jpeg-decoder",
  "kamadak-exif",
+ "libloading",
  "metal",
  "mime_guess",
  "objc",
@@ -212,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "burst-wasm"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "burst-core",
  "console_error_panic_hook",
@@ -435,6 +437,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "704a3c26996a80471189265814dbc2c257598b96b8a7feae2d31ace646bb9782"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.19.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42310153e06cf4cd532901f7096beb27504d681736a29ee90728ae4e2d93b2a8"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]
@@ -812,6 +823,16 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "linux-raw-sys"

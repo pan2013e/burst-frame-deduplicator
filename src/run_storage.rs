@@ -520,7 +520,7 @@ mod tests {
             result.run_dir,
             destination_root.canonicalize().unwrap().join("run-2")
         );
-        assert!(destination_root.join("run/manifest.json").exists() == false);
+        assert!(!destination_root.join("run/manifest.json").exists());
         assert!(result.run_dir.join("manifest.json").is_file());
     }
 

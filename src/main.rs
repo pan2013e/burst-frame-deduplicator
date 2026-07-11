@@ -118,10 +118,10 @@ struct ScanArgs {
     /// Allow singleton low-quality images to be rejected. Default keeps unique shots.
     #[arg(long)]
     cull_singletons: bool,
-    /// Worker count for parallel scoring. Defaults to available logical CPUs.
+    /// Worker count for parallel scoring. Defaults to available logical CPUs, capped at 8.
     #[arg(long)]
     workers: Option<usize>,
-    /// Hardware acceleration preference. Current implementation selects CPU/Rayon unless an adapter is available.
+    /// Hardware acceleration preference. CPU is scalar; AVX2 is runtime-checked on Linux.
     #[arg(long, value_enum, default_value_t = AccelArg::Auto)]
     acceleration: AccelArg,
     /// Local subject detector used to improve completeness/out-of-frame scoring.
@@ -136,6 +136,7 @@ struct ScanArgs {
 enum AccelArg {
     Auto,
     Cpu,
+    Avx2,
     Metal,
     Cuda,
     Opencl,
@@ -154,6 +155,7 @@ impl From<AccelArg> for AccelerationPreference {
         match value {
             AccelArg::Auto => Self::Auto,
             AccelArg::Cpu => Self::Cpu,
+            AccelArg::Avx2 => Self::Avx2,
             AccelArg::Metal => Self::Metal,
             AccelArg::Cuda => Self::Cuda,
             AccelArg::Opencl => Self::OpenCl,

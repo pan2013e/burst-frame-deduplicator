@@ -19,15 +19,15 @@ pub struct DecodedPreview {
 }
 
 pub fn decoder_report() -> DecoderReport {
-    let magick = which::which("magick").ok();
+    let imagemagick = find_imagemagick();
     let sips = which::which("sips").ok();
     let raw_strategy = if cfg!(target_os = "macos") && sips.is_some() {
-        if magick.is_some() {
+        if imagemagick.is_some() {
             "macOS Camera RAW via sips; ImageMagick compatibility fallback".to_string()
         } else {
             "macOS Camera RAW via sips; no ImageMagick fallback".to_string()
         }
-    } else if magick.is_some() {
+    } else if imagemagick.is_some() {
         "ImageMagick RAW/HEIC fallback".to_string()
     } else {
         "native compressed formats only; RAW requires ImageMagick or sips".to_string()
@@ -35,7 +35,7 @@ pub fn decoder_report() -> DecoderReport {
     DecoderReport {
         native_compressed: true,
         scaled_jpeg: true,
-        imagemagick: magick,
+        imagemagick,
         sips,
         raw_strategy,
     }
@@ -146,34 +146,67 @@ fn load_scaled_jpeg(path: &Path, preview_size: u32) -> anyhow::Result<DecodedPre
 }
 
 fn load_external(path: &Path, preview_size: u32, reason: &str) -> anyhow::Result<DecodedPreview> {
-    if reason == "raw"
-        && cfg!(target_os = "macos")
-        && let Ok(sips) = which::which("sips")
-        && let Ok(decoded) = load_with_sips(&sips, path, preview_size, reason)
-    {
-        return Ok(decoded);
+    let imagemagick = find_imagemagick();
+    let sips = which::which("sips").ok();
+    let prefer_sips = reason == "raw" && cfg!(target_os = "macos");
+    let mut failures = Vec::new();
+
+    if prefer_sips && let Some(sips) = &sips {
+        match load_with_sips(sips, path, preview_size, reason) {
+            Ok(decoded) => return Ok(decoded),
+            Err(error) => failures.push(format!("sips ({}): {error:#}", sips.display())),
+        }
     }
-    if let Ok(magick) = which::which("magick")
-        && let Ok(decoded) = load_with_magick(&magick, path, preview_size, reason)
-    {
-        return Ok(decoded);
+
+    if let Some(imagemagick) = &imagemagick {
+        match load_with_imagemagick(imagemagick, path, preview_size, reason) {
+            Ok(decoded) => return Ok(decoded),
+            Err(error) => failures.push(format!(
+                "ImageMagick ({}): {error:#}",
+                imagemagick.display()
+            )),
+        }
     }
-    if let Ok(sips) = which::which("sips") {
-        return load_with_sips(&sips, path, preview_size, reason);
+
+    if !prefer_sips && let Some(sips) = &sips {
+        match load_with_sips(sips, path, preview_size, reason) {
+            Ok(decoded) => return Ok(decoded),
+            Err(error) => failures.push(format!("sips ({}): {error:#}", sips.display())),
+        }
     }
-    Err(anyhow!(
-        "no external decoder found for {}; install ImageMagick or use a camera JPEG pair",
-        path.display()
-    ))
+
+    if failures.is_empty() {
+        Err(anyhow!(
+            "no external decoder found for {}; install ImageMagick or use a camera JPEG pair",
+            path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "external decoder failed for {}: {}",
+            path.display(),
+            failures.join("; ")
+        ))
+    }
 }
 
-fn load_with_magick(
-    magick: &Path,
+fn find_imagemagick() -> Option<PathBuf> {
+    select_imagemagick_executable(which::which("magick").ok(), which::which("convert").ok())
+}
+
+fn select_imagemagick_executable(
+    magick: Option<PathBuf>,
+    convert: Option<PathBuf>,
+) -> Option<PathBuf> {
+    magick.or(convert)
+}
+
+fn load_with_imagemagick(
+    imagemagick: &Path,
     path: &Path,
     preview_size: u32,
     reason: &str,
 ) -> anyhow::Result<DecodedPreview> {
-    let output = Command::new(magick)
+    let output = Command::new(imagemagick)
         .arg(path)
         .arg("-auto-orient")
         .arg("-resize")
@@ -238,4 +271,28 @@ fn load_with_sips(
 #[allow(dead_code)]
 fn _canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::select_imagemagick_executable;
+
+    #[test]
+    fn imagemagick_seven_is_preferred_when_both_commands_exist() {
+        let selected = select_imagemagick_executable(
+            Some(PathBuf::from("/tools/magick")),
+            Some(PathBuf::from("/tools/convert")),
+        );
+
+        assert_eq!(selected, Some(PathBuf::from("/tools/magick")));
+    }
+
+    #[test]
+    fn imagemagick_six_convert_is_the_compatibility_fallback() {
+        let selected = select_imagemagick_executable(None, Some(PathBuf::from("/tools/convert")));
+
+        assert_eq!(selected, Some(PathBuf::from("/tools/convert")));
+    }
 }

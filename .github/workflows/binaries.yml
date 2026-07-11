@@ -36,13 +36,19 @@ jobs:
       - name: Test shared browser preferences
         run: node --test web/shared/tutorial-progress.test.mjs
 
-      - name: Test portable workspace
+      - name: Test portable scalar workspace
         run: cargo test --workspace --no-default-features
+
+      - name: Test Linux defaults and AVX2 dispatch
+        run: cargo test --workspace
+
+      - name: Test optional CUDA adapter without a GPU
+        run: cargo test --workspace --all-targets --no-default-features --features cuda-accel
 
       - name: Build standalone CLI
         env:
           BFD_BUILD_COMMIT: ${{ github.sha }}
-        run: cargo build --release --no-default-features --bin burst-frame-deduplicator
+        run: cargo build --release --no-default-features --features cuda-accel --bin burst-frame-deduplicator
 
       - name: Smoke-test embedded web resources outside the workspace
         shell: bash
@@ -51,11 +57,16 @@ jobs:
           smoke="$(mktemp -d)"
           cp target/release/burst-frame-deduplicator "$smoke/bfd"
           mkdir -p "$smoke/photos"
-          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQEAIAAADAAbR1AAAAS0lEQVQ4y2NUUHBwSEhgoBlg4XvDMZFJhYYW8L7mnMikOpR9wPeGk/YWMNPUgtcctI4DmgcRx6QhHsnDIA5onUxpnpNpXRbx0tgHAPqJG54Cdy1zAAAAAElFTkSuQmCC' \
             | base64 --decode > "$smoke/photos/frame_0001.png"
           (
             cd "$smoke"
-            ./bfd scan photos --out run --no-refine --detector off --acceleration cpu
+            ./bfd scan photos --out run --no-refine --detector off --acceleration cpu --workers 1
+            grep -q '"selected": "cpu_scalar_rayon"' run/manifest.json
+            grep -q '"rayon_cpu_workers:1"' run/manifest.json
+            ./bfd scan photos --out run-cuda-fallback --no-refine --detector off --acceleration cuda --workers 1
+            grep -q '"requested": "cuda"' run-cuda-fallback/manifest.json
+            grep -q '"selected": "cpu_' run-cuda-fallback/manifest.json
             ./bfd serve --run run --port 18787 >server.log 2>&1 &
             server_pid=$!
             trap 'kill "$server_pid" 2>/dev/null || true' EXIT

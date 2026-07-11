@@ -54,6 +54,7 @@ impl Default for ScanOptions {
 pub enum AccelerationPreference {
     Auto,
     Cpu,
+    Avx2,
     Metal,
     Cuda,
     OpenCl,

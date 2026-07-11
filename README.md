@@ -12,7 +12,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Preserves changes in posture, angle, or composition instead of treating an entire burst as one duplicate group.
 - Refines likely keepers and close calls at higher resolution after a fast preview pass.
 - Treats matching RAW/JPEG files and sidecars as one review asset.
-- Uses Metal focus scoring and macOS Vision saliency when selected and available, with recorded CPU fallbacks.
+- Uses explicit scalar or AVX2 CPU focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
 - Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
 - Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
@@ -22,8 +22,8 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 | Interface | Best for | Scan engine | Review experience |
 | --- | --- | --- | --- |
 | Native macOS app | Normal interactive use | Shared Rust native backend through C FFI | Native SwiftUI grid, settings, and responsive image viewer |
-| Headless CLI | Automation and large cards | Rust, Rayon, optional Metal/Vision | Artifacts only, or serve later |
-| CLI `app` command | Terminal users who want immediate review | Rust, Rayon, optional Metal/Vision | Local browser UI |
+| Headless CLI | Automation and large cards | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Artifacts only, or serve later |
+| CLI `app` command | Terminal users who want immediate review | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Local browser UI |
 | Static WASM app | GitHub Pages and installation-free use | Portable Rust scorer in-browser | Browser UI; JSON/script export and conditional local moves |
 
 ## Native macOS App
@@ -54,15 +54,27 @@ Tagged releases and ordinary CI runs also produce an Apple Silicon DMG. The CI a
 Scan and immediately start the local review server:
 
 ```bash
+# Linux: explicitly request runtime-checked AVX2
+cargo run --release -- app /path/to/photos --open --acceleration avx2 --detector heuristic
+
+# macOS Apple Silicon
 cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --detector heuristic
 ```
 
 Keep scan and review separate:
 
 ```bash
-cargo run --release -- scan /Volumes/CARD/DCIM --acceleration metal --detector heuristic
+cargo run --release -- scan /path/to/photos --acceleration avx2 --detector heuristic
 cargo run --release -- serve --run runs/run_YYYYMMDD_HHMMSS --open
 ```
+
+On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests the runtime-dispatched AVX2 scorer, and `auto` chooses AVX2 when the build and CPU support it. CUDA remains explicit while device parity testing is pending:
+
+```bash
+cargo run --release --features cuda-accel -- scan /path/to/photos --acceleration cuda
+```
+
+The CUDA feature loads the NVIDIA driver and CUDA 12 NVRTC dynamically. A CUDA-enabled binary still runs on CPU-only Linux when CUDA is not requested, and an unavailable or failed CUDA scorer falls back to the best available CPU path.
 
 Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
 
@@ -88,7 +100,7 @@ The **Build distributable binaries** GitHub Actions workflow tests and packages:
 
 | Artifact | Runner | Contents |
 | --- | --- | --- |
-| Linux CLI | Ubuntu 24.04 x86_64 | Standalone executable, notices, archive checksum |
+| Linux CLI | Ubuntu 24.04 x86_64 | Standalone AVX2/CUDA-capable executable for Ubuntu 24.04 or newer, with runtime fallbacks, notices, and archive checksum |
 | macOS CLI | macOS 26 Apple Silicon | Standalone executable, notices, archive checksum |
 | macOS app | macOS 26 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
 
@@ -100,7 +112,7 @@ Pushes to `main` and pull requests that include non-documentation changes, plus 
 The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
 
 ```bash
-VERSION=0.1.2 # choose the next unused Semantic Versioning release
+VERSION=0.2.1 # choose the next unused Semantic Versioning release
 git tag -a "v${VERSION}" -m "v${VERSION}"
 git push origin main "v${VERSION}"
 ```
@@ -119,6 +131,7 @@ Do not reuse an existing release tag.
 | Rust/Cargo | Required | Required | Required |
 | Swift 6 / Apple Command Line Tools | Required | Not required | Not required |
 | ImageMagick | Optional compatibility fallback | Recommended for RAW | Not used |
+| NVIDIA driver + NVRTC | Not used | Optional for `--acceleration cuda` on Linux | Not used |
 | Git LFS | Benchmark fixture only | Benchmark fixture only | Benchmark fixture only |
 | `wasm-pack` | Optional | Optional | Required |
 | Modern browser | Optional local review | Optional local review | Required |
@@ -155,14 +168,17 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | RAW via ImageMagick fallback | 🟡 optional | ✅ | ✅ | ✅ |
 | Browser RAW via LibRaw-WASM | ✅ | ✅ | ✅ | ✅ |
 | Confirmed move + restore | ✅ | 🟡 browser | 🟡 browser | 🟡 browser |
-| CPU/Rayon scoring | ✅ | ✅ | ✅ | ✅ |
+| Portable scalar + Rayon scoring | ✅ | ✅ | ✅ | ✅ |
+| Runtime-dispatched AVX2 focus scoring | — | ✅ x86_64 | ✅ x86_64 | — |
 | Metal focus scoring | ✅ | — | — | — |
+| Heuristic subject detector | ✅ | ✅ | ✅ | ✅ |
 | macOS Vision detector | ✅ | — | — | — |
-| CUDA / TensorRT | — | — | 🧭 | 🧭 |
+| CUDA focus scoring | — | — | ✅ opt-in | — |
+| TensorRT learned detector | — | — | 🧭 | 🧭 |
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
 | OpenVINO | — | 🧭 | 🧭 | 🧭 |
 | English / Simplified Chinese | ✅ | ✅ | ✅ | ✅ |
-| CI release binary | ✅ CLI + app | ✅ CLI | ✅ CPU CLI | 🧭 |
+| CI release binary | ✅ CLI + app | ✅ CLI | ✅ CUDA-capable CLI | 🧭 |
 
 Requested and selected backends, capabilities, and fallback notes are recorded in every `manifest.json`.
 
@@ -189,6 +205,6 @@ npm install --prefix benchmark
 python3 benchmark/run_frontend_benchmarks.py
 ```
 
-See [accuracy/backend results](benchmark/results/latest.md) and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
+See [macOS accuracy/backend results](benchmark/results/latest.md), [Linux scalar/AVX2 results](benchmark/results/latest-linux.md), and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
 
 Detailed workflows are in [docs/USAGE.md](docs/USAGE.md). Architecture, FFI, acceleration, and timing details are in [docs/TECHNICAL.md](docs/TECHNICAL.md).

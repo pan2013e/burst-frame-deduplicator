@@ -1,6 +1,6 @@
 [package]
 name = "burst-frame-deduplicator"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -11,7 +11,10 @@ members = [".", "crates/burst-core", "web/wasm"]
 resolver = "3"
 
 [features]
-default = ["macos-native"]
+default = ["macos-native", "linux-native"]
+linux-native = ["avx2-accel"]
+avx2-accel = []
+cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
@@ -27,8 +30,6 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 jpeg-decoder = { version = "0.3.2", default-features = false }
 kamadak-exif = "0.6"
 mime_guess = "2.0"
-metal = { version = "0.32", optional = true }
-objc = { version = "0.2", optional = true }
 open = "5.3"
 parking_lot = "0.12"
 rayon = "1.11"
@@ -40,3 +41,11 @@ tempfile = "3.23"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "signal"] }
 walkdir = "2.5"
 which = "8.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cudarc = { version = "0.19.8", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12000"], optional = true }
+libloading = { version = "0.9", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.32", optional = true }
+objc = { version = "0.2", optional = true }

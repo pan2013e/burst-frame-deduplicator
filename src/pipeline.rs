@@ -88,6 +88,7 @@ pub async fn run_scan(
         .num_threads(options.workers.unwrap_or_else(default_workers))
         .build()
         .context("creating scoring worker pool")?;
+    let worker_count = pool.current_num_threads();
     let thumb_root = options.generate_thumbnails.then_some(thumbs_dir.clone());
     let scoring_start = Instant::now();
     let scored = AtomicUsize::new(0);
@@ -206,7 +207,7 @@ pub async fn run_scan(
         benchmark("clustering_and_ranking", clustering_ms, Some(assets.len())),
     ];
 
-    let acceleration = acceleration_report(options.acceleration);
+    let acceleration = acceleration_report(options.acceleration, worker_count, &assets);
     let mut detector = detector_report(options.detector);
     let mut detector_usage = BTreeMap::new();
     for asset in &assets {
@@ -1083,9 +1084,44 @@ fn default_workers() -> usize {
         .clamp(1, 8)
 }
 
-fn acceleration_report(requested: AccelerationPreference) -> AccelerationReport {
-    let mut capabilities = vec![format!("rayon_cpu_workers:{}", default_workers())];
-    let mut notes = vec!["CPU/Rayon scoring remains the fallback for every platform.".to_string()];
+fn acceleration_report(
+    requested: AccelerationPreference,
+    worker_count: usize,
+    assets: &[AssetRecord],
+) -> AccelerationReport {
+    let mut capabilities = vec![
+        format!("rayon_cpu_workers:{worker_count}"),
+        "cpu_scalar_focus_scoring".to_string(),
+    ];
+    let mut notes = vec![
+        "Portable scalar focus scoring and Rayon asset workers remain available on every platform."
+            .to_string(),
+    ];
+    #[cfg(all(
+        target_os = "linux",
+        feature = "avx2-accel",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
+    {
+        capabilities.push("avx2_focus_scoring_compiled".to_string());
+        if auto_cpu_backend() == "cpu_avx2" {
+            capabilities.push("avx2_focus_scoring".to_string());
+        } else {
+            notes.push(
+                "The AVX2 scorer is compiled in, but this CPU does not advertise AVX2; scalar scoring will be used."
+                    .to_string(),
+            );
+        }
+    }
+    #[cfg(all(
+        target_os = "linux",
+        feature = "avx2-accel",
+        not(any(target_arch = "x86", target_arch = "x86_64"))
+    ))]
+    notes.push(
+        "The avx2-accel feature is enabled, but this Linux architecture has no AVX2 implementation; scalar scoring will be used."
+            .to_string(),
+    );
     #[cfg(all(target_os = "macos", feature = "metal-accel"))]
     let metal_available = crate::metal_accel::is_available();
     #[cfg(not(all(target_os = "macos", feature = "metal-accel")))]
@@ -1105,29 +1141,109 @@ fn acceleration_report(requested: AccelerationPreference) -> AccelerationReport 
     } else if cfg!(all(target_os = "macos", feature = "metal-accel")) {
         notes.push("Metal acceleration is compiled in but no usable Metal scorer initialized; CPU/Rayon will be used.".to_string());
     }
-    let selected = match requested {
-        AccelerationPreference::Cpu => "cpu_rayon",
-        AccelerationPreference::Auto if metal_available => "metal_focus_cpu_rest",
-        AccelerationPreference::Auto => "cpu_rayon",
-        AccelerationPreference::Metal => {
-            if metal_available {
-                "metal_focus_cpu_rest"
-            } else {
-                if cfg!(all(target_os = "macos", feature = "metal-accel")) {
-                    notes.push("Metal was requested but no usable Metal scorer initialized at runtime; falling back to CPU/Rayon.".to_string());
-                } else {
-                    notes.push("Metal was requested but this build cannot compile the Metal scorer on the current platform.".to_string());
+
+    #[cfg(all(target_os = "linux", feature = "cuda-accel"))]
+    {
+        capabilities.push("cuda_focus_scoring_compiled".to_string());
+        if requested == AccelerationPreference::Cuda {
+            let status = crate::cuda_accel::status();
+            if status.available {
+                capabilities.push("cuda_focus_scoring".to_string());
+                if let Some(device_name) = status.device_name {
+                    capabilities.push(format!("cuda_device:{device_name}"));
                 }
-                "cpu_rayon"
             }
+            if let Some(note) = status.note {
+                notes.push(note);
+            }
+        } else if requested == AccelerationPreference::Auto {
+            notes.push(
+                "CUDA is opt-in while runtime parity and throughput validation is pending; pass --acceleration cuda to request it."
+                    .to_string(),
+            );
         }
-        AccelerationPreference::Cuda => {
-            notes.push("CUDA was requested; falling back to CPU because no CUDA scorer adapter is bundled yet.".to_string());
-            "cpu_rayon"
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "cuda-accel")))]
+    if requested == AccelerationPreference::Cuda {
+        notes.push(
+            "CUDA was requested, but this binary was built without Linux CUDA support; CPU fallback was used."
+                .to_string(),
+        );
+    }
+
+    if requested == AccelerationPreference::Metal && !metal_available {
+        if cfg!(all(target_os = "macos", feature = "metal-accel")) {
+            notes.push("Metal was requested but no usable Metal scorer initialized at runtime; falling back to native CPU scoring.".to_string());
+        } else {
+            notes.push("Metal was requested but this build cannot compile the Metal scorer on the current platform; native CPU fallback was used.".to_string());
         }
-        AccelerationPreference::OpenCl => {
-            notes.push("OpenCL was requested; falling back to CPU because no OpenCL scorer adapter is bundled yet.".to_string());
-            "cpu_rayon"
+    }
+    if requested == AccelerationPreference::OpenCl {
+        notes.push(
+            "OpenCL was requested, but no OpenCL adapter is bundled; native CPU fallback was used."
+                .to_string(),
+        );
+    }
+    if requested == AccelerationPreference::Avx2 && auto_cpu_backend() != "cpu_avx2" {
+        notes.push(
+            "AVX2 was requested but is unavailable at runtime; portable scalar scoring was used."
+                .to_string(),
+        );
+    }
+
+    let mut usage = BTreeMap::new();
+    for asset in assets {
+        let backend = asset
+            .feature_backend
+            .split("+refined_")
+            .next()
+            .unwrap_or_default();
+        if !backend.is_empty() {
+            *usage.entry(backend.to_string()).or_insert(0usize) += 1;
+        }
+    }
+    notes.push(format!(
+        "Final per-asset focus backend usage: {}.",
+        if usage.is_empty() {
+            "none".to_string()
+        } else {
+            usage
+                .iter()
+                .map(|(backend, count)| format!("{backend}={count}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
+
+    let cuda_count = usage.get("cuda").copied().unwrap_or(0);
+    let metal_count = usage.get("metal").copied().unwrap_or(0);
+    let cpu_count = usage
+        .iter()
+        .filter(|(backend, _)| backend.starts_with("cpu_"))
+        .map(|(_, count)| *count)
+        .sum::<usize>();
+    let selected = if cuda_count > 0 {
+        if cpu_count > 0 {
+            "cuda_focus_with_cpu_fallback"
+        } else {
+            "cuda_focus_cpu_rest"
+        }
+    } else if metal_count > 0 {
+        if cpu_count > 0 {
+            "metal_focus_with_cpu_fallback"
+        } else {
+            "metal_focus_cpu_rest"
+        }
+    } else if usage.contains_key("cpu_avx2") {
+        "cpu_avx2_rayon"
+    } else if usage.contains_key("cpu_scalar") || usage.contains_key("cpu_small_image") {
+        "cpu_scalar_rayon"
+    } else {
+        match requested {
+            AccelerationPreference::Cpu => "cpu_scalar_rayon",
+            _ if auto_cpu_backend() == "cpu_avx2" => "cpu_avx2_rayon",
+            _ => "cpu_scalar_rayon",
         }
     };
     AccelerationReport {
@@ -1135,6 +1251,18 @@ fn acceleration_report(requested: AccelerationPreference) -> AccelerationReport 
         selected: selected.to_string(),
         capabilities,
         notes,
+    }
+}
+
+fn auto_cpu_backend() -> &'static str {
+    #[cfg(all(target_os = "linux", feature = "avx2-accel"))]
+    {
+        crate::cpu_accel::backend_name()
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "avx2-accel")))]
+    {
+        "cpu_scalar"
     }
 }
 

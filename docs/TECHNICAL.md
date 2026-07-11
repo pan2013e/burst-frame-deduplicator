@@ -15,16 +15,26 @@
 ## Feature Flags
 
 ```toml
-default = ["macos-native"]
+default = ["macos-native", "linux-native"]
+linux-native = ["avx2-accel"]
+avx2-accel = []
+cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
 ```
 
-Use a portable CPU-only build with:
+The Apple dependencies are declared only for macOS targets, and CUDA dependencies only for Linux targets, so an ordinary `cargo build` does not try to link another platform's frameworks. Use a portable scalar CPU build with:
 
 ```bash
 cargo build --release --no-default-features
+```
+
+Build the Linux CLI with runtime-dispatched AVX2 but no CUDA adapter, or with the dynamically loaded CUDA adapter, using:
+
+```bash
+cargo build --release --no-default-features --features linux-native
+cargo build --release --no-default-features --features cuda-accel
 ```
 
 The Rust package has no windowing dependency. Build the Apple Silicon macOS application separately with `scripts/build_macos_app.sh`; GUI support on other operating systems is planned. CUDA is not available on macOS, and deprecated/limited OpenCL is not an Apple Silicon backend target.
@@ -109,17 +119,19 @@ EXIF extraction is scan-time work. New manifests include capture time plus compa
 
 JPEG files use scaled-DCT decoding when supported, with `image-rs` as a compatibility fallback. Feature extraction uses an 8-bit grayscale buffer and histogram quantiles rather than cloned `f64` buffers and repeated sorts.
 
-Metal currently accelerates focus metrics only. The kernel reduces within GPU threadgroups and returns compact partial sums. Saliency, descriptors, clustering, and ranking remain CPU-side.
+Linux exposes the CPU choice explicitly. `--acceleration cpu` runs the portable scalar reference, `--acceleration avx2` requests the runtime-checked AVX2 Laplacian/Tenengrad kernel, and `auto` selects AVX2 when both the build and x86 CPU support it. The AVX2 implementation remains in the native root crate and is parity-tested against `burst-core`; non-AVX2 CPUs use the scalar reference.
+
+Metal and CUDA accelerate whole-frame focus metrics only. Both kernels reduce Laplacian and gradient sums into compact partial results; CUDA uses per-call streams, `f64` partials, a process-cached driver/CUDA 12 NVRTC module, and dynamic library loading. CUDA is selected only by explicit `--acceleration cuda` while device parity and throughput testing is pending. Missing libraries, unavailable devices, initialization failures, or per-frame failures disable CUDA for the process and fall back to the best available CPU scorer. Saliency, descriptors, subject focus, clustering, and ranking remain CPU-side.
 
 The native settings workload bar is intentionally an estimate, not telemetry. It combines preview/refinement pixel area, candidates per stack, detector cost, and acceleration choice, normalized against logical CPU count, physical memory, and Metal availability. The About window reports runtime hardware/OS diagnostics plus build-time commit, Rust, Swift, and Apple toolchain versions injected into `Info.plist` by the packaging script.
 
-Platform acceleration remains isolated behind Rust feature gates and `cfg(target_os = "macos")`. Adding CUDA, OpenVINO, or another future backend should implement the existing selection/report contract, provide a CPU fallback, and record actual selection and notes in `manifest.json`; it must not introduce CUDA or OpenCL claims for Apple Silicon macOS.
+Platform acceleration remains isolated behind Rust feature gates and target `cfg` checks. The final manifest derives acceleration selection from per-asset backend usage and records the actual Rayon worker count, compiled/runtime capabilities, and fallback notes. Future backends must preserve that contract and must not introduce CUDA or OpenCL claims for Apple Silicon macOS.
 
 ## Detector Backends
 
 | Detector | Behavior |
 | --- | --- |
-| `heuristic` | Uses local saliency, border contact, and object-like edge concentration. |
+| `heuristic` | Uses the portable two-resolution local-saliency algorithm, border contact, and object-like edge concentration. This is the self-contained Linux detector and the fallback on every platform. |
 | `vision` | Uses macOS Vision objectness saliency for advisory completeness/quality metrics, with per-frame heuristic fallback. Stable compact saliency remains responsible for duplicate descriptors. |
 | `off` | Disables detector output and keeps deterministic scoring metrics only. |
 
@@ -147,7 +159,7 @@ The static application performs verified copy/remove/restore only when the sourc
 
 ## Binary CI And Releases
 
-`.github/workflows/binaries.yml` builds a portable Linux x86_64 CLI on Ubuntu 24.04 and an Apple Silicon CLI/app/DMG on macOS 26. The macOS 26 SDK is required to compile the availability-gated Liquid Glass and Metal 4 code while the application deployment target remains macOS 14. The Linux job disables macOS features, runs the standalone-resource smoke test, and packages notices. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
+`.github/workflows/binaries.yml` builds a Linux x86_64 CLI with explicit scalar, runtime-dispatched AVX2, and dynamically loaded CUDA focus paths on Ubuntu 24.04, plus an Apple Silicon CLI/app/DMG on macOS 26. The Linux job also tests the no-default-feature portable build, compile-checks CUDA without requiring a GPU, runs the standalone-resource smoke test, and packages notices. The macOS 26 SDK is required to compile the availability-gated Liquid Glass and Metal 4 code while the application deployment target remains macOS 14. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
 
 Pushes and pull requests that contain non-documentation changes, plus manual runs, upload short-lived Actions artifacts. The binary workflow ignores changes confined to `docs/**` and Markdown files. Tag pushes are deliberately not path-filtered: a `v*` tag runs both package jobs, downloads their artifacts into `publish-release`, and creates or updates a GitHub Release. The release job's `startsWith(github.ref, 'refs/tags/v')` condition means GitHub displays it as **skipped** on branch, pull-request, and branch-based manual runs; that is expected.
 

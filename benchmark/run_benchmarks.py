@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ BIN = ROOT / "target" / "release" / "burst-frame-deduplicator"
 CARGO = os.environ.get("CARGO") or shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
 
 
-CASES = [
+DARWIN_CASES = [
     ("balanced_cpu", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
     ("balanced_metal", "Balanced", ["--acceleration", "metal", "--detector", "heuristic"]),
     ("balanced_vision", "Balanced", ["--acceleration", "metal", "--detector", "vision"]),
@@ -54,6 +55,58 @@ CASES = [
     ),
 ]
 
+LINUX_CASES = [
+    ("balanced_scalar", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
+    ("balanced_avx2", "Balanced", ["--acceleration", "avx2", "--detector", "heuristic"]),
+    (
+        "best_quality_avx2",
+        "Best Quality",
+        [
+            "--preview-size", "2048",
+            "--refine-size", "4096",
+            "--refine-candidates-per-cluster", "4",
+            "--max-duplicate-distance", "0.20",
+            "--min-duplicate-confidence", "0.60",
+            "--acceleration", "avx2",
+            "--detector", "heuristic",
+        ],
+    ),
+    (
+        "faster_avx2",
+        "Faster",
+        [
+            "--preview-size", "960",
+            "--refine-size", "1536",
+            "--refine-candidates-per-cluster", "1",
+            "--acceleration", "avx2",
+            "--detector", "heuristic",
+        ],
+    ),
+]
+
+
+def is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def benchmark_cases() -> list[tuple[str, str, list[str]]]:
+    return LINUX_CASES if is_linux() else DARWIN_CASES
+
+
+def report_path() -> Path:
+    return RESULTS / ("latest-linux.md" if is_linux() else "latest.md")
+
+
+def platform_name() -> str:
+    if sys.platform == "darwin":
+        system = "macOS"
+    elif is_linux():
+        system = "Linux"
+    else:
+        system = platform.system() or sys.platform
+    machine = platform.machine()
+    return f"{system} ({machine})" if machine else system
+
 
 def main() -> None:
     prepare_fixture()
@@ -67,7 +120,7 @@ def main() -> None:
     RESULTS.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for name, quality, options in CASES:
+    for name, quality, options in benchmark_cases():
         out = RUNS / name
         if out.exists():
             shutil.rmtree(out)
@@ -133,6 +186,8 @@ def write_markdown(rows: list[dict]) -> None:
         "",
         f"Generated: {now}",
         "",
+        f"Platform: {platform_name()}",
+        "",
         "Dataset: `benchmark/assets/original_burst_frames.zip` unpacked to `benchmark/work/original_burst_frames` (120 metadata-stripped original-resolution aircraft/sky JPEG frames).",
         "",
         "Accuracy labels: `benchmark/accuracy_labels.json`.",
@@ -161,16 +216,19 @@ def write_markdown(rows: list[dict]) -> None:
         )
     lines.append("")
     lines.append("Raw run artifacts are intentionally ignored because manifests contain absolute local paths.")
-    (RESULTS / "latest.md").write_text("\n".join(lines) + "\n")
-    print(RESULTS / "latest.md")
+    output = report_path()
+    output.write_text("\n".join(lines) + "\n")
+    print(output)
 
 
 def run_scan(cmd: list[str]) -> float:
-    if sys.platform != "darwin" or not Path("/usr/bin/time").exists():
+    time = Path("/usr/bin/time")
+    if not time.exists() or (sys.platform != "darwin" and not is_linux()):
         subprocess.run(cmd, cwd=ROOT, check=True)
         return 0.0
+    time_options = ["-v"] if is_linux() else ["-l"]
     completed = subprocess.run(
-        ["/usr/bin/time", "-l", *cmd],
+        [str(time), *time_options, *cmd],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -180,7 +238,16 @@ def run_scan(cmd: list[str]) -> float:
     if completed.stderr:
         print(completed.stderr, end="", file=sys.stderr)
     completed.check_returncode()
-    match = re.search(r"^\s*(\d+)\s+maximum resident set size$", completed.stderr, re.MULTILINE)
+    if is_linux():
+        match = re.search(
+            r"^\s*Maximum resident set size \(kbytes\):\s*(\d+)\s*$",
+            completed.stderr,
+            re.MULTILINE,
+        )
+        return int(match.group(1)) / 1024 if match else 0.0
+    match = re.search(
+        r"^\s*(\d+)\s+maximum resident set size$", completed.stderr, re.MULTILINE
+    )
     return int(match.group(1)) / (1024 * 1024) if match else 0.0
 
 
