@@ -1,0 +1,5 @@
+module CBurstFrameDeduplicator [system] {
+    header "include/burst_frame_deduplicator.h"
+    link "burst_frame_deduplicator"
+    export *
+}

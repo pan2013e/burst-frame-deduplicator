@@ -2,47 +2,39 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PACKAGE="$ROOT/macos/BurstFrameDeduplicatorApp"
 APP="$ROOT/target/macos/Burst Frame Deduplicator.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
+FRAMEWORKS="$CONTENTS/Frameworks"
+RESOURCES="$CONTENTS/Resources"
+CARGO="${CARGO:-$(command -v cargo || true)}"
+
+if [[ -z "$CARGO" && -x "$HOME/.cargo/bin/cargo" ]]; then
+  CARGO="$HOME/.cargo/bin/cargo"
+fi
+if [[ -z "$CARGO" ]]; then
+  printf 'cargo was not found; set CARGO to its absolute path\n' >&2
+  exit 1
+fi
 
 cd "$ROOT"
-cargo build --release --features gui
+"$CARGO" build --release --lib
+install_name_tool -id @rpath/libburst_frame_deduplicator.dylib \
+  "$ROOT/target/release/libburst_frame_deduplicator.dylib"
+
+swift build -c release --package-path "$PACKAGE"
+SWIFT_BIN="$(swift build -c release --show-bin-path --package-path "$PACKAGE")"
 
 rm -rf "$APP"
-mkdir -p "$MACOS"
-cp "$ROOT/target/release/burst-frame-deduplicator" "$MACOS/burst-frame-deduplicator"
+mkdir -p "$MACOS" "$FRAMEWORKS" "$RESOURCES/locales"
+cp "$SWIFT_BIN/BurstFrameDeduplicator" "$MACOS/BurstFrameDeduplicator"
+cp "$ROOT/target/release/libburst_frame_deduplicator.dylib" "$FRAMEWORKS/"
+cp "$PACKAGE/Info.plist" "$CONTENTS/Info.plist"
+cp "$ROOT/locales/en.json" "$ROOT/locales/zh-CN.json" "$RESOURCES/locales/"
 
-cat > "$CONTENTS/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>en</string>
-  <key>CFBundleDisplayName</key>
-  <string>Burst Frame Deduplicator</string>
-  <key>CFBundleExecutable</key>
-  <string>burst-frame-deduplicator</string>
-  <key>CFBundleIdentifier</key>
-  <string>org.burstframe.deduplicator</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>Burst Frame Deduplicator</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
-  <key>CFBundleVersion</key>
-  <string>1</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>12.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-</dict>
-</plist>
-PLIST
+codesign --force --sign - "$FRAMEWORKS/libburst_frame_deduplicator.dylib"
+codesign --force --sign - "$MACOS/BurstFrameDeduplicator"
+codesign --force --sign - "$APP"
 
-codesign --force --deep --sign - "$APP"
 printf 'Built %s\n' "$APP"
