@@ -7,7 +7,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 ## Implementation Rules
 
 - Keep all source-photo operations non-destructive by default. Scans may read source files and write artifacts under the selected output directory, but must not delete, rename, or move source files.
-- Any source-folder mutator must be explicit and confirmed. The web move operation must copy final rejects into a local run-directory folder, verify the copied size, then remove the original source file. Generated helper scripts must move rejects into a local run-directory folder, not `/tmp` or the source card.
+- Any source-folder mutator must be explicit and confirmed. Move operations must copy each grouped asset into the run folder by default, or into an explicit user-selected local destination, verify every copied size, then remove the original files as one recoverable transaction. Never use `/tmp` or a destination inside the source folder/card. Persist enough state to restore moved files to their original paths.
 - Treat same-basename RAW/JPEG files as one asset. Decisions must apply to the grouped asset and its sidecars together.
 - Keep temporal bursts and near-duplicate stacks as separate concepts. Filename/time heuristics form parent bursts; subject-aware visual comparison forms culling stacks.
 - Never suggest reject solely because a frame ranks below a fixed keeper count. Automatic reject requires duplicate confidence at or above the configured threshold; uncertain matches must remain review items.

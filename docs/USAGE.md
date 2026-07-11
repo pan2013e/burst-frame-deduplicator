@@ -38,7 +38,7 @@ open "target/macos/Burst Frame Deduplicator.app"
 
 Choose the photo folder, optionally choose a run folder, and start the scan. If the run folder is left blank, the app creates a timestamped folder under `~/Pictures/Burst Frame Deduplicator Runs`. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
 
-Use the `English` / `简体中文` control to change language without restarting or losing review state.
+Change the app language in **Settings > General**. The review state remains intact. The macOS 26 build uses the system Liquid Glass treatment for navigation and primary commands; earlier supported macOS versions retain native system controls.
 
 For development, the Swift package can also be built directly after the Rust dynamic library exists:
 
@@ -77,11 +77,13 @@ python3 -m http.server 4173 --directory web/dist
 
 Open `http://127.0.0.1:4173` and select a folder. The page reports the current stage, frame, and overall percentage while it decodes and scores previews; `Cancel` stops the run and releases partial previews. Everything runs locally in the browser. Browser formats use built-in decoding; RAW-only assets use the bundled LibRaw-WASM worker. The Rust WASM module performs subject scoring, burst grouping, posture-aware stack separation, and recommendation ranking.
 
-The static edition supports English and Simplified Chinese, preselected decisions, filtering, stack collapse/expand, RAW EXIF supplied by LibRaw, full-image preview, arrow navigation, zoom/pan, and JSON review export.
+The static edition supports English and Simplified Chinese, preselected decisions, filtering, stack collapse/expand, RAW EXIF supplied by LibRaw, full-image preview, arrow navigation, zoom/pan, review JSON export, and generated move scripts.
 
 ![Static browser edition reviewing a synthetic two-posture burst](assets/usage-browser-edition.png)
 
-Browser security does not allow the same verified source-file move operation as the native application. The static edition never modifies selected files; `Save review` downloads a JSON decision list instead. It also uses CPU/WASM preview scoring and does not provide Metal/Vision or native high-resolution refinement.
+When a Chromium-style browser supplies read-write File System Access handles, `Save review` can copy, size-check, and move grouped files to a selected local folder, then restore them during the same browser session. A normal folder upload exposes read-only handles instead; in that case, direct move is disabled and the modal provides review JSON plus macOS/Linux and Windows scripts.
+
+Browser-only analysis is not quality-equivalent to the native pipeline. It has no native EXIF/filesystem metadata fallback, Rayon, Metal, Vision saliency, or second high-resolution refinement pass. RAW uses LibRaw-WASM's bounded preview decode, and browser decoder behavior varies by format. On the included 120-frame aircraft fixture, the current browser path reaches `95.5%` reviewed pair accuracy and `100%` posture-phase coverage, while the native balanced and best-quality paths reach `100%` on both labels. Use native **Best Quality** for distant aircraft, birds, or other small subjects.
 
 The repository’s Pages workflow deploys `web/dist` automatically after GitHub Pages is configured with **GitHub Actions** as its source.
 
@@ -137,7 +139,7 @@ Each card represents one asset. A RAW+JPEG pair with the same basename is treate
 
 Stacks are sorted with expanded stacks first. A stack collapses automatically when all frames inside it are kept, and you can manually collapse or expand it with the button on the right side of the header. Headers show both the temporal burst and stack numbers.
 
-Use the language selector in the toolbar to switch between English and Simplified Chinese without losing review decisions.
+The compact `文/A` menu switches between English and Simplified Chinese without losing review decisions. In the native app, language is kept in the separate Settings window.
 
 ## Inspecting An Image
 
@@ -157,7 +159,7 @@ The native app loads normal compressed formats from the original path on demand.
 
 The local browser review first tries the bundled LibRaw-WASM decoder for RAW-only images. Its decoded blob cache has a bounded memory budget, and the local server can fall back to generating a JPEG preview. The static WASM edition uses the same local LibRaw worker but has no native fallback.
 
-If the source path is no longer available, for example because the SD card was ejected, the viewer shows an error instead of silently changing the decision.
+If the source path is no longer available, for example because the SD card was ejected, the viewer shows an error instead of silently changing the decision. Already generated thumbnails and review decisions remain usable; a moved image can also be previewed from its recorded destination.
 
 ## Saving Decisions
 
@@ -167,7 +169,7 @@ Checkbox changes are saved to `review_state.json` as you make them. The native a
 cargo run --release -- export --run runs/run_YYYYMMDD_HHMMSS
 ```
 
-Generated artifacts include:
+`Save review` in the local web interface opens a summary modal with keep/reject/review/moved counts, operating-system-specific move scripts, review JSON export, and confirmed move/restore actions. Generated artifacts include:
 
 - `keepers.csv`
 - `rejects.csv`
@@ -181,16 +183,35 @@ These files live inside the run directory.
 
 ## Moving Rejects
 
-`Move rejects` is intentionally a separate confirmed operation. It asks for confirmation before moving anything.
+`Move rejects` is intentionally a separate confirmed operation. The default destination is inside the run folder, and the native app or local review page can use another non-temporary local folder outside the source card.
 
 When confirmed, the app:
 
-1. Copies each rejected source file into `moved_rejects/` under the run directory.
-2. Verifies copied file size.
-3. Removes the original source file only after the copy check passes.
-4. Writes a move report under the run directory.
+1. Preflights every RAW, JPEG, sidecar, source path, and destination path in an asset group.
+2. Copies the complete group and verifies every byte count.
+3. Removes originals only after the complete group passes verification.
+4. Records original and destination paths in `move_state.json` and writes a move report.
 
-The destination is local to the run directory, not `/tmp`, so ordinary temporary-file cleaners should not remove it. Review `moved_rejects/` yourself before deleting it permanently.
+Moved cards use a distinct **Moved** status. `Restore moved` returns complete asset groups to their recorded original paths after checking that the source card/folder is connected and no same-name file now occupies a path. The app never recreates an unavailable mounted volume.
+
+Do not remove a run directory that still contains moved rejects or an active restore journal. **Settings > Storage** calculates previous-run usage and warns again before removing such data. Custom move destinations remain outside the cache, but removing their journal prevents one-click restore.
+
+## Best-Quality Scan
+
+For small or distant subjects, choose **Best Quality (Recommended)** under **Settings > Analysis**, or use the equivalent CLI options:
+
+```bash
+cargo run --release -- scan /path/to/photos \
+  --preview-size 2048 \
+  --refine-size 4096 \
+  --refine-candidates-per-cluster 4 \
+  --max-duplicate-distance 0.18 \
+  --min-duplicate-confidence 0.60 \
+  --acceleration metal \
+  --detector vision
+```
+
+This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. The benchmark fixture retained `100%` reviewed pair accuracy and posture coverage at `3.29` assets/sec with about `1.89 GB` peak RSS. Use Balanced when turnaround matters more than the additional small-subject margin.
 
 ## Useful Scan Options
 
@@ -224,6 +245,8 @@ Common options:
 The scan is the heavy phase. It walks the folder, decodes images, extracts EXIF, scores quality, runs detector/refinement work, generates thumbnails, clusters bursts, and writes artifacts.
 
 The WebUI is light by default. It loads the manifest and thumbnails first. Full-resolution images and RAW previews are loaded only when you open an image.
+
+The original source folder must be available throughout discovery, decode, scoring, and a move or restore operation. It may be disconnected while reviewing cached thumbnails and decisions. If a move is requested while the source is unavailable, the app leaves all files untouched and asks you to reconnect the source.
 
 ## Customizing Language Files
 

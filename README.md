@@ -20,10 +20,10 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 
 | Interface | Best for | Scan engine | Review experience |
 | --- | --- | --- | --- |
-| Native macOS app | Normal interactive use | Shared Rust native backend through C FFI | Native SwiftUI grid and image viewer |
+| Native macOS app | Normal interactive use | Shared Rust native backend through C FFI | Native SwiftUI grid, settings, and responsive image viewer |
 | Headless CLI | Automation and large cards | Rust, Rayon, optional Metal/Vision | Artifacts only, or serve later |
 | CLI `app` command | Terminal users who want immediate review | Rust, Rayon, optional Metal/Vision | Local browser UI |
-| Static WASM app | GitHub Pages and installation-free use | Portable Rust scorer in-browser | Browser UI; JSON export only |
+| Static WASM app | GitHub Pages and installation-free use | Portable Rust scorer in-browser | Browser UI; JSON/script export and conditional local moves |
 
 ## Native macOS App
 
@@ -34,7 +34,7 @@ Requires macOS 14 or newer, Rust, and the Swift toolchain from Xcode Command Lin
 open "target/macos/Burst Frame Deduplicator.app"
 ```
 
-The app chooses source/output folders, shows weighted stage progress, runs the same Rust pipeline as the CLI, and opens the review grid inside the app. Review decisions are persisted immediately. RAW previews are decoded on demand and cached under the run directory.
+The app chooses source/output folders, shows weighted stage progress, runs the same Rust pipeline as the CLI, and opens the review grid inside the app. Review decisions are persisted immediately. RAW previews are decoded on demand and cached under the run directory. On macOS 26, standard navigation and command controls adopt Liquid Glass; macOS 14 and 15 use the corresponding native fallback styles.
 
 ## Command Line
 
@@ -61,7 +61,9 @@ cargo install wasm-pack --version 0.15.0 --locked
 python3 -m http.server 4173 --directory web/dist
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. Browser formats use `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker. The static edition cannot perform verified source-file moves, use Metal/Vision, or run native high-resolution refinement, so it exports a JSON review instead.
+Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. The decoder runs bounded parallel jobs, prefers scaled WebCodecs when the browser exposes it, and falls back to `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker.
+
+The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. It does not use Metal, Vision, Rayon, or native high-resolution refinement.
 
 The GitHub Pages workflow builds the same static directory.
 
@@ -91,11 +93,13 @@ rustup toolchain install stable
 | --- | --- | --- | --- | --- | --- |
 | Headless CLI | Supported | Supported | Supported | Supported | Supported |
 | Native SwiftUI GUI | Supported (macOS 14+) | Supported (macOS 14+) | Planned | Planned | Planned |
+| macOS 26 Liquid Glass controls | Supported | Supported | Not available | Not available | Not available |
 | Static WASM scan/review | Supported | Supported | Supported | Supported | Supported |
 | JPEG/PNG/TIFF/WebP decode | Supported | Supported | Supported | Supported | Supported |
 | RAW via ImageMagick | Supported | Supported | Supported | Supported | Supported |
 | RAW via macOS `sips` | Supported | Supported | Not available | Not available | Not available |
 | Browser RAW via LibRaw-WASM | Supported | Supported | Supported | Supported | Supported |
+| Confirmed move + restore | Native and Chromium-style browsers | Native and Chromium-style browsers | Chromium-style browsers | Chromium-style browsers | Chromium-style browsers |
 | CPU/Rayon scoring | Supported | Supported | Supported | Supported | Supported |
 | Metal focus scoring | Supported | Supported when a Metal device exists | Not available | Not available | Not available |
 | macOS Vision detector | Supported | Supported | Not available | Not available | Not available |
@@ -115,7 +119,7 @@ BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicat
 
 ## Safety
 
-Scanning is read-only for source photos. A reject move is a separate confirmed action: it copies files to `moved_rejects/` inside the run directory, verifies copied sizes, and only then removes originals. The app exposes no permanent-delete control.
+Scanning is read-only for source photos. A reject move is a separate confirmed action: it copies every file in a grouped asset, verifies copied sizes, and only then removes originals. The default destination is `moved_rejects/` inside the run directory; the user may choose another non-temporary local folder outside the source card. A durable move journal enables restore. The app exposes no permanent-delete control.
 
 ## Benchmarks
 
