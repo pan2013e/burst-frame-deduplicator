@@ -1,8 +1,8 @@
+use std::fs;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs, io};
 
 use anyhow::Context;
 use axum::body::Body;
@@ -12,7 +12,6 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Local;
 use image::{DynamicImage, ImageFormat};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -23,6 +22,8 @@ use crate::artifacts::{
 };
 use crate::assets::is_raw_extension;
 use crate::decode::load_preview;
+use crate::locales::read_locale;
+use crate::operations::{MoveRejectsResponse, move_rejects};
 use crate::types::{ReviewState, RunManifest, UserDecision};
 
 const RAW_BROWSER_PREVIEW_SIZE: u32 = 2400;
@@ -54,21 +55,6 @@ struct DecisionRequest {
 #[derive(Deserialize)]
 struct MoveRejectsRequest {
     confirm: bool,
-}
-
-#[derive(Serialize)]
-struct MoveRejectsResponse {
-    destination: PathBuf,
-    moved_files: usize,
-    moved_assets: usize,
-    missing_files: Vec<String>,
-    failed_files: Vec<MoveFailure>,
-}
-
-#[derive(Serialize)]
-struct MoveFailure {
-    source: String,
-    error: String,
 }
 
 pub async fn serve(run_dir: PathBuf, addr: SocketAddr) -> anyhow::Result<()> {
@@ -104,6 +90,7 @@ where
         .route("/api/source/{id}", get(api_source))
         .route("/api/preview/{id}", get(api_preview))
         .route("/api/move-rejects", post(api_move_rejects))
+        .route("/locales/{file}", get(locale_file))
         .route("/thumbs/{file}", get(thumb))
         .route("/vendor/libraw-wasm/{file}", get(vendor_libraw_wasm))
         .layer(middleware::from_fn(cross_origin_isolation_headers))
@@ -306,79 +293,9 @@ async fn api_move_rejects(
     State(state): State<AppState>,
     Json(request): Json<MoveRejectsRequest>,
 ) -> Result<Json<MoveRejectsResponse>, Response> {
-    if !request.confirm {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Move requires explicit confirmation.",
-        )
-            .into_response());
-    }
-
-    let manifest = state.inner.manifest.lock().clone();
-    let review = state.inner.review.lock().clone();
-    let destination = state
-        .inner
-        .run_dir
-        .join("moved_rejects")
-        .join(Local::now().format("%Y%m%d_%H%M%S").to_string());
-    fs::create_dir_all(&destination).map_err(|err| {
-        internal_error(anyhow::anyhow!(
-            "creating move destination {}: {err}",
-            destination.display()
-        ))
-    })?;
-
-    let mut moved_files = 0usize;
-    let mut moved_assets = 0usize;
-    let mut missing_files = Vec::new();
-    let mut failed_files = Vec::new();
-
-    for asset in &manifest.assets {
-        if final_action_for_asset(asset, &review) != UserDecision::Reject {
-            continue;
-        }
-        let mut asset_moved = false;
-        for file in asset.files.iter().chain(asset.sidecars.iter()) {
-            if !file.path.exists() {
-                missing_files.push(file.path.display().to_string());
-                continue;
-            }
-            let target = unique_target(&destination.join(&file.rel_path));
-            match move_file_verified(&file.path, &target) {
-                Ok(()) => {
-                    moved_files += 1;
-                    asset_moved = true;
-                }
-                Err(err) => failed_files.push(MoveFailure {
-                    source: file.path.display().to_string(),
-                    error: err.to_string(),
-                }),
-            }
-        }
-        if asset_moved {
-            moved_assets += 1;
-        }
-    }
-
-    let response = MoveRejectsResponse {
-        destination: destination.clone(),
-        moved_files,
-        moved_assets,
-        missing_files,
-        failed_files,
-    };
-    let report_path = state
-        .inner
-        .run_dir
-        .join("move_reports")
-        .join(format!("{}.json", Local::now().format("%Y%m%d_%H%M%S")));
-    if let Some(parent) = report_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(file) = fs::File::create(report_path) {
-        let _ = serde_json::to_writer_pretty(file, &response);
-    }
-    Ok(Json(response))
+    move_rejects(&state.inner.run_dir, request.confirm)
+        .map(Json)
+        .map_err(internal_error)
 }
 
 async fn thumb(State(state): State<AppState>, Path(file): Path<String>) -> Response {
@@ -388,6 +305,20 @@ async fn thumb(State(state): State<AppState>, Path(file): Path<String>) -> Respo
     let path = state.inner.run_dir.join("thumbs").join(file);
     match std::fs::read(&path) {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn locale_file(Path(file): Path<String>) -> Response {
+    let Some(code) = file.strip_suffix(".json") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match read_locale(code) {
+        Ok(bytes) => (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            bytes,
+        )
+            .into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -425,70 +356,12 @@ fn is_browser_image_ext(extension: &str) -> bool {
     )
 }
 
-fn final_action_for_asset(asset: &crate::types::AssetRecord, review: &ReviewState) -> UserDecision {
-    if let Some(decision) = review
-        .decisions
-        .iter()
-        .find(|decision| decision.asset_id == asset.id)
-        .and_then(|decision| decision.decision)
-    {
-        return decision;
-    }
-    match asset.suggestion.action {
-        crate::types::SuggestedAction::Keep => UserDecision::Keep,
-        crate::types::SuggestedAction::Reject => UserDecision::Reject,
-        crate::types::SuggestedAction::Review | crate::types::SuggestedAction::Error => {
-            UserDecision::Review
-        }
-    }
-}
-
-fn unique_target(path: &FsPath) -> PathBuf {
-    if !path.exists() {
-        return path.to_path_buf();
-    }
-    let parent = path.parent().unwrap_or_else(|| FsPath::new(""));
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("file");
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-    for index in 1.. {
-        let file_name = if extension.is_empty() {
-            format!("{stem}_{index}")
-        } else {
-            format!("{stem}_{index}.{extension}")
-        };
-        let candidate = parent.join(file_name);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
-fn move_file_verified(source: &FsPath, target: &FsPath) -> io::Result<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let source_len = fs::metadata(source)?.len();
-    fs::copy(source, target)?;
-    let target_len = fs::metadata(target)?.len();
-    if source_len != target_len {
-        return Err(io::Error::other(format!(
-            "copied size mismatch: source {source_len} bytes, target {target_len} bytes"
-        )));
-    }
-    fs::remove_file(source)?;
-    Ok(())
-}
-
 const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Burst Review</title>
+  <title></title>
   <style>
     :root {
       color-scheme: light dark;
@@ -805,24 +678,24 @@ const INDEX_HTML: &str = r#"<!doctype html>
 <body>
   <header>
     <div>
-      <h1 id="appTitle">Burst Review</h1>
+      <h1 id="appTitle"></h1>
       <div class="summary" id="root"></div>
     </div>
     <div class="toolbar">
-      <input id="search" type="search" placeholder="Find filename">
+      <input id="search" type="search">
       <select id="filter">
-        <option value="all">All frames</option>
-        <option value="review">Needs review</option>
-        <option value="keep">Kept</option>
-        <option value="reject">Rejected</option>
-        <option value="burst">Multi-frame stacks</option>
+        <option value="all"></option>
+        <option value="review"></option>
+        <option value="keep"></option>
+        <option value="reject"></option>
+        <option value="burst"></option>
       </select>
-      <select id="locale" aria-label="Language">
-        <option value="en">English</option>
-        <option value="zh-CN">简体中文</option>
+      <select id="locale">
+        <option value="en"></option>
+        <option value="zh-CN"></option>
       </select>
-      <button id="exportBtn" title="Write updated keep/reject review files">Save Review</button>
-      <button id="moveBtn" class="danger">Move rejects</button>
+      <button id="exportBtn"></button>
+      <button id="moveBtn" class="danger"></button>
     </div>
   </header>
   <main>
@@ -831,16 +704,16 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </main>
   <div class="viewer" id="viewer" aria-hidden="true" tabindex="-1">
     <div class="viewerbar">
-      <div class="title" id="viewerTitle">Full resolution</div>
-      <label class="viewer-keep"><input id="viewerKeepBox" type="checkbox"> <span id="viewerKeepText">Keep</span></label>
+      <div class="title" id="viewerTitle"></div>
+      <label class="viewer-keep"><input id="viewerKeepBox" type="checkbox"> <span id="viewerKeepText"></span></label>
       <button id="zoomOutBtn">-</button>
       <button id="zoomInBtn">+</button>
-      <button id="zoomResetBtn">Fit</button>
-      <button id="viewerCloseBtn">Close</button>
+      <button id="zoomResetBtn"></button>
+      <button id="viewerCloseBtn"></button>
     </div>
     <div class="viewport" id="viewport">
       <img id="viewerImg" alt="">
-      <div class="viewer-loading" id="viewerLoading" hidden><div class="spinner"></div><span id="viewerLoadingText">Loading preview</span></div>
+      <div class="viewer-loading" id="viewerLoading" hidden><div class="spinner"></div><span id="viewerLoadingText"></span></div>
       <div class="viewer-error" id="viewerError" hidden></div>
     </div>
   </div>
@@ -875,66 +748,27 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const browserImageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
     const RAW_PREVIEW_CACHE_MAX_BYTES = 128 * 1024 * 1024;
     const RAW_PREVIEW_CACHE_MAX_ITEMS = 24;
-    const i18n = {
-      en: {
-        title: 'Burst Review', source: 'Source', selectedFolder: 'selected folder', find: 'Find filename',
-        all: 'All frames', needsReview: 'Needs review', kept: 'Kept', rejected: 'Rejected', multi: 'Multi-frame stacks',
-        save: 'Save Review', saveTitle: 'Write updated keep/reject review files', moveRejects: count => `Move ${count} rejects`,
-        noRejects: 'No rejects', images: 'Images', bursts: 'Bursts', stacks: 'Stacks', keep: 'Keep', reject: 'Reject',
-        review: 'Review', manual: 'Manual edits', shown: (count, total) => count === total ? `${count} frames` : `${count} shown of ${total}`,
-        expanded: 'expanded', collapsed: 'collapsed', stackTitle: (burst, stack) => `Burst ${burst} · Stack ${stack}`,
-        stackSummary: (shown, status, keep, confidence) => `${shown} · ${status} · keep ${keep} · confidence ${confidence}`,
-        noPrefix: 'no prefix', collapseTitle: 'Collapse or expand stack', openTitle: 'Open full-resolution view',
-        openLabel: filename => `Open full-resolution view for ${filename}`, why: 'Why', reset: 'Reset to suggestion',
-        closeCall: 'Close call; inspect before moving rejects.', decodeFailed: 'Could not decode.',
-        duplicate: 'High-confidence near duplicate with a better frame in this stack.', distinct: 'Distinct frame.',
-        best: 'Best quality in this near-duplicate stack.', exifUnavailable: 'EXIF unavailable',
-        showMore: count => `Show ${count} more stacks`, noMatches: 'No frames match the current filter.',
-        rank: asset => `Rank ${asset.suggestion.rank}, score ${asset.suggestion.score.toFixed(3)}.`,
-        sharpness: asset => `Whole-frame sharpness ${asset.metrics.sharpness.toFixed(1)}, subject sharpness ${(asset.metrics.subject_sharpness || 0).toFixed(1)}, completeness ${asset.metrics.completeness.toFixed(2)}.`,
-        similarity: asset => `Nearest visual distance ${(asset.similarity?.nearest_distance || 0).toFixed(3)} (subject ${(asset.similarity?.nearest_subject_distance || 0).toFixed(3)}, scene ${(asset.similarity?.nearest_global_distance || 0).toFixed(3)}); duplicate confidence ${(asset.similarity?.duplicate_confidence || 0).toFixed(2)}.`,
-        backend: asset => `Feature backend: ${asset.feature_backend || 'unknown'}; decoder: ${asset.decoder || 'unknown'}.`,
-        detectorOff: 'Detector: not used', exposure: asset => `Exposure score ${asset.metrics.exposure_score.toFixed(2)}; clipped pixels ${(asset.metrics.clipped_fraction * 100).toFixed(2)}%.`,
-        rawPreview: 'RAW preview', fit: 'Fit', close: 'Close', loading: 'Loading preview',
-        previewUnavailable: 'Preview image could not be loaded. The source path may be inaccessible or unsupported.',
-        saveDone: 'Review files saved in the run directory.',
-        moveConfirm: count => `Move ${count} rejected asset(s) into a local folder under this run directory?\n\nThis copies each file, verifies the copy size, then removes the original from the source card/folder. You can delete the local moved_rejects folder yourself later.`,
-        moved: result => `Moved ${result.moved_files} file(s) from ${result.moved_assets} asset(s).\nDestination: ${result.destination}\nMissing: ${result.missing_files.length}\nFailed: ${result.failed_files.length}`,
-      },
-      'zh-CN': {
-        title: '连拍照片审核', source: '来源', selectedFolder: '所选文件夹', find: '查找文件名',
-        all: '全部照片', needsReview: '需要审核', kept: '保留', rejected: '不保留', multi: '多张相似组',
-        save: '保存审核结果', saveTitle: '写入更新后的保留与不保留审核文件', moveRejects: count => `移动 ${count} 个不保留项目`,
-        noRejects: '没有不保留项目', images: '照片', bursts: '连拍序列', stacks: '相似组', keep: '保留', reject: '不保留',
-        review: '待审核', manual: '手动修改', shown: (count, total) => count === total ? `${count} 张照片` : `显示 ${count} / ${total} 张`,
-        expanded: '已展开', collapsed: '已折叠', stackTitle: (burst, stack) => `连拍 ${burst} · 相似组 ${stack}`,
-        stackSummary: (shown, status, keep, confidence) => `${shown} · ${status} · 保留 ${keep} · 置信度 ${confidence}`,
-        noPrefix: '无前缀', collapseTitle: '折叠或展开相似组', openTitle: '打开全分辨率预览',
-        openLabel: filename => `打开 ${filename} 的全分辨率预览`, why: '详细原因', reset: '恢复建议',
-        closeCall: '结果较接近，请检查后再移动。', decodeFailed: '无法解码。',
-        duplicate: '这是高置信度近似照片，同组中有更好的画面。', distinct: '这是独特画面。',
-        best: '这是本相似组中质量最佳的照片。', exifUnavailable: '无 EXIF 信息',
-        showMore: count => `再显示 ${count} 个相似组`, noMatches: '没有照片符合当前筛选条件。',
-        rank: asset => `组内排名 ${asset.suggestion.rank}，分数 ${asset.suggestion.score.toFixed(3)}。`,
-        sharpness: asset => `全图清晰度 ${asset.metrics.sharpness.toFixed(1)}，主体清晰度 ${(asset.metrics.subject_sharpness || 0).toFixed(1)}，完整度 ${asset.metrics.completeness.toFixed(2)}。`,
-        similarity: asset => `最近视觉距离 ${(asset.similarity?.nearest_distance || 0).toFixed(3)}（主体 ${(asset.similarity?.nearest_subject_distance || 0).toFixed(3)}，场景 ${(asset.similarity?.nearest_global_distance || 0).toFixed(3)}），重复置信度 ${(asset.similarity?.duplicate_confidence || 0).toFixed(2)}。`,
-        backend: asset => `特征后端：${asset.feature_backend || '未知'}；解码器：${asset.decoder || '未知'}。`,
-        detectorOff: '未使用主体检测器', exposure: asset => `曝光分数 ${asset.metrics.exposure_score.toFixed(2)}；剪切像素 ${(asset.metrics.clipped_fraction * 100).toFixed(2)}%。`,
-        rawPreview: 'RAW 预览图', fit: '适应窗口', close: '关闭', loading: '正在加载预览',
-        previewUnavailable: '无法加载预览图，源路径可能不可访问或不受支持。',
-        saveDone: '审核文件已保存到运行结果文件夹。',
-        moveConfirm: count => `将 ${count} 个不保留项目移动到本次运行结果文件夹下的本地目录吗？\n\n程序会复制每个文件、校验副本大小，然后从源存储卡或文件夹移除原文件。之后可自行删除 moved_rejects 文件夹。`,
-        moved: result => `已移动 ${result.moved_files} 个文件，来自 ${result.moved_assets} 个项目。\n目标：${result.destination}\n缺失：${result.missing_files.length}\n失败：${result.failed_files.length}`,
-      }
-    };
+    let i18n = {};
+    let languageNames = {};
     let locale = (() => {
       const requested = new URLSearchParams(location.search).get('lang') || localStorage.getItem('burst-locale') || navigator.language;
       return String(requested).toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
     })();
-    const tr = (key, ...args) => {
-      const value = i18n[locale][key] ?? i18n.en[key] ?? key;
-      return typeof value === 'function' ? value(...args) : value;
+    const tr = (key, values = {}) => {
+      const template = i18n[locale]?.[key] ?? i18n.en?.[key] ?? key;
+      return String(template).replace(/\{([a-zA-Z0-9_]+)\}/g, (_, name) => String(values[name] ?? `{${name}}`));
     };
+
+    async function loadLocaleCatalogs() {
+      const codes = ['en', 'zh-CN'];
+      const catalogs = await Promise.all(codes.map(async code => {
+        const response = await fetch(`/locales/${code}.json`);
+        if (!response.ok) throw new Error(`locale ${code}: HTTP ${response.status}`);
+        return [code, await response.json()];
+      }));
+      i18n = Object.fromEntries(catalogs.map(([code, catalog]) => [code, catalog.reviewWeb]));
+      languageNames = Object.fromEntries(catalogs.map(([code, catalog]) => [code, catalog.languageName]));
+    }
 
     function applyLocale() {
       document.documentElement.lang = locale;
@@ -946,9 +780,16 @@ const INDEX_HTML: &str = r#"<!doctype html>
       $('#exportBtn').textContent = tr('save');
       $('#exportBtn').title = tr('saveTitle');
       $('#viewerKeepText').textContent = tr('keep');
+      $('#filter').setAttribute('aria-label', tr('filter'));
+      $('#zoomOutBtn').setAttribute('aria-label', tr('zoomOut'));
+      $('#zoomOutBtn').title = tr('zoomOut');
+      $('#zoomInBtn').setAttribute('aria-label', tr('zoomIn'));
+      $('#zoomInBtn').title = tr('zoomIn');
       $('#zoomResetBtn').textContent = tr('fit');
       $('#viewerCloseBtn').textContent = tr('close');
       $('#viewerLoadingText').textContent = tr('loading');
+      $$('#locale option').forEach(option => option.textContent = languageNames[option.value] || option.value);
+      $('#locale').setAttribute('aria-label', tr('language'));
       $('#locale').value = locale;
       if (manifest) render();
     }
@@ -1017,7 +858,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         [tr('manual'), manual],
       ].map(([label, value]) => `<div class="stat"><span>${label}</span><b>${value}</b></div>`).join('');
       $('#moveBtn').disabled = counts.reject === 0;
-      $('#moveBtn').textContent = counts.reject ? tr('moveRejects', counts.reject) : tr('noRejects');
+      $('#moveBtn').textContent = counts.reject ? tr('moveRejects', { count: counts.reject }) : tr('noRejects');
     }
 
     function renderClusters() {
@@ -1043,7 +884,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const shownRows = rows.slice(0, visibleClusterLimit);
       let html = shownRows.map(row => clusterHtml(row.cluster, row.assets, row.allAssets, row.collapsed)).join('');
       if (rows.length > shownRows.length) {
-        html += `<button class="show-more" data-show-more="1">${escapeHtml(tr('showMore', Math.min(visibleClusterLimit, rows.length - shownRows.length)))}</button>`;
+        html += `<button class="show-more" data-show-more="1">${escapeHtml(tr('showMore', { count: Math.min(visibleClusterLimit, rows.length - shownRows.length) }))}</button>`;
       }
       $('#clusters').innerHTML = html || `<div class="empty">${escapeHtml(tr('noMatches'))}</div>`;
       $$('.item input[type="checkbox"][data-indeterminate="1"]').forEach(input => {
@@ -1065,16 +906,16 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     function clusterHtml(cluster, assets, allAssets, collapsed) {
-      const shown = tr('shown', assets.length, cluster.asset_ids.length);
+      const shown = tr('shown', { count: assets.length, total: cluster.asset_ids.length });
       const clusterStatus = collapsed ? tr('collapsed') : tr('expanded');
       const diffKeys = exifDiffKeys(allAssets);
       return `<section class="cluster ${collapsed ? 'collapsed' : ''}" data-cluster="${cluster.id}">
         <div class="cluster-head">
           <div>
-            <h2>${escapeHtml(tr('stackTitle', cluster.burst_id || cluster.id, cluster.id))}</h2>
+            <h2>${escapeHtml(tr('stackTitle', { burst: cluster.burst_id || cluster.id, stack: cluster.id }))}</h2>
             <div class="cluster-meta">${escapeHtml(cluster.directory || '.')} · ${escapeHtml(cluster.prefix || tr('noPrefix'))}</div>
           </div>
-          <div class="cluster-meta">${escapeHtml(tr('stackSummary', shown, clusterStatus, cluster.keep_count, formatNumber(cluster.similarity_confidence || 0, 2)))}</div>
+          <div class="cluster-meta">${escapeHtml(tr('stackSummary', { shown, status: clusterStatus, keep: cluster.keep_count, confidence: formatNumber(cluster.similarity_confidence || 0, 2) }))}</div>
           <button class="toggle" title="${escapeHtml(tr('collapseTitle'))}">${collapsed ? '+' : '-'}</button>
         </div>
         <div class="grid">${collapsed ? '' : assets.map(asset => frameHtml(asset, diffKeys)).join('')}</div>
@@ -1089,7 +930,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const thumb = asset.thumb ? `<img src="/${asset.thumb}" loading="lazy" alt="">` : '';
       const filename = escapeHtml(asset.representative.rel_path);
       return `<article class="item ${action}" data-id="${asset.id}">
-        <button type="button" class="thumb open-full" title="${escapeHtml(tr('openTitle'))}" aria-label="${escapeHtml(tr('openLabel', asset.representative.rel_path))}">${thumb}<span class="badge">${badgeText(asset, action)}</span></button>
+        <button type="button" class="thumb open-full" title="${escapeHtml(tr('openTitle'))}" aria-label="${escapeHtml(tr('openLabel', { filename: asset.representative.rel_path }))}">${thumb}<span class="badge">${badgeText(asset, action)}</span></button>
         <div class="meta">
           <label class="keepbox"><input type="checkbox" ${checked} ${indeterminate}> ${escapeHtml(tr('keep'))}</label>
           <div class="name">${filename}</div>
@@ -1120,12 +961,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
     function detailLines(asset) {
       const detector = asset.detector ? `${asset.detector.backend}: ${asset.detector.explanation}` : tr('detectorOff');
       return [
-        tr('rank', asset),
-        tr('sharpness', asset),
-        tr('similarity', asset),
-        tr('backend', asset),
+        tr('rank', { rank: asset.suggestion.rank, score: asset.suggestion.score.toFixed(3) }),
+        tr('sharpness', { whole: asset.metrics.sharpness.toFixed(1), subject: (asset.metrics.subject_sharpness || 0).toFixed(1), completeness: asset.metrics.completeness.toFixed(2) }),
+        tr('similarity', { distance: (asset.similarity?.nearest_distance || 0).toFixed(3), subject: (asset.similarity?.nearest_subject_distance || 0).toFixed(3), scene: (asset.similarity?.nearest_global_distance || 0).toFixed(3), confidence: (asset.similarity?.duplicate_confidence || 0).toFixed(2) }),
+        tr('backend', { backend: asset.feature_backend || tr('unknown'), decoder: asset.decoder || tr('unknown') }),
         detector,
-        tr('exposure', asset),
+        tr('exposure', { score: asset.metrics.exposure_score.toFixed(2), clipped: (asset.metrics.clipped_fraction * 100).toFixed(2) }),
       ];
     }
 
@@ -1430,7 +1271,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     async function moveRejects() {
       const rejectCount = manifest.assets.filter(asset => finalAction(asset) === 'reject').length;
       if (!rejectCount) return;
-      const ok = window.confirm(tr('moveConfirm', rejectCount));
+      const ok = window.confirm(tr('moveConfirm', { count: rejectCount }));
       if (!ok) return;
       const res = await fetch('/api/move-rejects', {
         method: 'POST',
@@ -1443,7 +1284,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         return;
       }
       const result = JSON.parse(text);
-      window.alert(tr('moved', result));
+      window.alert(tr('moved', { files: result.moved_files, assets: result.moved_assets, destination: result.destination, missing: result.missing_files.length, failed: result.failed_files.length }));
       await load();
     }
 
@@ -1523,8 +1364,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
         window.alert(error.message);
       }
     });
-    applyLocale();
-    load().catch(error => {
+    async function initialize() {
+      await loadLocaleCatalogs();
+      applyLocale();
+      await load();
+    }
+    initialize().catch(error => {
       $('#clusters').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });
     $('#viewerCloseBtn').addEventListener('click', closeViewer);

@@ -1,29 +1,13 @@
-#![allow(unexpected_cfgs)]
-
-mod artifacts;
-mod assets;
-mod decode;
-mod detector;
-mod features;
-#[cfg(feature = "gui")]
-mod gui;
-mod metadata;
-#[cfg(all(target_os = "macos", feature = "metal-accel"))]
-mod metal_accel;
-mod pipeline;
-mod progress;
-mod server;
-mod types;
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
-
-use crate::pipeline::run_scan;
-use crate::progress::terminal_progress_reporter;
-use crate::types::{AccelerationPreference, DetectorPreference, ScanOptions};
+use burst_frame_deduplicator::artifacts;
+use burst_frame_deduplicator::pipeline::run_scan;
+use burst_frame_deduplicator::progress::terminal_progress_reporter;
+use burst_frame_deduplicator::server;
+use burst_frame_deduplicator::types::{AccelerationPreference, DetectorPreference, ScanOptions};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -37,9 +21,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Launch the native desktop application.
-    #[cfg(feature = "gui")]
-    Gui,
     /// Scan a folder or mounted SD card and write review artifacts.
     Scan {
         /// Source folder, for example /Volumes/CARD/DCIM.
@@ -209,18 +190,11 @@ impl From<ScanArgs> for ScanOptions {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
-        #[cfg(feature = "gui")]
-        return gui::run();
-        #[cfg(not(feature = "gui"))]
-        {
-            <Cli as clap::CommandFactory>::command().print_help()?;
-            println!();
-            return Ok(());
-        }
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
     };
     match command {
-        #[cfg(feature = "gui")]
-        Command::Gui => gui::run()?,
         Command::Scan { root, out, options } => {
             let run_dir =
                 run_scan(&root, out, options.into(), terminal_progress_reporter()).await?;
