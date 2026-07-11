@@ -10,6 +10,8 @@ This directory contains a persisted benchmark fixture derived from the largest c
 
 The zip is tracked with Git LFS. The extracted working directory and raw benchmark run artifacts are ignored because manifests contain absolute local paths.
 
+`accuracy_labels.json` contains visually reviewed near-duplicate pairs, distinct-pose pairs, and broad posture phases. The benchmark reports pair accuracy and verifies that every posture phase retains at least one keep/review frame alongside runtime and peak RSS.
+
 Run:
 
 ```bash
