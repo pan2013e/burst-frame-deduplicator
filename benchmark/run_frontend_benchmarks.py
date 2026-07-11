@@ -10,7 +10,15 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from run_benchmarks import FIXTURE, ROOT, RUNS, RESULTS, prepare_fixture
+from run_benchmarks import (
+    ACCURACY_LABELS,
+    FIXTURE,
+    ROOT,
+    RUNS,
+    RESULTS,
+    evaluate_accuracy,
+    prepare_fixture,
+)
 
 
 CARGO = os.environ.get("CARGO") or shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
@@ -98,6 +106,9 @@ def swift_binary_directory() -> Path:
 
 
 def write_results(cli_manifest: dict, ffi: dict, wasm: dict) -> None:
+    labels = json.loads(ACCURACY_LABELS.read_text())
+    native_accuracy = evaluate_accuracy(cli_manifest, labels)
+    wasm_accuracy = evaluate_wasm_accuracy(wasm, labels)
     cli_stages = {entry["stage"]: entry for entry in cli_manifest["benchmarks"]}
     ffi_stages = {entry["stage"]: entry for entry in ffi["stages"]}
     cli_total = cli_stages["scan_total"]["elapsed_ms"]
@@ -111,11 +122,11 @@ def write_results(cli_manifest: dict, ffi: dict, wasm: dict) -> None:
         "",
         "Dataset: 120 metadata-stripped original-resolution frames from `benchmark/assets/original_burst_frames.zip`.",
         "",
-        "| Path | Engine/backend | Assets | Total ms | Assets/sec | Relative to CLI |",
-        "| --- | --- | ---: | ---: | ---: | ---: |",
-        f"| Headless CLI | {cli_manifest['acceleration']['selected']} + {cli_manifest['detector']['selected']} | {cli_manifest['summary']['discovered_assets']} | {cli_total:.2f} | {cli_stages['scan_total']['items_per_sec']:.2f} | 1.00x |",
-        f"| SwiftUI Rust FFI | {ffi['acceleration']} + {ffi['detector']} | {ffi['assets']} | {ffi_total:.2f} | {ffi_stages['scan_total']['itemsPerSecond']:.2f} | {ffi_total / cli_total:.2f}x |",
-        f"| Static WASM | CPU/WASM portable scorer | {wasm['completed_assets']} | {wasm['total_ms']:.2f} | {wasm['assets_per_second']:.2f} | {wasm['total_ms'] / cli_total:.2f}x |",
+        "| Path | Engine/backend | Assets | Pair accuracy | Phase coverage | Total ms | Assets/sec | Relative to CLI |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        f"| Headless CLI | {cli_manifest['acceleration']['selected']} + {cli_manifest['detector']['selected']} | {cli_manifest['summary']['discovered_assets']} | {native_accuracy['pair_accuracy']:.1%} | {native_accuracy['phase_coverage']:.1%} | {cli_total:.2f} | {cli_stages['scan_total']['items_per_sec']:.2f} | 1.00x |",
+        f"| SwiftUI Rust FFI | {ffi['acceleration']} + {ffi['detector']} | {ffi['assets']} | {native_accuracy['pair_accuracy']:.1%} | {native_accuracy['phase_coverage']:.1%} | {ffi_total:.2f} | {ffi_stages['scan_total']['itemsPerSecond']:.2f} | {ffi_total / cli_total:.2f}x |",
+        f"| Static WASM | CPU/WASM portable scorer | {wasm['completed_assets']} | {wasm_accuracy['pair_accuracy']:.1%} | {wasm_accuracy['phase_coverage']:.1%} | {wasm['total_ms']:.2f} | {wasm['assets_per_second']:.2f} | {wasm['total_ms'] / cli_total:.2f}x |",
         "",
         f"Swift bridge call overhead around the Rust scan was {overhead:.2f}% ({ffi['elapsedMs']:.2f} ms wall time versus {ffi_total:.2f} ms recorded by the shared engine).",
         "",
@@ -133,6 +144,31 @@ def write_results(cli_manifest: dict, ffi: dict, wasm: dict) -> None:
     output = RESULTS / "frontend-latest.md"
     output.write_text("\n".join(lines))
     print(output)
+
+
+def evaluate_wasm_accuracy(result: dict, labels: dict) -> dict[str, float]:
+    by_name = {item["filename"]: item for item in result.get("assignments", [])}
+
+    def same_stack(pair: list[str]) -> bool:
+        return by_name[pair[0]]["stack_id"] == by_name[pair[1]]["stack_id"]
+
+    must_link = labels["must_link_pairs"]
+    cannot_link = labels["cannot_link_pairs"]
+    must_link_accuracy = sum(same_stack(pair) for pair in must_link) / len(must_link)
+    cannot_link_accuracy = sum(not same_stack(pair) for pair in cannot_link) / len(cannot_link)
+    covered = 0
+    for phase in labels["coverage_phases"]:
+        names = [f"frame_{index:04d}.jpg" for index in range(phase["start"], phase["end"] + 1)]
+        if any(by_name[name]["action"] in {"keep", "review"} for name in names):
+            covered += 1
+    pair_count = len(must_link) + len(cannot_link)
+    return {
+        "pair_accuracy": (
+            must_link_accuracy * len(must_link)
+            + cannot_link_accuracy * len(cannot_link)
+        ) / pair_count,
+        "phase_coverage": covered / len(labels["coverage_phases"]),
+    }
 
 
 if __name__ == "__main__":

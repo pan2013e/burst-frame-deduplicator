@@ -1,0 +1,622 @@
+{
+  "path": "wasm_static",
+  "selected_assets": 120,
+  "completed_assets": 120,
+  "failed_assets": 0,
+  "total_ms": 16950.60499998927,
+  "assets_per_second": 7.079393331392947,
+  "stages": {
+    "discovery_ms": 14.799999982118607,
+    "wasm_initialization_ms": 9.25500002503395,
+    "decode_ms": 10932.479999959469,
+    "scoring_ms": 5876.080000013113,
+    "clustering_ms": 21.330000013113022,
+    "render_ms": 6.135000020265579
+  },
+  "decode_backends": {
+    "image_bitmap": 120
+  },
+  "decode_concurrency": 4,
+  "assignments": [
+    {
+      "filename": "frame_0001.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0002.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0003.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0004.jpg",
+      "stack_id": 1,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0005.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0006.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0007.jpg",
+      "stack_id": 1,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0008.jpg",
+      "stack_id": 2,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0009.jpg",
+      "stack_id": 2,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0010.jpg",
+      "stack_id": 3,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0011.jpg",
+      "stack_id": 3,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0012.jpg",
+      "stack_id": 3,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0013.jpg",
+      "stack_id": 3,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0014.jpg",
+      "stack_id": 3,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0015.jpg",
+      "stack_id": 3,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0016.jpg",
+      "stack_id": 3,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0017.jpg",
+      "stack_id": 3,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0018.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0019.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0020.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0021.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0022.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0023.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0024.jpg",
+      "stack_id": 4,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0025.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0026.jpg",
+      "stack_id": 4,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0027.jpg",
+      "stack_id": 5,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0028.jpg",
+      "stack_id": 6,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0029.jpg",
+      "stack_id": 6,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0030.jpg",
+      "stack_id": 7,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0031.jpg",
+      "stack_id": 7,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0032.jpg",
+      "stack_id": 7,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0033.jpg",
+      "stack_id": 8,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0034.jpg",
+      "stack_id": 9,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0035.jpg",
+      "stack_id": 9,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0036.jpg",
+      "stack_id": 9,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0037.jpg",
+      "stack_id": 9,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0038.jpg",
+      "stack_id": 10,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0039.jpg",
+      "stack_id": 10,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0040.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0041.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0042.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0043.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0044.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0045.jpg",
+      "stack_id": 11,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0046.jpg",
+      "stack_id": 11,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0047.jpg",
+      "stack_id": 11,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0048.jpg",
+      "stack_id": 12,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0049.jpg",
+      "stack_id": 12,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0050.jpg",
+      "stack_id": 12,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0051.jpg",
+      "stack_id": 12,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0052.jpg",
+      "stack_id": 13,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0053.jpg",
+      "stack_id": 13,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0054.jpg",
+      "stack_id": 13,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0055.jpg",
+      "stack_id": 14,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0056.jpg",
+      "stack_id": 14,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0057.jpg",
+      "stack_id": 14,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0058.jpg",
+      "stack_id": 14,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0059.jpg",
+      "stack_id": 15,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0060.jpg",
+      "stack_id": 15,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0061.jpg",
+      "stack_id": 15,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0062.jpg",
+      "stack_id": 15,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0063.jpg",
+      "stack_id": 15,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0064.jpg",
+      "stack_id": 16,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0065.jpg",
+      "stack_id": 16,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0066.jpg",
+      "stack_id": 16,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0067.jpg",
+      "stack_id": 16,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0068.jpg",
+      "stack_id": 16,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0069.jpg",
+      "stack_id": 17,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0070.jpg",
+      "stack_id": 17,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0071.jpg",
+      "stack_id": 17,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0072.jpg",
+      "stack_id": 17,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0073.jpg",
+      "stack_id": 17,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0074.jpg",
+      "stack_id": 18,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0075.jpg",
+      "stack_id": 18,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0076.jpg",
+      "stack_id": 18,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0077.jpg",
+      "stack_id": 18,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0078.jpg",
+      "stack_id": 19,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0079.jpg",
+      "stack_id": 19,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0080.jpg",
+      "stack_id": 19,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0081.jpg",
+      "stack_id": 19,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0082.jpg",
+      "stack_id": 19,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0083.jpg",
+      "stack_id": 19,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0084.jpg",
+      "stack_id": 20,
+      "action": "review"
+    },
+    {
+      "filename": "frame_0085.jpg",
+      "stack_id": 20,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0086.jpg",
+      "stack_id": 20,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0087.jpg",
+      "stack_id": 20,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0088.jpg",
+      "stack_id": 21,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0089.jpg",
+      "stack_id": 21,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0090.jpg",
+      "stack_id": 22,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0091.jpg",
+      "stack_id": 22,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0092.jpg",
+      "stack_id": 22,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0093.jpg",
+      "stack_id": 23,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0094.jpg",
+      "stack_id": 23,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0095.jpg",
+      "stack_id": 23,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0096.jpg",
+      "stack_id": 24,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0097.jpg",
+      "stack_id": 24,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0098.jpg",
+      "stack_id": 24,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0099.jpg",
+      "stack_id": 24,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0100.jpg",
+      "stack_id": 25,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0101.jpg",
+      "stack_id": 25,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0102.jpg",
+      "stack_id": 25,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0103.jpg",
+      "stack_id": 25,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0104.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0105.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0106.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0107.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0108.jpg",
+      "stack_id": 26,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0109.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0110.jpg",
+      "stack_id": 26,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0111.jpg",
+      "stack_id": 27,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0112.jpg",
+      "stack_id": 27,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0113.jpg",
+      "stack_id": 27,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0114.jpg",
+      "stack_id": 28,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0115.jpg",
+      "stack_id": 28,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0116.jpg",
+      "stack_id": 28,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0117.jpg",
+      "stack_id": 28,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0118.jpg",
+      "stack_id": 29,
+      "action": "keep"
+    },
+    {
+      "filename": "frame_0119.jpg",
+      "stack_id": 29,
+      "action": "reject"
+    },
+    {
+      "filename": "frame_0120.jpg",
+      "stack_id": 29,
+      "action": "reject"
+    }
+  ]
+}

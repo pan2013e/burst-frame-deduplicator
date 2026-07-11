@@ -16,10 +16,13 @@
       <div id="sourceLabel" class="source-label" data-i18n="browserMode"></div>
     </div>
     <div class="header-actions">
-      <div class="locale-switch" role="group">
-        <button type="button" data-locale="en"></button>
-        <button type="button" data-locale="zh-CN"></button>
-      </div>
+      <details id="localeMenu" class="locale-menu">
+        <summary aria-haspopup="menu">文/A</summary>
+        <div class="locale-popover" role="menu">
+          <button type="button" data-locale="en" role="menuitem"></button>
+          <button type="button" data-locale="zh-CN" role="menuitem"></button>
+        </div>
+      </details>
       <button type="button" id="saveBtn" class="secondary" hidden data-i18n="saveReview"></button>
       <button type="button" id="pickBtn" class="primary" data-i18n="chooseFolder"></button>
       <input id="folderInput" type="file" webkitdirectory multiple hidden>
@@ -58,6 +61,7 @@
           <option value="review" data-i18n="needsReview"></option>
           <option value="keep" data-i18n="kept"></option>
           <option value="reject" data-i18n="rejected"></option>
+          <option value="moved" data-i18n="moved"></option>
           <option value="multi" data-i18n="multiStacks"></option>
         </select>
       </div>
@@ -82,6 +86,55 @@
       <div id="viewerError" class="viewer-error" hidden></div>
     </div>
   </div>
+
+  <dialog id="saveDialog" class="save-dialog">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <h2 data-i18n="saveModalTitle"></h2>
+          <p data-i18n="saveModalSubtitle"></p>
+        </div>
+        <button type="button" id="closeSaveBtn" class="icon-button" data-i18n-aria="close">×</button>
+      </header>
+      <div id="saveStats" class="save-stats"></div>
+      <div id="operationStatus" class="operation-status" hidden></div>
+      <section class="destination-section">
+        <strong data-i18n="moveDestinationLabel"></strong>
+        <div class="destination-row">
+          <span id="destinationName" data-i18n="chooseMoveDestination"></span>
+          <button type="button" id="chooseDestinationBtn" class="secondary" data-i18n="choose"></button>
+        </div>
+      </section>
+      <section class="script-section">
+        <div class="script-toolbar">
+          <div class="tabs" role="tablist">
+            <button type="button" id="posixTab" role="tab" data-script="posix" data-i18n="macLinuxTab"></button>
+            <button type="button" id="powershellTab" role="tab" data-script="powershell" data-i18n="windowsTab"></button>
+          </div>
+          <button type="button" id="copyScriptBtn" class="secondary" data-i18n="copyScript"></button>
+        </div>
+        <pre id="scriptCode" tabindex="0"></pre>
+      </section>
+      <footer class="dialog-actions">
+        <button type="button" id="exportJsonBtn" class="secondary" data-i18n="exportReviewJson"></button>
+        <span class="action-spacer"></span>
+        <button type="button" id="restoreMovedBtn" class="secondary" data-i18n="restoreMoved" hidden></button>
+        <button type="button" id="moveRejectedBtn" class="danger"></button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog" class="dialog-shell compact">
+      <h2 id="confirmTitle"></h2>
+      <p id="confirmMessage"></p>
+      <footer class="dialog-actions">
+        <button type="submit" value="cancel" class="secondary" data-i18n="cancel"></button>
+        <span class="action-spacer"></span>
+        <button type="submit" value="confirm" id="confirmAction" class="danger"></button>
+      </footer>
+    </form>
+  </dialog>
 
   <script type="module" src="./app.js"></script>
 </body>

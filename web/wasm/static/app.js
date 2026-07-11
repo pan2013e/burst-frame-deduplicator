@@ -12,6 +12,12 @@ const IMAGE_EXTS = new Set([
 const SIDECAR_EXTS = new Set(["aae", "dop", "json", "pp3", "xmp"]);
 const BROWSER_FIRST = ["jpg", "jpeg", "png", "webp", "avif", "bmp", "gif", "heic", "heif", "tif", "tiff"];
 const PREVIEW_LONG_EDGE = 1280;
+const runtimeOptions = new URLSearchParams(location.search);
+const requestedDecodeConcurrency = Number(runtimeOptions.get("decode-concurrency"));
+const DECODE_CONCURRENCY = Number.isFinite(requestedDecodeConcurrency) && requestedDecodeConcurrency > 0
+  ? Math.max(1, Math.min(8, Math.floor(requestedDecodeConcurrency)))
+  : Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+const WEB_CODECS_ENABLED = runtimeOptions.get("decode-backend") !== "image-bitmap";
 
 const supportedLocales = new Set(["en", "zh-CN"]);
 let messages = {};
@@ -23,6 +29,10 @@ const elements = Object.fromEntries([
   "searchInput", "filterSelect", "stacks", "saveBtn", "sourceLabel", "toast", "viewer",
   "viewerTitle", "viewerKeep", "viewerImage", "viewerLoading", "viewerError", "viewerViewport",
   "zoomOutBtn", "zoomInBtn", "fitBtn", "closeViewerBtn",
+  "localeMenu", "saveDialog", "closeSaveBtn", "saveStats", "operationStatus", "destinationName",
+  "chooseDestinationBtn", "posixTab", "powershellTab", "copyScriptBtn", "scriptCode",
+  "exportJsonBtn", "restoreMovedBtn", "moveRejectedBtn", "confirmDialog", "confirmTitle",
+  "confirmMessage", "confirmAction",
 ].map(id => [id, document.getElementById(id)]));
 
 const queryLocale = new URLSearchParams(location.search).get("lang");
@@ -40,6 +50,8 @@ const state = {
   scanToken: 0,
   sourceName: "",
   rawDecoder: null,
+  rawDecodeQueue: null,
+  decodeBackends: {},
   viewerAssetId: null,
   viewerPreviousFocus: null,
   viewerScale: 1,
@@ -47,6 +59,13 @@ const state = {
   viewerY: 0,
   dragging: false,
   dragStart: null,
+  sourceDirectoryHandle: null,
+  fileHandles: new Map(),
+  moveDestinationHandle: null,
+  movedRecords: [],
+  movedAssetIds: new Set(),
+  activeScript: /win/i.test(navigator.userAgentData?.platform || navigator.platform || "") ? "powershell" : "posix",
+  pendingOperation: null,
 };
 
 async function loadLocaleCatalogs() {
@@ -75,18 +94,26 @@ function applyLocale() {
   document.querySelectorAll("[data-i18n-placeholder]").forEach(node => {
     node.placeholder = t(node.dataset.i18nPlaceholder);
   });
+  document.querySelectorAll("[data-i18n-aria]").forEach(node => {
+    const label = t(node.dataset.i18nAria);
+    node.setAttribute("aria-label", label);
+    node.title = label;
+  });
   document.querySelectorAll("[data-locale]").forEach(button => {
     button.textContent = languageNames[button.dataset.locale] || button.dataset.locale;
     button.classList.toggle("active", button.dataset.locale === state.locale);
   });
-  document.querySelector(".locale-switch").setAttribute("aria-label", t("language"));
+  elements.localeMenu.querySelector("summary").setAttribute("aria-label", t("language"));
   elements.zoomOutBtn.title = t("zoomOut");
   elements.zoomOutBtn.setAttribute("aria-label", t("zoomOut"));
   elements.zoomInBtn.title = t("zoomIn");
   elements.zoomInBtn.setAttribute("aria-label", t("zoomIn"));
   elements.sourceLabel.textContent = state.sourceName || t("browserMode");
   elements.filterSelect.setAttribute("aria-label", t("filter"));
-  if (state.result) renderReview();
+  if (state.result) {
+    renderReview();
+    updateSaveDialog();
+  }
 }
 
 function setProgress(stageKey, fraction, detail = "") {
@@ -214,21 +241,33 @@ async function scanFiles(fileList) {
 
   const session = new BrowserSession();
   const failed = [];
-  for (let index = 0; index < groups.length; index += 1) {
+  state.decodeBackends = {};
+  for (let offset = 0; offset < groups.length; offset += DECODE_CONCURRENCY) {
     if (token !== state.scanToken) {
       showEmpty(t("scanCancelled"));
       return;
     }
-    const group = groups[index];
-    const fraction = 0.08 + 0.80 * (index / groups.length);
-    setProgress("decoding", fraction, `${index + 1} / ${groups.length} · ${group.relPath}`);
+    const batch = groups.slice(offset, offset + DECODE_CONCURRENCY);
+    const fraction = 0.08 + 0.80 * (offset / groups.length);
+    setProgress("decoding", fraction, `${offset + 1}–${Math.min(groups.length, offset + batch.length)} / ${groups.length}`);
     await nextPaint();
-    try {
-      const decodeStarted = performance.now();
-      const decoded = group.rawOnly
-        ? await decodeRaw(group.representative)
-        : await decodeBrowserImage(group.representative);
-      benchmarkStages.decode_ms += performance.now() - decodeStarted;
+    const decodeStarted = performance.now();
+    const outcomes = await Promise.all(batch.map(async group => {
+      try {
+        return { group, decoded: await decodeGroup(group) };
+      } catch (error) {
+        return { group, error };
+      }
+    }));
+    benchmarkStages.decode_ms += performance.now() - decodeStarted;
+
+    for (const outcome of outcomes) {
+      const { group, decoded, error } = outcome;
+      if (error) {
+        console.error(group.relPath, error);
+        failed.push(group.relPath);
+        continue;
+      }
       if (token !== state.scanToken) {
         URL.revokeObjectURL(decoded.previewUrl);
         return;
@@ -246,11 +285,9 @@ async function scanFiles(fileList) {
       const scoringStarted = performance.now();
       session.add_rgba(input, decoded.width, decoded.height, decoded.rgba);
       benchmarkStages.scoring_ms += performance.now() - scoringStarted;
+      state.decodeBackends[decoded.backend] = (state.decodeBackends[decoded.backend] || 0) + 1;
       state.assets.set(group.id, { ...group, previewUrl: decoded.previewUrl, rawPreview: group.rawOnly });
       state.objectUrls.set(group.id, decoded.previewUrl);
-    } catch (error) {
-      console.error(group.relPath, error);
-      failed.push(group.relPath);
     }
   }
 
@@ -295,6 +332,13 @@ function publishBenchmark(started, stages, selectedAssets, failedAssets) {
     total_ms: totalMs,
     assets_per_second: totalMs > 0 ? completedAssets * 1000 / totalMs : 0,
     stages: stages,
+    decode_backends: state.decodeBackends,
+    decode_concurrency: DECODE_CONCURRENCY,
+    assignments: (state.result?.assets || []).map(asset => ({
+      filename: asset.rel_path.split("/").at(-1),
+      stack_id: asset.stack_id,
+      action: asset.action,
+    })),
   };
   state.lastBenchmark = benchmark;
   window.__burstBenchmark = benchmark;
@@ -302,7 +346,76 @@ function publishBenchmark(started, stages, selectedAssets, failedAssets) {
   window.dispatchEvent(new CustomEvent("burst-benchmark-complete", { detail: benchmark }));
 }
 
+function decodeGroup(group) {
+  if (!group.rawOnly) return decodeBrowserImage(group.representative);
+  const previous = state.rawDecodeQueue || Promise.resolve();
+  const task = previous.catch(() => {}).then(() => decodeRaw(group.representative));
+  state.rawDecodeQueue = task;
+  return task;
+}
+
 async function decodeBrowserImage(file) {
+  if (WEB_CODECS_ENABLED && typeof ImageDecoder === "function" && file.type) {
+    try {
+      if (await ImageDecoder.isTypeSupported(file.type)) {
+        return await decodeWithWebCodecs(file);
+      }
+    } catch (error) {
+      console.debug("Scaled WebCodecs decode unavailable", error);
+    }
+  }
+  return decodeWithImageBitmap(file);
+}
+
+async function decodeWithWebCodecs(file) {
+  const probe = new ImageDecoder({ data: file.stream(), type: file.type, preferAnimation: false });
+  await probe.tracks.ready;
+  const track = probe.tracks.selectedTrack;
+  if (!track) {
+    probe.close();
+    throw new Error(t("previewFailed"));
+  }
+  const sourceWidth = track.displayWidth || track.codedWidth;
+  const sourceHeight = track.displayHeight || track.codedHeight;
+  probe.close();
+  const scale = Math.min(1, PREVIEW_LONG_EDGE / Math.max(sourceWidth, sourceHeight));
+  const desiredWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const desiredHeight = Math.max(1, Math.round(sourceHeight * scale));
+  const decoder = new ImageDecoder({
+    data: file.stream(),
+    type: file.type,
+    preferAnimation: false,
+    desiredWidth,
+    desiredHeight,
+  });
+  try {
+    const result = await decoder.decode({ frameIndex: 0, completeFramesOnly: true });
+    const frame = result.image;
+    try {
+      const canvas = createCanvas(desiredWidth, desiredHeight);
+      const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+      context.drawImage(frame, 0, 0, desiredWidth, desiredHeight);
+      const rgba = context.getImageData(0, 0, desiredWidth, desiredHeight).data;
+      return {
+        width: desiredWidth,
+        height: desiredHeight,
+        sourceWidth,
+        sourceHeight,
+        rgba,
+        previewUrl: URL.createObjectURL(file),
+        captureMs: null,
+        metadata: {},
+        backend: "webcodecs_scaled",
+      };
+    } finally {
+      frame.close();
+    }
+  } finally {
+    decoder.close();
+  }
+}
+
+async function decodeWithImageBitmap(file) {
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -324,6 +437,7 @@ async function decodeBrowserImage(file) {
       previewUrl: URL.createObjectURL(file),
       captureMs: null,
       metadata: {},
+      backend: "image_bitmap",
     };
   } finally {
     bitmap.close();
@@ -370,6 +484,7 @@ async function decodeRaw(file) {
       shutter: formatShutter(metadata.shutter),
       focal_length_mm: positiveNumber(metadata.focal_len),
     },
+    backend: "libraw_wasm",
   };
 }
 
@@ -395,9 +510,10 @@ function rawPixelsToRgba(decoded) {
 
 function drawScaled(source, width, height, longEdge) {
   const scale = Math.min(1, longEdge / Math.max(width, height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
+  const canvas = createCanvas(
+    Math.max(1, Math.round(width * scale)),
+    Math.max(1, Math.round(height * scale))
+  );
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
@@ -405,7 +521,18 @@ function drawScaled(source, width, height, longEdge) {
   return canvas;
 }
 
+function createCanvas(width, height) {
+  if (typeof OffscreenCanvas === "function") return new OffscreenCanvas(width, height);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
 function canvasBlob(canvas) {
+  if (typeof canvas.convertToBlob === "function") {
+    return canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 });
+  }
   return new Promise((resolve, reject) => {
     canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error(t("previewFailed"))), "image/jpeg", 0.88);
   });
@@ -445,6 +572,8 @@ function setDecision(assetId, action) {
     state.expanded.delete(stack.id);
   }
   renderReview();
+  updateSaveDialog();
+  renderMoveScripts();
   if (state.viewerAssetId === assetId) syncViewerKeep();
 }
 
@@ -462,6 +591,7 @@ function renderReview() {
       if (filter === "review" && action !== "review") return false;
       if (filter === "keep" && action !== "keep") return false;
       if (filter === "reject" && action !== "reject") return false;
+      if (filter === "moved" && !state.movedAssetIds.has(asset.id)) return false;
       if (filter === "multi" && allAssets.length <= 1) return false;
       return true;
     });
@@ -482,6 +612,7 @@ function renderStats() {
     ["keep", totals.keep],
     ["rejected", totals.reject],
     ["review", totals.review],
+    ["moved", state.movedAssetIds.size],
     ["manual", state.decisions.size],
   ];
   elements.stats.innerHTML = values.map(([label, value]) => `<div class="stat"><span>${escapeHtml(t(label))}</span><b>${value}</b></div>`).join("");
@@ -505,21 +636,23 @@ function renderStack(entry) {
 
 function renderFrame(asset, diffKeys) {
   const action = finalAction(asset);
+  const moved = state.movedAssetIds.has(asset.id);
+  const displayAction = moved ? "moved" : action;
   const checked = action === "keep" ? "checked" : "";
   const indeterminate = action === "review" ? "data-indeterminate=\"1\"" : "";
   const source = state.assets.get(asset.id);
   const preview = source?.previewUrl || "";
   const manual = state.decisions.has(asset.id);
-  return `<article class="frame ${action}" data-asset="${escapeHtml(asset.id)}">
+  return `<article class="frame ${action} ${moved ? "moved" : ""}" data-asset="${escapeHtml(asset.id)}">
     <button type="button" class="thumbnail" data-open="${escapeHtml(asset.id)}" aria-label="${escapeHtml(asset.rel_path)}">
       ${preview ? `<img src="${escapeHtml(preview)}" loading="lazy" alt="">` : ""}
-      <span class="badge ${action}">${escapeHtml(t(action === "review" ? "review" : action === "reject" ? "rejected" : "keep"))}</span>
+      <span class="badge ${displayAction}">${escapeHtml(t(displayAction === "review" ? "review" : displayAction === "reject" ? "rejected" : displayAction))}</span>
     </button>
     <div class="frame-body">
       <label class="keep-control"><input type="checkbox" data-decision="${escapeHtml(asset.id)}" ${checked} ${indeterminate}> ${escapeHtml(t("keep"))}</label>
       <div class="filename">${escapeHtml(asset.rel_path)}</div>
       <div class="exif">${metadataHtml(asset, diffKeys)}</div>
-      <div class="reason">${escapeHtml(t(asset.reason_key))}</div>
+      <div class="reason">${escapeHtml(moved ? t("movedReason") : t(asset.reason_key))}</div>
       <details><summary>${escapeHtml(t("why"))}</summary><ul>
         <li>${escapeHtml(t("rank", { rank: asset.rank, score: Number(asset.score).toFixed(3) }))}</li>
         <li>${escapeHtml(t("sharpness", { whole: Number(asset.metrics.sharpness).toFixed(1), subject: Number(asset.metrics.subject_sharpness).toFixed(1) }))}</li>
@@ -632,10 +765,22 @@ function applyViewerTransform() {
 
 function saveReview() {
   if (!state.result) return;
+  updateSaveDialog();
+  renderMoveScripts();
+  elements.operationStatus.hidden = true;
+  elements.saveDialog.showModal();
+}
+
+function reviewPayload() {
   const payload = {
     version: 1,
     created_at: new Date().toISOString(),
     source: state.sourceName,
+    move_status: {
+      active_asset_ids: [...state.movedAssetIds],
+      active_files: state.movedRecords.length,
+      destinations: state.moveDestinationHandle ? [state.moveDestinationHandle.name] : [],
+    },
     decisions: state.result.assets.map(asset => ({
       id: asset.id,
       path: asset.rel_path,
@@ -646,6 +791,11 @@ function saveReview() {
       stack_id: asset.stack_id,
     })),
   };
+  return payload;
+}
+
+function exportReviewJson() {
+  const payload = reviewPayload();
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -656,6 +806,301 @@ function saveReview() {
   showToast(t("saved"));
 }
 
+function reviewTotals() {
+  const totals = { keep: 0, reject: 0, review: 0, moved: state.movedAssetIds.size };
+  for (const asset of state.result.assets) totals[finalAction(asset)] += 1;
+  return totals;
+}
+
+function movableAssets() {
+  return state.result.assets.filter(asset => finalAction(asset) === "reject" && !state.movedAssetIds.has(asset.id));
+}
+
+function updateSaveDialog() {
+  if (!state.result) return;
+  const totals = reviewTotals();
+  elements.saveStats.innerHTML = ["keep", "rejected", "review", "moved"].map(key => {
+    const value = key === "rejected" ? totals.reject : totals[key];
+    return `<div class="save-stat"><span>${escapeHtml(t(key))}</span><b>${value}</b></div>`;
+  }).join("");
+  const rejects = movableAssets().length;
+  elements.moveRejectedBtn.textContent = rejects ? t("moveRejects", { count: rejects }) : t("noRejects");
+  elements.moveRejectedBtn.disabled = rejects === 0;
+  elements.restoreMovedBtn.hidden = state.movedAssetIds.size === 0;
+  elements.destinationName.textContent = state.moveDestinationHandle?.name || t("chooseMoveDestination");
+}
+
+function renderMoveScripts() {
+  const scripts = generateMoveScripts();
+  elements.posixTab.setAttribute("aria-selected", String(state.activeScript === "posix"));
+  elements.powershellTab.setAttribute("aria-selected", String(state.activeScript === "powershell"));
+  elements.scriptCode.textContent = scripts[state.activeScript];
+}
+
+function generateMoveScripts() {
+  const rejected = movableAssets();
+  let posix = `#!/usr/bin/env bash\nset -euo pipefail\nSOURCE_ROOT=${shellQuote(`/path/to/${state.sourceName || "photos"}`)}\nDESTINATION=${shellQuote("/path/to/Burst Rejects")}\nmkdir -p \"$DESTINATION\"\n\n`;
+  let powershell = `param(\n  [string]$SourceRoot = ${powerShellQuote(`C:\\path\\to\\${state.sourceName || "photos"}`)},\n  [string]$Destination = ${powerShellQuote("C:\\path\\to\\Burst Rejects")}\n)\n$ErrorActionPreference = 'Stop'\nNew-Item -ItemType Directory -Force -Path $Destination | Out-Null\n\n`;
+  for (const asset of rejected) {
+    posix += `# ${asset.id}\n`;
+    powershell += `# ${asset.id}\n`;
+    const paths = asset.files.map(pathWithoutRoot);
+    for (const [index, relative] of paths.entries()) {
+      posix += `source_${index}=\"$SOURCE_ROOT\"/${shellQuote(relative)}\ntarget_${index}=\"$DESTINATION\"/${shellQuote(relative)}\n`;
+    }
+    posix += "asset_ready=1\n";
+    for (const index of paths.keys()) {
+      posix += `if [ ! -f \"$source_${index}\" ]; then printf 'Source unavailable: %s\\n' \"$source_${index}\" >&2; asset_ready=0; fi\nif [ -e \"$target_${index}\" ]; then printf 'Destination exists: %s\\n' \"$target_${index}\" >&2; asset_ready=0; fi\n`;
+    }
+    const cleanupTargets = paths.map((_, index) => `\"$target_${index}\"`).join(" ");
+    posix += "if [ \"$asset_ready\" -eq 1 ]; then\n";
+    for (const index of paths.keys()) {
+      posix += `  mkdir -p \"$(dirname \"$target_${index}\")\"\n  if ! cp -p -- \"$source_${index}\" \"$target_${index}\"; then rm -f -- ${cleanupTargets}; exit 1; fi\n  if [ \"$(wc -c < \"$source_${index}\")\" -ne \"$(wc -c < \"$target_${index}\")\" ]; then rm -f -- ${cleanupTargets}; exit 1; fi\n`;
+    }
+    for (const index of paths.keys()) {
+      posix += `  if ! rm -- \"$source_${index}\"; then\n`;
+      for (let restored = 0; restored < index; restored += 1) {
+        posix += `    cp -p -- \"$target_${restored}\" \"$source_${restored}\"\n    [ \"$(wc -c < \"$source_${restored}\")\" -eq \"$(wc -c < \"$target_${restored}\")\" ]\n`;
+      }
+      posix += `    rm -f -- ${cleanupTargets}\n    exit 1\n  fi\n`;
+    }
+    posix += "fi\n\n";
+
+    powershell += "$pairs = @(\n";
+    for (const relative of paths) {
+      const windowsRelative = relative.replaceAll("/", "\\");
+      powershell += `  [pscustomobject]@{ Source = Join-Path $SourceRoot ${powerShellQuote(windowsRelative)}; Target = Join-Path $Destination ${powerShellQuote(windowsRelative)} }\n`;
+    }
+    powershell += `)\n$assetReady = $true\nforeach ($pair in $pairs) { if (-not (Test-Path -LiteralPath $pair.Source -PathType Leaf)) { Write-Warning \"Source unavailable: $($pair.Source)\"; $assetReady = $false }; if (Test-Path -LiteralPath $pair.Target) { Write-Warning \"Destination exists: $($pair.Target)\"; $assetReady = $false } }\nif ($assetReady) {\n  $copied = @()\n  $removed = @()\n  try {\n    foreach ($pair in $pairs) {\n      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pair.Target) | Out-Null\n      Copy-Item -LiteralPath $pair.Source -Destination $pair.Target\n      $copied += $pair\n      if ((Get-Item -LiteralPath $pair.Source).Length -ne (Get-Item -LiteralPath $pair.Target).Length) { throw \"Copy verification failed: $($pair.Source)\" }\n    }\n    foreach ($pair in $pairs) { Remove-Item -LiteralPath $pair.Source; $removed += $pair }\n  } catch {\n    foreach ($pair in $removed) { if (-not (Test-Path -LiteralPath $pair.Source)) { Copy-Item -LiteralPath $pair.Target -Destination $pair.Source } }\n    foreach ($pair in $copied) { if ((Test-Path -LiteralPath $pair.Source) -and (Test-Path -LiteralPath $pair.Target)) { Remove-Item -LiteralPath $pair.Target -Force } }\n    throw\n  }\n}\n\n`;
+  }
+  return { posix, powershell };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function powerShellQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function pathWithoutRoot(path) {
+  const parts = String(path).split("/").filter(Boolean);
+  if (parts[0] === state.sourceName) parts.shift();
+  return parts.filter(part => part !== "." && part !== "..").join("/");
+}
+
+async function chooseMoveDestination() {
+  if (typeof window.showDirectoryPicker !== "function") {
+    setOperationStatus(t("fileAccessUnsupported"), true);
+    return false;
+  }
+  try {
+    state.moveDestinationHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    updateSaveDialog();
+    return true;
+  } catch (error) {
+    if (error.name !== "AbortError") setOperationStatus(friendlyFileError(error), true);
+    return false;
+  }
+}
+
+async function requestFileOperation(operation) {
+  if (!state.sourceDirectoryHandle || state.fileHandles.size === 0) {
+    setOperationStatus(t("writableSourceRequired"), true);
+    return;
+  }
+  if (operation === "move" && !state.moveDestinationHandle && !await chooseMoveDestination()) return;
+  state.pendingOperation = operation;
+  const count = operation === "move" ? movableAssets().length : state.movedAssetIds.size;
+  elements.confirmTitle.textContent = t(operation === "move" ? "moveConfirmTitle" : "restoreConfirmTitle");
+  elements.confirmMessage.textContent = t(operation === "move" ? "moveConfirm" : "restoreConfirm", { count });
+  elements.confirmAction.textContent = t(operation === "move" ? "move" : "restore");
+  elements.confirmAction.className = operation === "move" ? "danger" : "primary";
+  elements.confirmDialog.returnValue = "";
+  elements.confirmDialog.showModal();
+}
+
+async function runFileOperation(operation) {
+  elements.moveRejectedBtn.disabled = true;
+  elements.restoreMovedBtn.disabled = true;
+  try {
+    if (operation === "move") await moveRejectedAssets();
+    else await restoreMovedAssets();
+  } catch (error) {
+    setOperationStatus(friendlyFileError(error), true);
+  } finally {
+    updateSaveDialog();
+    renderReview();
+    renderMoveScripts();
+    elements.restoreMovedBtn.disabled = false;
+  }
+}
+
+async function moveRejectedAssets() {
+  const assets = movableAssets();
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "_");
+  const rejectRoot = await state.moveDestinationHandle.getDirectoryHandle(`Burst Rejects ${stamp}`, { create: true });
+  let movedFiles = 0;
+  let movedAssets = 0;
+  const failures = [];
+  for (const asset of assets) {
+    const infos = asset.files.map(path => state.fileHandles.get(path));
+    if (infos.some(info => !info)) {
+      failures.push(asset.rel_path);
+      continue;
+    }
+    try {
+      const records = await transferAssetToDestination(asset.id, infos, rejectRoot);
+      state.movedRecords.push(...records);
+      state.movedAssetIds.add(asset.id);
+      movedFiles += records.length;
+      movedAssets += 1;
+    } catch (error) {
+      failures.push(`${asset.rel_path}: ${friendlyFileError(error)}`);
+    }
+  }
+  setOperationStatus(t("movedResult", { files: movedFiles, assets: movedAssets, failed: failures.length }), failures.length > 0);
+}
+
+async function transferAssetToDestination(assetId, infos, rejectRoot) {
+  const copied = [];
+  try {
+    for (const info of infos) {
+      const sourceFile = await info.fileHandle.getFile();
+      const relative = pathWithoutRoot(info.relPath);
+      const target = await createTargetHandle(rejectRoot, relative);
+      await copyFileToHandle(sourceFile, target.fileHandle);
+      copied.push({
+        assetId,
+        size: sourceFile.size,
+        originalParent: info.parentHandle,
+        originalName: info.name,
+        originalPath: info.relPath,
+        destinationParent: target.parentHandle,
+        destinationName: target.name,
+        destinationHandle: target.fileHandle,
+      });
+    }
+  } catch (error) {
+    await removeDestinationCopies(copied);
+    throw error;
+  }
+
+  const removed = [];
+  try {
+    for (const record of copied) {
+      await record.originalParent.removeEntry(record.originalName);
+      removed.push(record);
+    }
+  } catch (error) {
+    for (const record of removed) await restoreRecordCopy(record);
+    await removeDestinationCopies(copied);
+    throw error;
+  }
+  return copied;
+}
+
+async function restoreMovedAssets() {
+  const grouped = new Map();
+  for (const record of state.movedRecords) {
+    const records = grouped.get(record.assetId) || [];
+    records.push(record);
+    grouped.set(record.assetId, records);
+  }
+  let restoredFiles = 0;
+  let restoredAssets = 0;
+  const restoredIds = new Set();
+  const failures = [];
+  for (const [assetId, records] of grouped) {
+    const restored = [];
+    try {
+      for (const record of records) {
+        if (await entryExists(record.originalParent, record.originalName)) {
+          throw new Error(`${t("originalPathOccupied")}: ${record.originalPath}`);
+        }
+        await restoreRecordCopy(record);
+        restored.push(record);
+      }
+      for (const record of records) {
+        await record.destinationParent.removeEntry(record.destinationName);
+      }
+      restoredFiles += records.length;
+      restoredAssets += 1;
+      restoredIds.add(assetId);
+      state.movedAssetIds.delete(assetId);
+    } catch (error) {
+      for (const record of restored) {
+        try {
+          if (await entryExists(record.destinationParent, record.destinationName)) {
+            await record.originalParent.removeEntry(record.originalName);
+          }
+        } catch {}
+      }
+      failures.push(friendlyFileError(error));
+    }
+  }
+  state.movedRecords = state.movedRecords.filter(record => !restoredIds.has(record.assetId));
+  setOperationStatus(t("restoredResult", { files: restoredFiles, assets: restoredAssets, failed: failures.length }), failures.length > 0);
+}
+
+async function createTargetHandle(root, relativePath) {
+  const parts = relativePath.split("/").filter(Boolean);
+  const name = parts.pop();
+  let parentHandle = root;
+  for (const part of parts) parentHandle = await parentHandle.getDirectoryHandle(part, { create: true });
+  if (await entryExists(parentHandle, name)) throw new Error(`${t("destinationExists")}: ${relativePath}`);
+  const fileHandle = await parentHandle.getFileHandle(name, { create: true });
+  return { parentHandle, fileHandle, name };
+}
+
+async function copyFileToHandle(sourceFile, targetHandle) {
+  const writable = await targetHandle.createWritable();
+  try {
+    await writable.write(sourceFile);
+  } finally {
+    await writable.close();
+  }
+  const copied = await targetHandle.getFile();
+  if (copied.size !== sourceFile.size) throw new Error(t("copyVerificationFailed"));
+}
+
+async function restoreRecordCopy(record) {
+  const sourceFile = await record.destinationHandle.getFile();
+  const originalHandle = await record.originalParent.getFileHandle(record.originalName, { create: true });
+  await copyFileToHandle(sourceFile, originalHandle);
+  const restored = await originalHandle.getFile();
+  if (restored.size !== record.size) throw new Error(t("copyVerificationFailed"));
+}
+
+async function removeDestinationCopies(records) {
+  for (const record of records) {
+    try { await record.destinationParent.removeEntry(record.destinationName); } catch {}
+  }
+}
+
+async function entryExists(parent, name) {
+  try {
+    await parent.getFileHandle(name);
+    return true;
+  } catch (error) {
+    if (error.name === "NotFoundError") return false;
+    throw error;
+  }
+}
+
+function setOperationStatus(message, error = false) {
+  elements.operationStatus.textContent = message;
+  elements.operationStatus.hidden = false;
+  elements.operationStatus.classList.toggle("error", error);
+}
+
+function friendlyFileError(error) {
+  if (error?.name === "NotFoundError") return t("sourceUnavailableMove");
+  if (error?.name === "NotAllowedError") return t("permissionRequired");
+  return error?.message || String(error);
+}
+
 function resetResult() {
   if (!elements.viewer.hidden) closeViewer();
   for (const url of state.objectUrls.values()) URL.revokeObjectURL(url);
@@ -664,8 +1109,54 @@ function resetResult() {
   state.result = null;
   state.decisions.clear();
   state.expanded.clear();
+  state.movedRecords = [];
+  state.movedAssetIds.clear();
+  state.moveDestinationHandle = null;
   elements.searchInput.value = "";
   elements.filterSelect.value = "all";
+}
+
+async function chooseSourceFolder() {
+  if (typeof window.showDirectoryPicker !== "function") {
+    elements.folderInput.click();
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    state.sourceDirectoryHandle = handle;
+    state.fileHandles = new Map();
+    const files = await collectDirectoryFiles(handle);
+    if (files.length) scanFiles(files);
+    else showEmpty(t("noImages"));
+  } catch (error) {
+    if (error.name !== "AbortError") showToast(friendlyFileError(error));
+  }
+}
+
+async function collectDirectoryFiles(rootHandle) {
+  const files = [];
+  async function visit(directoryHandle, relativeDirectory) {
+    for await (const [name, handle] of directoryHandle.entries()) {
+      if (name.startsWith("._") || name === ".DS_Store") continue;
+      const relative = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+      if (handle.kind === "directory") {
+        await visit(handle, relative);
+        continue;
+      }
+      const file = await handle.getFile();
+      const fullPath = `${rootHandle.name}/${relative}`;
+      Object.defineProperty(file, "webkitRelativePath", { value: fullPath, configurable: true });
+      state.fileHandles.set(fullPath, {
+        parentHandle: directoryHandle,
+        fileHandle: handle,
+        name,
+        relPath: fullPath,
+      });
+      files.push(file);
+    }
+  }
+  await visit(rootHandle, "");
+  return files;
 }
 
 function showEmpty(message) {
@@ -714,11 +1205,13 @@ function escapeHtml(value) {
   })[character]);
 }
 
-elements.pickBtn.addEventListener("click", () => elements.folderInput.click());
-elements.emptyPickBtn.addEventListener("click", () => elements.folderInput.click());
+elements.pickBtn.addEventListener("click", chooseSourceFolder);
+elements.emptyPickBtn.addEventListener("click", chooseSourceFolder);
 elements.folderInput.addEventListener("change", event => {
   const files = Array.from(event.target.files || []);
   event.target.value = "";
+  state.sourceDirectoryHandle = null;
+  state.fileHandles = new Map();
   if (files.length) scanFiles(files);
 });
 elements.cancelBtn.addEventListener("click", () => {
@@ -727,12 +1220,36 @@ elements.cancelBtn.addEventListener("click", () => {
   showEmpty(t("scanCancelled"));
 });
 elements.saveBtn.addEventListener("click", saveReview);
+elements.closeSaveBtn.addEventListener("click", () => elements.saveDialog.close());
+elements.chooseDestinationBtn.addEventListener("click", chooseMoveDestination);
+elements.posixTab.addEventListener("click", () => {
+  state.activeScript = "posix";
+  renderMoveScripts();
+});
+elements.powershellTab.addEventListener("click", () => {
+  state.activeScript = "powershell";
+  renderMoveScripts();
+});
+elements.copyScriptBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(elements.scriptCode.textContent);
+  showToast(t("scriptCopied"));
+});
+elements.exportJsonBtn.addEventListener("click", exportReviewJson);
+elements.moveRejectedBtn.addEventListener("click", () => requestFileOperation("move"));
+elements.restoreMovedBtn.addEventListener("click", () => requestFileOperation("restore"));
+elements.confirmDialog.addEventListener("close", () => {
+  if (elements.confirmDialog.returnValue === "confirm" && state.pendingOperation) {
+    runFileOperation(state.pendingOperation);
+  }
+  state.pendingOperation = null;
+});
 elements.searchInput.addEventListener("input", renderReview);
 elements.filterSelect.addEventListener("change", renderReview);
 document.querySelectorAll("[data-locale]").forEach(button => {
   button.addEventListener("click", () => {
     state.locale = button.dataset.locale;
     localStorage.setItem("burst-locale", state.locale);
+    elements.localeMenu.open = false;
     applyLocale();
   });
 });

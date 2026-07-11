@@ -11,6 +11,8 @@ const argumentsMap = parseArguments(process.argv.slice(2));
 const source = requireDirectory(argumentsMap.get("--source"), "--source");
 const output = argumentsMap.get("--out");
 const timeoutMs = Number(argumentsMap.get("--timeout-ms") || 10 * 60 * 1000);
+const decodeConcurrency = argumentsMap.get("--decode-concurrency");
+const decodeBackend = argumentsMap.get("--decode-backend");
 const chrome = argumentsMap.get("--chrome")
   || process.env.CHROME_BIN
   || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -45,13 +47,24 @@ let browser;
 try {
   browser = await chromium.launch({ executablePath: chrome, headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  page.on("pageerror", error => process.stderr.write(`Page error: ${error.message}\n`));
+  const diagnosticsSession = await page.context().newCDPSession(page);
+  await diagnosticsSession.send("Runtime.enable");
+  diagnosticsSession.on("Runtime.exceptionThrown", event => {
+    const details = event.exceptionDetails;
+    process.stderr.write(
+      `Browser exception: ${details.url || "unknown"}:${details.lineNumber + 1}:${details.columnNumber + 1} ${details.text}\n`,
+    );
+  });
+  page.on("pageerror", error => process.stderr.write(`Page error: ${error.stack || error.message}\n`));
   page.on("console", message => {
     if (["error", "warning"].includes(message.type())) {
       process.stderr.write(`Browser ${message.type()}: ${message.text()}\n`);
     }
   });
-  await page.goto(`http://127.0.0.1:${port}/web/dist/index.html?lang=en`, { waitUntil: "networkidle" });
+  const query = new URLSearchParams({ lang: "en" });
+  if (decodeConcurrency) query.set("decode-concurrency", decodeConcurrency);
+  if (decodeBackend) query.set("decode-backend", decodeBackend);
+  await page.goto(`http://127.0.0.1:${port}/web/dist/index.html?${query}`, { waitUntil: "networkidle" });
   const isolated = await page.evaluate(() => crossOriginIsolated);
   if (!isolated) throw new Error("benchmark page is not cross-origin isolated");
   const folderInput = page.locator("#folderInput");
@@ -104,7 +117,7 @@ async function collectFiles(directory) {
 }
 
 function usage() {
-  process.stderr.write("Usage: node benchmark/wasm_benchmark.mjs --source <folder> [--out <json>] [--chrome <executable>] [--timeout-ms N]\n");
+  process.stderr.write("Usage: node benchmark/wasm_benchmark.mjs --source <folder> [--out <json>] [--chrome <executable>] [--timeout-ms N] [--decode-concurrency N] [--decode-backend image-bitmap]\n");
   process.exit(2);
 }
 

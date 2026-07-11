@@ -25,9 +25,33 @@ CARGO = os.environ.get("CARGO") or shutil.which("cargo") or str(Path.home() / ".
 
 
 CASES = [
-    ("cpu_heuristic", ["--acceleration", "cpu", "--detector", "heuristic"]),
-    ("metal_heuristic", ["--acceleration", "metal", "--detector", "heuristic"]),
-    ("metal_vision", ["--acceleration", "metal", "--detector", "vision"]),
+    ("balanced_cpu", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
+    ("balanced_metal", "Balanced", ["--acceleration", "metal", "--detector", "heuristic"]),
+    ("balanced_vision", "Balanced", ["--acceleration", "metal", "--detector", "vision"]),
+    (
+        "best_quality",
+        "Best Quality",
+        [
+            "--preview-size", "2048",
+            "--refine-size", "4096",
+            "--refine-candidates-per-cluster", "4",
+            "--max-duplicate-distance", "0.18",
+            "--min-duplicate-confidence", "0.60",
+            "--acceleration", "metal",
+            "--detector", "vision",
+        ],
+    ),
+    (
+        "faster",
+        "Faster",
+        [
+            "--preview-size", "960",
+            "--refine-size", "1536",
+            "--refine-candidates-per-cluster", "1",
+            "--acceleration", "cpu",
+            "--detector", "heuristic",
+        ],
+    ),
 ]
 
 
@@ -43,7 +67,7 @@ def main() -> None:
     RESULTS.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for name, options in CASES:
+    for name, quality, options in CASES:
         out = RUNS / name
         if out.exists():
             shutil.rmtree(out)
@@ -72,6 +96,7 @@ def main() -> None:
         rows.append(
             {
                 "case": name,
+                "quality": quality,
                 "acceleration": manifest["acceleration"]["selected"],
                 "detector": manifest["detector"]["selected"],
                 "detector_usage": ", ".join(
@@ -112,12 +137,12 @@ def write_markdown(rows: list[dict]) -> None:
         "",
         "Accuracy labels: `benchmark/accuracy_labels.json`.",
         "",
-        "| Case | Acceleration | Detector | Assets | Bursts | Stacks | Keep | Reject | Review | Pair accuracy | Phase coverage | Total ms | Assets/sec | Peak RSS MB | Refined |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Case | Quality | Acceleration | Detector | Assets | Bursts | Stacks | Keep | Reject | Review | Pair accuracy | Phase coverage | Total ms | Assets/sec | Peak RSS MB | Refined |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {case} | {acceleration} | {detector} | {assets} | {bursts} | {clusters} | {keeps} | {rejects} | {reviews} | {pair_accuracy:.1%} | {phase_coverage:.1%} | {total_ms:.2f} | {assets_per_sec:.2f} | {peak_rss_mb:.1f} | {refined_assets} |".format(
+            "| {case} | {quality} | {acceleration} | {detector} | {assets} | {bursts} | {clusters} | {keeps} | {rejects} | {reviews} | {pair_accuracy:.1%} | {phase_coverage:.1%} | {total_ms:.2f} | {assets_per_sec:.2f} | {peak_rss_mb:.1f} | {refined_assets} |".format(
                 **row
             )
         )
