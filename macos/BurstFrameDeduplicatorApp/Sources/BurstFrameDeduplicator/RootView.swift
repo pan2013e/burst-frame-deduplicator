@@ -13,9 +13,17 @@ struct RootView: View {
                 ScanView(model: model)
             }
         }
-        .preferredColorScheme(model.appearanceMode.colorScheme)
         .environment(\.locale, Locale(identifier: locale.appleLocaleIdentifier))
         .id(locale.code)
+        .sheet(isPresented: Binding(
+            get: { model.tutorialPresented },
+            set: { presented in
+                if !presented { model.dismissTutorial() }
+            }
+        )) {
+            TutorialView(model: model)
+                .environmentObject(locale)
+        }
         .alert(
             locale.text("appTitle"),
             isPresented: Binding(

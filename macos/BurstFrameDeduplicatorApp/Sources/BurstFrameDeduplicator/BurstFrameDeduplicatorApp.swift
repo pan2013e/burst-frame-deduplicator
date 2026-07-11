@@ -27,7 +27,6 @@ struct BurstFrameDeduplicatorApp: App {
         Window(locale.text("aboutTitle"), id: "about") {
             AboutView()
                 .environmentObject(locale)
-                .preferredColorScheme(model.appearanceMode.colorScheme)
         }
         .windowResizability(.contentSize)
     }
@@ -51,6 +50,11 @@ private struct ApplicationCommands: Commands {
                 model.resetForNewScan()
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+        }
+        CommandGroup(after: .help) {
+            Button(locale.text("tutorialMenu")) {
+                model.showTutorial()
+            }
         }
     }
 

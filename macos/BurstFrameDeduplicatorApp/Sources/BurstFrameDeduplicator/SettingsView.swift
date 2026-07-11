@@ -11,25 +11,50 @@ private enum QualityPreset: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum SettingsTab: Hashable {
+    case general
+    case analysis
+    case storage
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var locale: LocaleCatalog
     @ObservedObject var model: AppModel
     @StateObject private var cache = RunCacheManager()
     @State private var confirmingCacheRemoval = false
+    @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             generalSettings
                 .tabItem { Label(locale.text("general"), systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             analysisSettings
                 .tabItem { Label(locale.text("analysis"), systemImage: "viewfinder") }
+                .tag(SettingsTab.analysis)
             storageSettings
                 .tabItem { Label(locale.text("storage"), systemImage: "internaldrive") }
+                .tag(SettingsTab.storage)
         }
-        .frame(width: 650, height: 560)
-        .preferredColorScheme(model.appearanceMode.colorScheme)
+        .frame(width: 650, height: preferredHeight)
+        .background(SettingsWindowSizer(size: NSSize(width: 650, height: preferredHeight)))
+        .animation(.easeInOut(duration: 0.18), value: preferredHeight)
         .environment(\.locale, Locale(identifier: locale.appleLocaleIdentifier))
         .id(locale.code)
+    }
+
+    private var preferredHeight: CGFloat {
+        let visibleHeight = NSScreen.main?.visibleFrame.height ?? 900
+        let maximum = max(560, min(780, visibleHeight - 110))
+        let requested: CGFloat = switch selectedTab {
+        case .general:
+            model.payload == nil ? 470 : 520
+        case .analysis:
+            630
+        case .storage:
+            430 + CGFloat(min(cache.entries.count, 6)) * 44
+        }
+        return min(requested, maximum)
     }
 
     private var generalSettings: some View {
@@ -475,6 +500,23 @@ private struct NumericStepperRow<Value>: View where Value: Strideable, Value.Str
             Stepper("", value: $value, in: range, step: step)
                 .labelsHidden()
                 .fixedSize()
+        }
+    }
+}
+
+private struct SettingsWindowSizer: NSViewRepresentable {
+    let size: NSSize
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            let current = window.contentView?.bounds.size ?? .zero
+            guard abs(current.width - size.width) > 1 || abs(current.height - size.height) > 1 else { return }
+            window.setContentSize(size)
         }
     }
 }

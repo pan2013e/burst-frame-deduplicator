@@ -32,7 +32,11 @@ const elements = Object.fromEntries([
   "localeMenu", "saveDialog", "closeSaveBtn", "saveStats", "operationStatus", "destinationName",
   "chooseDestinationBtn", "posixTab", "powershellTab", "copyScriptBtn", "scriptCode",
   "exportJsonBtn", "restoreMovedBtn", "moveRejectedBtn", "confirmDialog", "confirmTitle",
-  "confirmMessage", "confirmAction",
+  "confirmMessage", "confirmAction", "tutorialBtn", "aboutBtn", "aboutDialog", "aboutDialogTitle",
+  "aboutDescription", "closeAboutBtn", "githubLink", "diagnosticsTitle", "diagnosticsList",
+  "tutorialDialog", "tutorialLabel", "tutorialProgress", "tutorialDemoSource", "tutorialDemoReject",
+  "tutorialDemoKeep", "tutorialDemoReview", "tutorialTitle", "tutorialBody", "tutorialSkip",
+  "tutorialBack", "tutorialNext",
 ].map(id => [id, document.getElementById(id)]));
 
 const queryLocale = new URLSearchParams(location.search).get("lang");
@@ -66,7 +70,15 @@ const state = {
   movedAssetIds: new Set(),
   activeScript: /win/i.test(navigator.userAgentData?.platform || navigator.platform || "") ? "powershell" : "posix",
   pendingOperation: null,
+  tutorialStep: 0,
 };
+
+const tutorialSteps = [
+  ["tutorialScanTitle", "tutorialScanBody"],
+  ["tutorialSuggestionsTitle", "tutorialSuggestionsBody"],
+  ["tutorialInspectTitle", "tutorialInspectBody"],
+  ["tutorialMoveTitle", "tutorialMoveBody"],
+];
 
 async function loadLocaleCatalogs() {
   const catalogs = await Promise.all([...supportedLocales].map(async code => {
@@ -110,10 +122,101 @@ function applyLocale() {
   elements.zoomInBtn.setAttribute("aria-label", t("zoomIn"));
   elements.sourceLabel.textContent = state.sourceName || t("browserMode");
   elements.filterSelect.setAttribute("aria-label", t("filter"));
+  setButtonLabel(elements.tutorialBtn, t("tutorial"));
+  setButtonLabel(elements.aboutBtn, t("about"));
+  setButtonLabel(elements.closeAboutBtn, t("close"));
+  elements.aboutDialogTitle.textContent = t("aboutTitle");
+  elements.aboutDescription.textContent = t("aboutDescription");
+  elements.githubLink.textContent = t("githubRepository");
+  elements.diagnosticsTitle.textContent = t("diagnostics");
+  elements.tutorialLabel.textContent = t("tutorial");
+  elements.tutorialDemoSource.textContent = t("tutorialDemoSource");
+  elements.tutorialDemoReject.textContent = t("tutorialDemoReject");
+  elements.tutorialDemoKeep.textContent = t("tutorialDemoKeep");
+  elements.tutorialDemoReview.textContent = t("tutorialDemoReview");
+  elements.tutorialSkip.textContent = t("tutorialSkip");
+  elements.tutorialBack.textContent = t("tutorialBack");
+  renderTutorial();
   if (state.result) {
     renderReview();
     updateSaveDialog();
   }
+}
+
+function setButtonLabel(button, label) {
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+function renderTutorial() {
+  const [titleKey, bodyKey] = tutorialSteps[state.tutorialStep];
+  elements.tutorialDialog.dataset.step = String(state.tutorialStep);
+  elements.tutorialProgress.textContent = t("tutorialStep", {
+    current: state.tutorialStep + 1,
+    total: tutorialSteps.length,
+  });
+  elements.tutorialTitle.textContent = t(titleKey);
+  elements.tutorialBody.textContent = t(bodyKey);
+  elements.tutorialBack.disabled = state.tutorialStep === 0;
+  elements.tutorialNext.textContent = t(
+    state.tutorialStep === tutorialSteps.length - 1 ? "tutorialDone" : "tutorialNext"
+  );
+}
+
+function openTutorial() {
+  state.tutorialStep = 0;
+  renderTutorial();
+  elements.tutorialDialog.showModal();
+}
+
+function finishTutorial() {
+  try { localStorage.setItem("burst-tutorial-wasm-v1", "complete"); } catch {}
+  if (elements.tutorialDialog.open) elements.tutorialDialog.close();
+}
+
+function browserDiagnostics() {
+  const brands = navigator.userAgentData?.brands
+    ?.map(item => `${item.brand} ${item.version}`)
+    .join(", ");
+  return {
+    browser: brands || navigator.userAgent,
+    platform: navigator.userAgentData?.platform || navigator.platform || t("diagUnavailable"),
+    language: navigator.language || t("diagUnavailable"),
+    cpu: navigator.hardwareConcurrency || t("diagUnavailable"),
+    memory: navigator.deviceMemory ? `${navigator.deviceMemory} GiB` : t("diagUnavailable"),
+    isolation: String(window.crossOriginIsolated),
+  };
+}
+
+async function openAbout() {
+  let build = {};
+  try {
+    const response = await fetch("./build-info.json");
+    if (response.ok) build = await response.json();
+  } catch {}
+  const browser = browserDiagnostics();
+  renderDiagnostics([
+    ["diagVersion", build.app_version],
+    ["diagCommit", build.commit],
+    ["diagRustc", build.rustc],
+    ["diagCargo", build.cargo],
+    ["diagWasmPack", build.wasm_pack],
+    ["diagTarget", build.build_target],
+    ["diagBrowser", browser.browser],
+    ["diagPlatform", browser.platform],
+    ["diagLanguage", browser.language],
+    ["diagBrowserCpu", browser.cpu],
+    ["diagBrowserMemory", browser.memory],
+    ["diagIsolation", browser.isolation],
+  ]);
+  elements.aboutDialog.showModal();
+}
+
+function renderDiagnostics(rows) {
+  elements.diagnosticsList.innerHTML = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `<dt>${escapeHtml(t(key))}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
 }
 
 function setProgress(stageKey, fraction, detail = "") {
@@ -1207,6 +1310,25 @@ function escapeHtml(value) {
 
 elements.pickBtn.addEventListener("click", chooseSourceFolder);
 elements.emptyPickBtn.addEventListener("click", chooseSourceFolder);
+elements.tutorialBtn.addEventListener("click", openTutorial);
+elements.aboutBtn.addEventListener("click", openAbout);
+elements.closeAboutBtn.addEventListener("click", () => elements.aboutDialog.close());
+elements.tutorialSkip.addEventListener("click", finishTutorial);
+elements.tutorialBack.addEventListener("click", () => {
+  if (state.tutorialStep > 0) state.tutorialStep -= 1;
+  renderTutorial();
+});
+elements.tutorialNext.addEventListener("click", () => {
+  if (state.tutorialStep === tutorialSteps.length - 1) {
+    finishTutorial();
+    return;
+  }
+  state.tutorialStep += 1;
+  renderTutorial();
+});
+elements.tutorialDialog.addEventListener("cancel", () => {
+  try { localStorage.setItem("burst-tutorial-wasm-v1", "complete"); } catch {}
+});
 elements.folderInput.addEventListener("change", event => {
   const files = Array.from(event.target.files || []);
   event.target.value = "";
@@ -1321,6 +1443,9 @@ async function initialize() {
   if (testFixture === "synthetic" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
     await scanFiles(await syntheticFixture());
   }
+  let tutorialComplete = false;
+  try { tutorialComplete = localStorage.getItem("burst-tutorial-wasm-v1") === "complete"; } catch {}
+  if (!tutorialComplete) openTutorial();
 }
 
 initialize().catch(error => {

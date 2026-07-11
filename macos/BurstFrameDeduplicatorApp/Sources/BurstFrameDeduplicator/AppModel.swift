@@ -40,12 +40,33 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var colorScheme: ColorScheme? {
-        switch self {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
+    func applyToApplication() {
+        let appearance: NSAppearance? = switch self {
+        case .system:
+            Self.currentSystemAppearance
+        case .light:
+            NSAppearance(named: .aqua)
+        case .dark:
+            NSAppearance(named: .darkAqua)
         }
+        NSApplication.shared.appearance = appearance
+        for window in NSApplication.shared.windows {
+            window.appearance = appearance
+            window.contentView?.appearance = appearance
+            window.contentView?.needsDisplay = true
+        }
+    }
+
+    private static var currentSystemAppearance: NSAppearance? {
+        let dark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        let highContrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        let name: NSAppearance.Name = switch (dark, highContrast) {
+        case (true, true): .accessibilityHighContrastDarkAqua
+        case (true, false): .darkAqua
+        case (false, true): .accessibilityHighContrastAqua
+        case (false, false): .aqua
+        }
+        return NSAppearance(named: name)
     }
 }
 
@@ -56,7 +77,10 @@ final class AppModel: ObservableObject {
     @Published var outputURL: URL?
     @Published private(set) var resultsRootPath: String
     @Published var appearanceMode: AppearanceMode {
-        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: "appearanceMode") }
+        didSet {
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: "appearanceMode")
+            appearanceMode.applyToApplication()
+        }
     }
     @Published var options = ScanOptions() {
         didSet { persistOptions() }
@@ -82,8 +106,10 @@ final class AppModel: ObservableObject {
     @Published var fileOperationInProgress = false
     @Published var relocationInProgress = false
     @Published var relocationProgress: ProgressUpdate?
+    @Published var tutorialPresented = false
 
     private let bridge: RustBridge
+    private var appearanceObserver: NSObjectProtocol?
     private let decisionQueue = DispatchQueue(label: "org.burstframe.deduplicator.decisions", qos: .userInitiated)
     private var decisionGenerations: [String: Int] = [:]
     private var assetIndex: [String: AssetRecord] = [:]
@@ -104,10 +130,31 @@ final class AppModel: ObservableObject {
         } else if let defaults = try? bridge.defaultOptions() {
             options = defaults
         }
+        appearanceMode.applyToApplication()
+        appearanceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard self?.appearanceMode == .system else { return }
+                AppearanceMode.system.applyToApplication()
+            }
+        }
+        tutorialPresented = !UserDefaults.standard.bool(forKey: "tutorialCompleted")
     }
 
     var assetsByID: [String: AssetRecord] {
         assetIndex
+    }
+
+    func showTutorial() {
+        tutorialPresented = true
+    }
+
+    func dismissTutorial() {
+        UserDefaults.standard.set(true, forKey: "tutorialCompleted")
+        tutorialPresented = false
     }
 
     var visibleStacks: [BurstStack] {

@@ -100,19 +100,20 @@ struct ContinuousLevelBar: View {
             let position = max(3, min(proxy.size.width - 3, proxy.size.width * value.clamped(to: 0...1)))
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(.quaternary)
+                    .fill(.quaternary.opacity(0.62))
                 Capsule()
                     .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                    .opacity(0.34)
                 Capsule()
-                    .strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
+                    .strokeBorder(.primary.opacity(0.06), lineWidth: 0.5)
                 Circle()
                     .fill(.background)
-                    .overlay(Circle().stroke(.primary.opacity(0.68), lineWidth: 1))
-                    .frame(width: 9, height: 9)
-                    .offset(x: position - 4.5)
+                    .overlay(Circle().stroke(.primary.opacity(0.42), lineWidth: 0.75))
+                    .frame(width: 6, height: 6)
+                    .offset(x: position - 3)
             }
         }
-        .frame(height: 9)
+        .frame(height: 6)
         .accessibilityValue(Text(value, format: .percent.precision(.fractionLength(0))))
     }
 }

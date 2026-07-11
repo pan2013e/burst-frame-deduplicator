@@ -16,6 +16,8 @@
       <div id="sourceLabel" class="source-label" data-i18n="browserMode"></div>
     </div>
     <div class="header-actions">
+      <button type="button" id="tutorialBtn" class="icon-button utility-button">?</button>
+      <button type="button" id="aboutBtn" class="icon-button utility-button">ⓘ</button>
       <details id="localeMenu" class="locale-menu">
         <summary aria-haspopup="menu">文/A</summary>
         <div class="locale-popover" role="menu">
@@ -70,6 +72,51 @@
   </main>
 
   <div id="toast" class="toast" hidden role="status"></div>
+
+  <dialog id="aboutDialog" class="info-dialog">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <h2 id="aboutDialogTitle"></h2>
+          <p id="aboutDescription"></p>
+        </div>
+        <button type="button" id="closeAboutBtn" class="icon-button">×</button>
+      </header>
+      <a id="githubLink" class="repository-link" href="https://github.com/pan2013e/burst-frame-deduplicator" target="_blank" rel="noreferrer"></a>
+      <section>
+        <h3 id="diagnosticsTitle"></h3>
+        <dl id="diagnosticsList" class="diagnostics-list"></dl>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="tutorialDialog" class="tutorial-dialog" data-step="0">
+    <div class="dialog-shell tutorial-shell">
+      <header class="tutorial-heading">
+        <strong id="tutorialLabel"></strong>
+        <span id="tutorialProgress"></span>
+      </header>
+      <div class="tutorial-demo" aria-hidden="true">
+        <div class="tutorial-source"><span>▣</span><b id="tutorialDemoSource"></b></div>
+        <div class="tutorial-frames">
+          <div class="tutorial-frame reject"><span>✈</span><b id="tutorialDemoReject"></b><i style="--quality: 42%"></i></div>
+          <div class="tutorial-frame keep"><span>✈</span><b id="tutorialDemoKeep"></b><i style="--quality: 91%"></i></div>
+          <div class="tutorial-frame review"><span>✈</span><b id="tutorialDemoReview"></b><i style="--quality: 68%"></i></div>
+        </div>
+        <div class="tutorial-safe-move"><span>▣</span><span>→</span><span>⇩</span><span>↶</span></div>
+      </div>
+      <div>
+        <h2 id="tutorialTitle"></h2>
+        <p id="tutorialBody"></p>
+      </div>
+      <footer class="dialog-actions">
+        <button type="button" id="tutorialSkip" class="secondary"></button>
+        <span class="action-spacer"></span>
+        <button type="button" id="tutorialBack" class="secondary"></button>
+        <button type="button" id="tutorialNext" class="primary"></button>
+      </footer>
+    </div>
+  </dialog>
 
   <div id="viewer" class="viewer" hidden aria-hidden="true" tabindex="-1">
     <div class="viewer-bar">

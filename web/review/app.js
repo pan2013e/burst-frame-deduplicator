@@ -10,7 +10,11 @@ const elements = Object.fromEntries([
   "saveStats", "operationStatus", "destinationLabel", "destinationInput", "refreshScriptsButton",
   "posixTab", "powershellTab", "copyScriptButton", "scriptCode", "exportJsonButton",
   "restoreButton", "moveButton", "confirmDialog", "confirmTitle", "confirmMessage",
-  "confirmCancel", "confirmAction",
+  "confirmCancel", "confirmAction", "tutorialButton", "aboutButton", "aboutDialog",
+  "aboutDialogTitle", "aboutDescription", "closeAboutButton", "githubLink", "diagnosticsTitle",
+  "diagnosticsList", "tutorialDialog", "tutorialLabel", "tutorialProgress", "tutorialDemoSource",
+  "tutorialDemoReject", "tutorialDemoKeep", "tutorialDemoReview", "tutorialTitle", "tutorialBody",
+  "tutorialSkip", "tutorialBack", "tutorialNext",
 ].map(id => [id, document.getElementById(id)]));
 
 const supportedLocales = ["en", "zh-CN"];
@@ -47,7 +51,15 @@ const state = {
   viewerX: 0,
   viewerY: 0,
   dragStart: null,
+  tutorialStep: 0,
 };
+
+const tutorialSteps = [
+  ["tutorialScanTitle", "tutorialScanBody"],
+  ["tutorialSuggestionsTitle", "tutorialSuggestionsBody"],
+  ["tutorialInspectTitle", "tutorialInspectBody"],
+  ["tutorialMoveTitle", "tutorialMoveBody"],
+];
 
 function initialLocale() {
   const requested = new URLSearchParams(location.search).get("lang")
@@ -113,12 +125,112 @@ function applyLocale() {
   elements.exportJsonButton.textContent = t("exportReviewJson");
   elements.restoreButton.textContent = t("restoreMoved");
   elements.confirmCancel.textContent = t("cancel");
+  setButtonLabel(elements.tutorialButton, t("tutorial"));
+  setButtonLabel(elements.aboutButton, t("about"));
+  setButtonLabel(elements.closeAboutButton, t("close"));
+  elements.aboutDialogTitle.textContent = t("aboutTitle");
+  elements.aboutDescription.textContent = t("aboutDescription");
+  elements.githubLink.textContent = t("githubRepository");
+  elements.diagnosticsTitle.textContent = t("diagnostics");
+  elements.tutorialLabel.textContent = t("tutorial");
+  elements.tutorialDemoSource.textContent = t("tutorialDemoSource");
+  elements.tutorialDemoReject.textContent = t("tutorialDemoReject");
+  elements.tutorialDemoKeep.textContent = t("tutorialDemoKeep");
+  elements.tutorialDemoReview.textContent = t("tutorialDemoReview");
+  elements.tutorialSkip.textContent = t("tutorialSkip");
+  elements.tutorialBack.textContent = t("tutorialBack");
+  renderTutorial();
   if (state.manifest) {
     const selectedFilter = elements.filterSelect.dataset.selected || "all";
     elements.filterSelect.value = selectedFilter;
     render();
     updateSaveDialog();
   }
+}
+
+function renderTutorial() {
+  const [titleKey, bodyKey] = tutorialSteps[state.tutorialStep];
+  elements.tutorialDialog.dataset.step = String(state.tutorialStep);
+  elements.tutorialProgress.textContent = t("tutorialStep", {
+    current: state.tutorialStep + 1,
+    total: tutorialSteps.length,
+  });
+  elements.tutorialTitle.textContent = t(titleKey);
+  elements.tutorialBody.textContent = t(bodyKey);
+  elements.tutorialBack.disabled = state.tutorialStep === 0;
+  elements.tutorialNext.textContent = t(
+    state.tutorialStep === tutorialSteps.length - 1 ? "tutorialDone" : "tutorialNext"
+  );
+}
+
+function openTutorial() {
+  state.tutorialStep = 0;
+  renderTutorial();
+  elements.tutorialDialog.showModal();
+}
+
+function finishTutorial() {
+  try { localStorage.setItem("burst-tutorial-local-v1", "complete"); } catch {}
+  if (elements.tutorialDialog.open) elements.tutorialDialog.close();
+}
+
+function browserDiagnostics() {
+  const brands = navigator.userAgentData?.brands
+    ?.map(item => `${item.brand} ${item.version}`)
+    .join(", ");
+  return {
+    browser: brands || navigator.userAgent,
+    platform: navigator.userAgentData?.platform || navigator.platform || t("diagUnavailable"),
+    language: navigator.language || t("diagUnavailable"),
+    cpu: navigator.hardwareConcurrency || t("diagUnavailable"),
+    memory: navigator.deviceMemory ? `${navigator.deviceMemory} GiB` : t("diagUnavailable"),
+    isolation: String(window.crossOriginIsolated),
+  };
+}
+
+async function openAbout() {
+  let backend = {};
+  try {
+    const response = await fetch("/api/diagnostics");
+    if (response.ok) backend = await response.json();
+  } catch {}
+  const browser = browserDiagnostics();
+  renderDiagnostics([
+    ["diagVersion", backend.app_version],
+    ["diagCommit", backend.commit],
+    ["diagRustc", backend.rustc],
+    ["diagCargo", backend.cargo],
+    ["diagTarget", backend.build_target],
+    ["diagRuntime", backend.runtime_os && `${backend.runtime_os} (${backend.runtime_arch})`],
+    ["diagCpu", backend.logical_cpus],
+    ["diagMemory", formatBytes(backend.memory_bytes)],
+    ["diagAcceleration", backend.acceleration],
+    ["diagDetector", backend.detector],
+    ["diagRawDecoder", backend.raw_decoder],
+    ["diagBrowser", browser.browser],
+    ["diagPlatform", browser.platform],
+    ["diagLanguage", browser.language],
+    ["diagBrowserCpu", browser.cpu],
+    ["diagBrowserMemory", browser.memory],
+    ["diagIsolation", browser.isolation],
+  ]);
+  elements.aboutDialog.showModal();
+}
+
+function renderDiagnostics(rows) {
+  elements.diagnosticsList.innerHTML = rows
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `<dt>${escapeHtml(t(key))}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join("");
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(Number(value))) return null;
+  return new Intl.NumberFormat(state.locale, {
+    style: "unit",
+    unit: "gigabyte",
+    maximumFractionDigits: 1,
+  }).format(Number(value) / 1073741824);
 }
 
 function setButtonLabel(button, label) {
@@ -797,6 +909,25 @@ $$('[data-locale]').forEach(button => button.addEventListener("click", () => {
 }));
 
 elements.saveButton.addEventListener("click", openSaveDialog);
+elements.tutorialButton.addEventListener("click", openTutorial);
+elements.aboutButton.addEventListener("click", openAbout);
+elements.closeAboutButton.addEventListener("click", () => elements.aboutDialog.close());
+elements.tutorialSkip.addEventListener("click", finishTutorial);
+elements.tutorialBack.addEventListener("click", () => {
+  if (state.tutorialStep > 0) state.tutorialStep -= 1;
+  renderTutorial();
+});
+elements.tutorialNext.addEventListener("click", () => {
+  if (state.tutorialStep === tutorialSteps.length - 1) {
+    finishTutorial();
+    return;
+  }
+  state.tutorialStep += 1;
+  renderTutorial();
+});
+elements.tutorialDialog.addEventListener("cancel", () => {
+  try { localStorage.setItem("burst-tutorial-local-v1", "complete"); } catch {}
+});
 elements.refreshScriptsButton.addEventListener("click", refreshScripts);
 elements.destinationInput.addEventListener("input", () => {
   clearTimeout(state.scriptRefreshTimer);
@@ -867,6 +998,9 @@ async function initialize() {
   await loadLocaleCatalogs();
   applyLocale();
   await loadRun();
+  let tutorialComplete = false;
+  try { tutorialComplete = localStorage.getItem("burst-tutorial-local-v1") === "complete"; } catch {}
+  if (!tutorialComplete) openTutorial();
 }
 
 initialize().catch(error => {
