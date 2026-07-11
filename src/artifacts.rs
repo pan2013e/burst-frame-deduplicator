@@ -8,8 +8,8 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::types::{
-    AssetRecord, BurstCluster, ReviewDecision, ReviewState, RunManifest, SuggestedAction,
-    UserDecision,
+    AssetRecord, BurstCluster, BurstSequence, ReviewDecision, ReviewState, RunManifest,
+    SuggestedAction, UserDecision,
 };
 
 const MANIFEST: &str = "manifest.json";
@@ -71,6 +71,7 @@ pub fn export_reviewed_artifacts(run_dir: &Path) -> anyhow::Result<()> {
         .collect();
 
     write_assets_csv(run_dir, &manifest, &decisions)?;
+    write_bursts_csv(run_dir, &manifest)?;
     write_clusters_csv(run_dir, &manifest)?;
     write_move_script(run_dir, &manifest, &decisions)?;
     write_review_launcher(run_dir)?;
@@ -116,6 +117,7 @@ struct AssetCsvRow {
     final_action: String,
     user_decision: String,
     suggested_action: String,
+    burst_id: usize,
     cluster_id: usize,
     rank: usize,
     score: f64,
@@ -129,10 +131,13 @@ struct AssetCsvRow {
     width: u32,
     height: u32,
     sharpness: f64,
+    subject_sharpness: f64,
     completeness: f64,
     contrast: f64,
     exposure_score: f64,
     object_confidence: f64,
+    nearest_visual_distance: f64,
+    duplicate_confidence: f64,
     note: String,
 }
 
@@ -177,6 +182,7 @@ fn csv_row(asset: &AssetRecord, decision: Option<&ReviewDecision>) -> AssetCsvRo
         final_action,
         user_decision,
         suggested_action: suggested_action_name(asset.suggestion.action).to_string(),
+        burst_id: asset.burst_id,
         cluster_id: asset.cluster_id,
         rank: asset.suggestion.rank,
         score: asset.suggestion.score,
@@ -204,10 +210,13 @@ fn csv_row(asset: &AssetRecord, decision: Option<&ReviewDecision>) -> AssetCsvRo
         width: asset.width,
         height: asset.height,
         sharpness: asset.metrics.sharpness,
+        subject_sharpness: asset.metrics.subject_sharpness,
         completeness: asset.metrics.completeness,
         contrast: asset.metrics.contrast,
         exposure_score: asset.metrics.exposure_score,
         object_confidence: asset.metrics.object_confidence,
+        nearest_visual_distance: asset.similarity.nearest_distance,
+        duplicate_confidence: asset.similarity.duplicate_confidence,
         note: decision
             .and_then(|entry| entry.note.clone())
             .unwrap_or_default(),
@@ -223,9 +232,49 @@ fn write_clusters_csv(run_dir: &Path, manifest: &RunManifest) -> anyhow::Result<
     Ok(())
 }
 
+fn write_bursts_csv(run_dir: &Path, manifest: &RunManifest) -> anyhow::Result<()> {
+    let mut writer = csv::Writer::from_path(run_dir.join("bursts.csv"))?;
+    for burst in &manifest.bursts {
+        writer.serialize(BurstCsvRow::from(burst))?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct BurstCsvRow {
+    id: usize,
+    asset_ids: String,
+    cluster_ids: String,
+    directory: String,
+    prefix: String,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+}
+
+impl From<&BurstSequence> for BurstCsvRow {
+    fn from(value: &BurstSequence) -> Self {
+        Self {
+            id: value.id,
+            asset_ids: value.asset_ids.join("|"),
+            cluster_ids: value
+                .cluster_ids
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join("|"),
+            directory: value.directory.clone(),
+            prefix: value.prefix.clone(),
+            start_ms: value.start_ms,
+            end_ms: value.end_ms,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ClusterCsvRow {
     id: usize,
+    burst_id: usize,
     asset_ids: String,
     directory: String,
     prefix: String,
@@ -233,12 +282,15 @@ struct ClusterCsvRow {
     end_ms: Option<i64>,
     keep_count: usize,
     best_asset_id: String,
+    similarity_confidence: f64,
+    max_distance: f64,
 }
 
 impl From<&BurstCluster> for ClusterCsvRow {
     fn from(value: &BurstCluster) -> Self {
         Self {
             id: value.id,
+            burst_id: value.burst_id,
             asset_ids: value.asset_ids.join("|"),
             directory: value.directory.clone(),
             prefix: value.prefix.clone(),
@@ -246,6 +298,8 @@ impl From<&BurstCluster> for ClusterCsvRow {
             end_ms: value.end_ms,
             keep_count: value.keep_count,
             best_asset_id: value.best_asset_id.clone().unwrap_or_default(),
+            similarity_confidence: value.similarity_confidence,
+            max_distance: value.max_distance,
         }
     }
 }

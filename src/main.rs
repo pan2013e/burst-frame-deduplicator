@@ -5,10 +5,13 @@ mod assets;
 mod decode;
 mod detector;
 mod features;
+#[cfg(feature = "gui")]
+mod gui;
 mod metadata;
 #[cfg(all(target_os = "macos", feature = "metal-accel"))]
 mod metal_accel;
 mod pipeline;
+mod progress;
 mod server;
 mod types;
 
@@ -19,6 +22,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::pipeline::run_scan;
+use crate::progress::terminal_progress_reporter;
 use crate::types::{AccelerationPreference, DetectorPreference, ScanOptions};
 
 #[derive(Debug, Parser)]
@@ -28,11 +32,14 @@ use crate::types::{AccelerationPreference, DetectorPreference, ScanOptions};
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Launch the native desktop application.
+    #[cfg(feature = "gui")]
+    Gui,
     /// Scan a folder or mounted SD card and write review artifacts.
     Scan {
         /// Source folder, for example /Volumes/CARD/DCIM.
@@ -88,7 +95,7 @@ struct ScanArgs {
     #[arg(long, default_value_t = 2048)]
     refine_size: u32,
     /// Maximum high-resolution refinement candidates per burst cluster.
-    #[arg(long, default_value_t = 6)]
+    #[arg(long, default_value_t = 2)]
     refine_candidates_per_cluster: usize,
     /// Disable targeted high-resolution refinement.
     #[arg(long)]
@@ -105,9 +112,15 @@ struct ScanArgs {
     /// Maximum total time span in seconds for one burst cluster.
     #[arg(long, default_value_t = 1.80)]
     max_cluster_span: f64,
-    /// Maximum perceptual hash distance between neighbors before splitting a burst.
+    /// Maximum whole-frame hash distance used as a fast scene-change guard.
     #[arg(long, default_value_t = 30)]
     max_hash_gap: u32,
+    /// Maximum subject-aware visual distance inside one near-duplicate stack.
+    #[arg(long, default_value_t = 0.20)]
+    max_duplicate_distance: f64,
+    /// Minimum confidence required before suggesting an automatic reject.
+    #[arg(long, default_value_t = 0.52)]
+    min_duplicate_confidence: f64,
     /// Fixed keep count per cluster. Omit for automatic cluster-size-based counts.
     #[arg(long)]
     keepers_per_cluster: Option<usize>,
@@ -180,6 +193,8 @@ impl From<ScanArgs> for ScanOptions {
             max_time_gap_ms: (value.max_time_gap * 1000.0).round().max(0.0) as i64,
             max_cluster_span_ms: (value.max_cluster_span * 1000.0).round().max(0.0) as i64,
             max_hash_gap: value.max_hash_gap,
+            max_duplicate_distance: value.max_duplicate_distance.clamp(0.01, 1.0),
+            min_duplicate_confidence: value.min_duplicate_confidence.clamp(0.0, 1.0),
             keepers_per_cluster: value.keepers_per_cluster,
             cull_singletons: value.cull_singletons,
             workers: value.workers,
@@ -193,9 +208,22 @@ impl From<ScanArgs> for ScanOptions {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        #[cfg(feature = "gui")]
+        return gui::run();
+        #[cfg(not(feature = "gui"))]
+        {
+            <Cli as clap::CommandFactory>::command().print_help()?;
+            println!();
+            return Ok(());
+        }
+    };
+    match command {
+        #[cfg(feature = "gui")]
+        Command::Gui => gui::run()?,
         Command::Scan { root, out, options } => {
-            let run_dir = run_scan(&root, out, options.into()).await?;
+            let run_dir =
+                run_scan(&root, out, options.into(), terminal_progress_reporter()).await?;
             println!("Wrote run artifacts to {}", run_dir.display());
         }
         Command::App {
@@ -206,7 +234,8 @@ async fn main() -> anyhow::Result<()> {
             open,
             options,
         } => {
-            let run_dir = run_scan(&root, out, options.into()).await?;
+            let run_dir =
+                run_scan(&root, out, options.into(), terminal_progress_reporter()).await?;
             serve(run_dir, host, port, open).await?;
         }
         Command::Serve {

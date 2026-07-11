@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -71,6 +72,20 @@ struct MoveFailure {
 }
 
 pub async fn serve(run_dir: PathBuf, addr: SocketAddr) -> anyhow::Result<()> {
+    serve_with_shutdown(run_dir, addr, async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+}
+
+pub async fn serve_with_shutdown<F>(
+    run_dir: PathBuf,
+    addr: SocketAddr,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let manifest = read_manifest(&run_dir)?;
     let review = ensure_review_state(&run_dir, &manifest)?;
     let state = AppState {
@@ -98,9 +113,7 @@ pub async fn serve(run_dir: PathBuf, addr: SocketAddr) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {addr}"))?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }
@@ -519,7 +532,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       top: 0;
       z-index: 10;
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) minmax(420px, 560px);
       gap: 14px;
       align-items: center;
       padding: 14px 22px;
@@ -527,9 +540,12 @@ const INDEX_HTML: &str = r#"<!doctype html>
       border-bottom: 1px solid var(--line);
       backdrop-filter: blur(10px);
     }
+    header > div { min-width: 0; }
     h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
     .summary { color: var(--muted); overflow-wrap: anywhere; }
-    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+    .toolbar input { flex: 1 1 150px; min-width: 120px; }
+    .toolbar select { flex: 0 1 170px; min-width: 130px; }
     button, input, select, textarea {
       font: inherit;
       color: var(--ink);
@@ -606,13 +622,19 @@ const INDEX_HTML: &str = r#"<!doctype html>
     .item.error { border-color: color-mix(in srgb, var(--error) 70%, var(--line)); }
     .thumb {
       position: relative;
+      width: 100%;
       aspect-ratio: 4 / 3;
       background: #242825;
+      border: 0;
+      border-radius: 0;
+      min-height: 0;
+      padding: 0;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: zoom-in;
     }
+    .thumb:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
     .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
     .badge {
       position: absolute;
@@ -687,6 +709,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       background: rgba(0,0,0,.86);
       color: white;
     }
+    .viewer:focus { outline: none; }
     .viewer.open { display: grid; }
     .viewerbar {
       display: flex;
@@ -764,17 +787,25 @@ const INDEX_HTML: &str = r#"<!doctype html>
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @media (max-width: 820px) {
+    @media (max-width: 1100px) {
       header { grid-template-columns: 1fr; }
       .toolbar { justify-content: flex-start; }
+    }
+    @media (max-width: 620px) {
       main { padding: 12px; }
+      header { padding: 12px; }
+      .statusbar { grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); }
+      .cluster-head { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+      .cluster-head > .cluster-meta { grid-column: 1 / -1; grid-row: 2; }
+      .cluster-head .toggle { grid-column: 2; grid-row: 1; }
+      .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); padding: 8px; gap: 8px; }
     }
   </style>
 </head>
 <body>
   <header>
     <div>
-      <h1>Burst Review</h1>
+      <h1 id="appTitle">Burst Review</h1>
       <div class="summary" id="root"></div>
     </div>
     <div class="toolbar">
@@ -784,7 +815,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <option value="review">Needs review</option>
         <option value="keep">Kept</option>
         <option value="reject">Rejected</option>
-        <option value="burst">Burst clusters</option>
+        <option value="burst">Multi-frame stacks</option>
+      </select>
+      <select id="locale" aria-label="Language">
+        <option value="en">English</option>
+        <option value="zh-CN">简体中文</option>
       </select>
       <button id="exportBtn" title="Write updated keep/reject review files">Save Review</button>
       <button id="moveBtn" class="danger">Move rejects</button>
@@ -794,10 +829,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <section class="statusbar" id="stats"></section>
     <section class="clusters" id="clusters"></section>
   </main>
-  <div class="viewer" id="viewer" aria-hidden="true">
+  <div class="viewer" id="viewer" aria-hidden="true" tabindex="-1">
     <div class="viewerbar">
       <div class="title" id="viewerTitle">Full resolution</div>
-      <label class="viewer-keep"><input id="viewerKeepBox" type="checkbox"> Keep</label>
+      <label class="viewer-keep"><input id="viewerKeepBox" type="checkbox"> <span id="viewerKeepText">Keep</span></label>
       <button id="zoomOutBtn">-</button>
       <button id="zoomInBtn">+</button>
       <button id="zoomResetBtn">Fit</button>
@@ -805,7 +840,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     </div>
     <div class="viewport" id="viewport">
       <img id="viewerImg" alt="">
-      <div class="viewer-loading" id="viewerLoading" hidden><div class="spinner"></div><span>Loading preview</span></div>
+      <div class="viewer-loading" id="viewerLoading" hidden><div class="spinner"></div><span id="viewerLoadingText">Loading preview</span></div>
       <div class="viewer-error" id="viewerError" hidden></div>
     </div>
   </div>
@@ -816,6 +851,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const assetById = new Map();
     const clusterByAsset = new Map();
     const clusterAssets = new Map();
+    const burstByAsset = new Map();
+    const burstAssets = new Map();
     const manuallyOpenedClusters = new Set();
     const manuallyClosedClusters = new Set();
     const rawPreviewCache = new Map();
@@ -827,6 +864,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     let currentViewerClusterIds = [];
     let viewerUrl = null;
     let viewerLoadToken = 0;
+    let viewerPreviousFocus = null;
     let viewerScale = 1;
     let viewerX = 0;
     let viewerY = 0;
@@ -837,6 +875,83 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const browserImageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
     const RAW_PREVIEW_CACHE_MAX_BYTES = 128 * 1024 * 1024;
     const RAW_PREVIEW_CACHE_MAX_ITEMS = 24;
+    const i18n = {
+      en: {
+        title: 'Burst Review', source: 'Source', selectedFolder: 'selected folder', find: 'Find filename',
+        all: 'All frames', needsReview: 'Needs review', kept: 'Kept', rejected: 'Rejected', multi: 'Multi-frame stacks',
+        save: 'Save Review', saveTitle: 'Write updated keep/reject review files', moveRejects: count => `Move ${count} rejects`,
+        noRejects: 'No rejects', images: 'Images', bursts: 'Bursts', stacks: 'Stacks', keep: 'Keep', reject: 'Reject',
+        review: 'Review', manual: 'Manual edits', shown: (count, total) => count === total ? `${count} frames` : `${count} shown of ${total}`,
+        expanded: 'expanded', collapsed: 'collapsed', stackTitle: (burst, stack) => `Burst ${burst} · Stack ${stack}`,
+        stackSummary: (shown, status, keep, confidence) => `${shown} · ${status} · keep ${keep} · confidence ${confidence}`,
+        noPrefix: 'no prefix', collapseTitle: 'Collapse or expand stack', openTitle: 'Open full-resolution view',
+        openLabel: filename => `Open full-resolution view for ${filename}`, why: 'Why', reset: 'Reset to suggestion',
+        closeCall: 'Close call; inspect before moving rejects.', decodeFailed: 'Could not decode.',
+        duplicate: 'High-confidence near duplicate with a better frame in this stack.', distinct: 'Distinct frame.',
+        best: 'Best quality in this near-duplicate stack.', exifUnavailable: 'EXIF unavailable',
+        showMore: count => `Show ${count} more stacks`, noMatches: 'No frames match the current filter.',
+        rank: asset => `Rank ${asset.suggestion.rank}, score ${asset.suggestion.score.toFixed(3)}.`,
+        sharpness: asset => `Whole-frame sharpness ${asset.metrics.sharpness.toFixed(1)}, subject sharpness ${(asset.metrics.subject_sharpness || 0).toFixed(1)}, completeness ${asset.metrics.completeness.toFixed(2)}.`,
+        similarity: asset => `Nearest visual distance ${(asset.similarity?.nearest_distance || 0).toFixed(3)} (subject ${(asset.similarity?.nearest_subject_distance || 0).toFixed(3)}, scene ${(asset.similarity?.nearest_global_distance || 0).toFixed(3)}); duplicate confidence ${(asset.similarity?.duplicate_confidence || 0).toFixed(2)}.`,
+        backend: asset => `Feature backend: ${asset.feature_backend || 'unknown'}; decoder: ${asset.decoder || 'unknown'}.`,
+        detectorOff: 'Detector: not used', exposure: asset => `Exposure score ${asset.metrics.exposure_score.toFixed(2)}; clipped pixels ${(asset.metrics.clipped_fraction * 100).toFixed(2)}%.`,
+        rawPreview: 'RAW preview', fit: 'Fit', close: 'Close', loading: 'Loading preview',
+        previewUnavailable: 'Preview image could not be loaded. The source path may be inaccessible or unsupported.',
+        saveDone: 'Review files saved in the run directory.',
+        moveConfirm: count => `Move ${count} rejected asset(s) into a local folder under this run directory?\n\nThis copies each file, verifies the copy size, then removes the original from the source card/folder. You can delete the local moved_rejects folder yourself later.`,
+        moved: result => `Moved ${result.moved_files} file(s) from ${result.moved_assets} asset(s).\nDestination: ${result.destination}\nMissing: ${result.missing_files.length}\nFailed: ${result.failed_files.length}`,
+      },
+      'zh-CN': {
+        title: '连拍照片审核', source: '来源', selectedFolder: '所选文件夹', find: '查找文件名',
+        all: '全部照片', needsReview: '需要审核', kept: '保留', rejected: '不保留', multi: '多张相似组',
+        save: '保存审核结果', saveTitle: '写入更新后的保留与不保留审核文件', moveRejects: count => `移动 ${count} 个不保留项目`,
+        noRejects: '没有不保留项目', images: '照片', bursts: '连拍序列', stacks: '相似组', keep: '保留', reject: '不保留',
+        review: '待审核', manual: '手动修改', shown: (count, total) => count === total ? `${count} 张照片` : `显示 ${count} / ${total} 张`,
+        expanded: '已展开', collapsed: '已折叠', stackTitle: (burst, stack) => `连拍 ${burst} · 相似组 ${stack}`,
+        stackSummary: (shown, status, keep, confidence) => `${shown} · ${status} · 保留 ${keep} · 置信度 ${confidence}`,
+        noPrefix: '无前缀', collapseTitle: '折叠或展开相似组', openTitle: '打开全分辨率预览',
+        openLabel: filename => `打开 ${filename} 的全分辨率预览`, why: '详细原因', reset: '恢复建议',
+        closeCall: '结果较接近，请检查后再移动。', decodeFailed: '无法解码。',
+        duplicate: '这是高置信度近似照片，同组中有更好的画面。', distinct: '这是独特画面。',
+        best: '这是本相似组中质量最佳的照片。', exifUnavailable: '无 EXIF 信息',
+        showMore: count => `再显示 ${count} 个相似组`, noMatches: '没有照片符合当前筛选条件。',
+        rank: asset => `组内排名 ${asset.suggestion.rank}，分数 ${asset.suggestion.score.toFixed(3)}。`,
+        sharpness: asset => `全图清晰度 ${asset.metrics.sharpness.toFixed(1)}，主体清晰度 ${(asset.metrics.subject_sharpness || 0).toFixed(1)}，完整度 ${asset.metrics.completeness.toFixed(2)}。`,
+        similarity: asset => `最近视觉距离 ${(asset.similarity?.nearest_distance || 0).toFixed(3)}（主体 ${(asset.similarity?.nearest_subject_distance || 0).toFixed(3)}，场景 ${(asset.similarity?.nearest_global_distance || 0).toFixed(3)}），重复置信度 ${(asset.similarity?.duplicate_confidence || 0).toFixed(2)}。`,
+        backend: asset => `特征后端：${asset.feature_backend || '未知'}；解码器：${asset.decoder || '未知'}。`,
+        detectorOff: '未使用主体检测器', exposure: asset => `曝光分数 ${asset.metrics.exposure_score.toFixed(2)}；剪切像素 ${(asset.metrics.clipped_fraction * 100).toFixed(2)}%。`,
+        rawPreview: 'RAW 预览图', fit: '适应窗口', close: '关闭', loading: '正在加载预览',
+        previewUnavailable: '无法加载预览图，源路径可能不可访问或不受支持。',
+        saveDone: '审核文件已保存到运行结果文件夹。',
+        moveConfirm: count => `将 ${count} 个不保留项目移动到本次运行结果文件夹下的本地目录吗？\n\n程序会复制每个文件、校验副本大小，然后从源存储卡或文件夹移除原文件。之后可自行删除 moved_rejects 文件夹。`,
+        moved: result => `已移动 ${result.moved_files} 个文件，来自 ${result.moved_assets} 个项目。\n目标：${result.destination}\n缺失：${result.missing_files.length}\n失败：${result.failed_files.length}`,
+      }
+    };
+    let locale = (() => {
+      const requested = new URLSearchParams(location.search).get('lang') || localStorage.getItem('burst-locale') || navigator.language;
+      return String(requested).toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+    })();
+    const tr = (key, ...args) => {
+      const value = i18n[locale][key] ?? i18n.en[key] ?? key;
+      return typeof value === 'function' ? value(...args) : value;
+    };
+
+    function applyLocale() {
+      document.documentElement.lang = locale;
+      document.title = tr('title');
+      $('#appTitle').textContent = tr('title');
+      $('#search').placeholder = tr('find');
+      const optionKeys = ['all', 'needsReview', 'kept', 'rejected', 'multi'];
+      $$('#filter option').forEach((option, index) => option.textContent = tr(optionKeys[index]));
+      $('#exportBtn').textContent = tr('save');
+      $('#exportBtn').title = tr('saveTitle');
+      $('#viewerKeepText').textContent = tr('keep');
+      $('#zoomResetBtn').textContent = tr('fit');
+      $('#viewerCloseBtn').textContent = tr('close');
+      $('#viewerLoadingText').textContent = tr('loading');
+      $('#locale').value = locale;
+      if (manifest) render();
+    }
 
     async function load() {
       const res = await fetch('/api/manifest');
@@ -848,11 +963,21 @@ const INDEX_HTML: &str = r#"<!doctype html>
       assetById.clear();
       clusterByAsset.clear();
       clusterAssets.clear();
+      burstByAsset.clear();
+      burstAssets.clear();
       for (const asset of manifest.assets) assetById.set(asset.id, asset);
       for (const cluster of manifest.clusters) {
         const assets = cluster.asset_ids.map(id => assetById.get(id)).filter(Boolean);
         clusterAssets.set(cluster.id, assets);
         for (const asset of assets) clusterByAsset.set(asset.id, cluster.id);
+      }
+      const bursts = manifest.bursts && manifest.bursts.length
+        ? manifest.bursts
+        : manifest.clusters.map(cluster => ({ id: cluster.burst_id || cluster.id, asset_ids: cluster.asset_ids }));
+      for (const burst of bursts) {
+        const assets = burst.asset_ids.map(id => assetById.get(id)).filter(Boolean);
+        burstAssets.set(burst.id, assets);
+        for (const asset of assets) burstByAsset.set(asset.id, burst.id);
       }
       render();
     }
@@ -868,9 +993,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     function render() {
-      $('#root').textContent = manifest.root;
+      $('#root').textContent = `${tr('source')}: ${sourceFolderName(manifest.root)}`;
       renderStats();
       renderClusters();
+    }
+
+    function sourceFolderName(path) {
+      const parts = String(path || '').split(/[\\/]+/).filter(Boolean);
+      return parts.length ? parts[parts.length - 1] : tr('selectedFolder');
     }
 
     function renderStats() {
@@ -878,15 +1008,16 @@ const INDEX_HTML: &str = r#"<!doctype html>
       for (const asset of manifest.assets) counts[finalAction(asset)]++;
       const manual = review.decisions.length;
       $('#stats').innerHTML = [
-        ['Images', manifest.summary.discovered_assets],
-        ['Clusters', manifest.summary.clusters],
-        ['Keep', counts.keep],
-        ['Reject', counts.reject],
-        ['Review', counts.review],
-        ['Manual edits', manual],
+        [tr('images'), manifest.summary.discovered_assets],
+        [tr('bursts'), manifest.summary.bursts || (manifest.bursts || []).length || manifest.summary.clusters],
+        [tr('stacks'), manifest.summary.clusters],
+        [tr('keep'), counts.keep],
+        [tr('reject'), counts.reject],
+        [tr('review'), counts.review],
+        [tr('manual'), manual],
       ].map(([label, value]) => `<div class="stat"><span>${label}</span><b>${value}</b></div>`).join('');
       $('#moveBtn').disabled = counts.reject === 0;
-      $('#moveBtn').textContent = counts.reject ? `Move ${counts.reject} rejects` : 'No rejects';
+      $('#moveBtn').textContent = counts.reject ? tr('moveRejects', counts.reject) : tr('noRejects');
     }
 
     function renderClusters() {
@@ -912,9 +1043,9 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const shownRows = rows.slice(0, visibleClusterLimit);
       let html = shownRows.map(row => clusterHtml(row.cluster, row.assets, row.allAssets, row.collapsed)).join('');
       if (rows.length > shownRows.length) {
-        html += `<button class="show-more" data-show-more="1">Show ${Math.min(visibleClusterLimit, rows.length - shownRows.length)} more clusters</button>`;
+        html += `<button class="show-more" data-show-more="1">${escapeHtml(tr('showMore', Math.min(visibleClusterLimit, rows.length - shownRows.length)))}</button>`;
       }
-      $('#clusters').innerHTML = html || '<div class="empty">No frames match the current filter.</div>';
+      $('#clusters').innerHTML = html || `<div class="empty">${escapeHtml(tr('noMatches'))}</div>`;
       $$('.item input[type="checkbox"][data-indeterminate="1"]').forEach(input => {
         input.indeterminate = true;
       });
@@ -934,17 +1065,17 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     function clusterHtml(cluster, assets, allAssets, collapsed) {
-      const shown = assets.length === cluster.asset_ids.length ? `${assets.length} frames` : `${assets.length} shown of ${cluster.asset_ids.length}`;
-      const clusterStatus = collapsed ? 'collapsed' : 'expanded';
+      const shown = tr('shown', assets.length, cluster.asset_ids.length);
+      const clusterStatus = collapsed ? tr('collapsed') : tr('expanded');
       const diffKeys = exifDiffKeys(allAssets);
       return `<section class="cluster ${collapsed ? 'collapsed' : ''}" data-cluster="${cluster.id}">
         <div class="cluster-head">
           <div>
-            <h2>Cluster ${cluster.id}</h2>
-            <div class="cluster-meta">${escapeHtml(cluster.directory || '.')} · ${escapeHtml(cluster.prefix || '(no prefix)')}</div>
+            <h2>${escapeHtml(tr('stackTitle', cluster.burst_id || cluster.id, cluster.id))}</h2>
+            <div class="cluster-meta">${escapeHtml(cluster.directory || '.')} · ${escapeHtml(cluster.prefix || tr('noPrefix'))}</div>
           </div>
-          <div class="cluster-meta">${shown} · ${clusterStatus} · suggested keep ${cluster.keep_count}</div>
-          <button class="toggle" title="Collapse or expand cluster">${collapsed ? '+' : '-'}</button>
+          <div class="cluster-meta">${escapeHtml(tr('stackSummary', shown, clusterStatus, cluster.keep_count, formatNumber(cluster.similarity_confidence || 0, 2)))}</div>
+          <button class="toggle" title="${escapeHtml(tr('collapseTitle'))}">${collapsed ? '+' : '-'}</button>
         </div>
         <div class="grid">${collapsed ? '' : assets.map(asset => frameHtml(asset, diffKeys)).join('')}</div>
       </section>`;
@@ -956,43 +1087,45 @@ const INDEX_HTML: &str = r#"<!doctype html>
       const checked = action === 'keep' ? 'checked' : '';
       const indeterminate = action === 'review' ? 'data-indeterminate="1"' : '';
       const thumb = asset.thumb ? `<img src="/${asset.thumb}" loading="lazy" alt="">` : '';
+      const filename = escapeHtml(asset.representative.rel_path);
       return `<article class="item ${action}" data-id="${asset.id}">
-        <div class="thumb open-full" title="Open full-resolution view">${thumb}<span class="badge">${badgeText(asset, action)}</span></div>
+        <button type="button" class="thumb open-full" title="${escapeHtml(tr('openTitle'))}" aria-label="${escapeHtml(tr('openLabel', asset.representative.rel_path))}">${thumb}<span class="badge">${badgeText(asset, action)}</span></button>
         <div class="meta">
-          <label class="keepbox"><input type="checkbox" ${checked} ${indeterminate}> Keep</label>
-          <div class="name">${escapeHtml(asset.representative.rel_path)}</div>
+          <label class="keepbox"><input type="checkbox" ${checked} ${indeterminate}> ${escapeHtml(tr('keep'))}</label>
+          <div class="name">${filename}</div>
           <div class="exif">${exifHtml(asset, diffKeys)}</div>
           <div class="reason">${escapeHtml(shortReason(asset))}</div>
           <details>
-            <summary>Why</summary>
+            <summary>${escapeHtml(tr('why'))}</summary>
             <ul>${detailLines(asset).map(line => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
           </details>
-          ${user && user.decision ? '<button class="reset">Reset to suggestion</button>' : ''}
+          ${user && user.decision ? `<button class="reset">${escapeHtml(tr('reset'))}</button>` : ''}
         </div>
       </article>`;
     }
 
     function badgeText(asset, action) {
       if (action === 'error') return 'error';
-      if (action === 'review') return 'review';
-      return action === 'keep' ? 'keep' : 'reject';
+      if (action === 'review') return tr('review');
+      return action === 'keep' ? tr('keep') : tr('reject');
     }
 
     function shortReason(asset) {
-      if (asset.suggestion.action === 'keep') return asset.suggestion.reason;
-      if (asset.suggestion.action === 'review') return 'Close call; inspect before moving rejects.';
-      if (asset.suggestion.action === 'error') return asset.error || 'Could not decode.';
-      return 'Lower-ranked duplicate in this burst.';
+      if (asset.suggestion.action === 'keep') return asset.suggestion.reason === 'distinct frame' ? tr('distinct') : tr('best');
+      if (asset.suggestion.action === 'review') return tr('closeCall');
+      if (asset.suggestion.action === 'error') return asset.error || tr('decodeFailed');
+      return tr('duplicate');
     }
 
     function detailLines(asset) {
-      const detector = asset.detector ? `${asset.detector.backend}: ${asset.detector.explanation}` : 'Detector: not used';
+      const detector = asset.detector ? `${asset.detector.backend}: ${asset.detector.explanation}` : tr('detectorOff');
       return [
-        `Rank ${asset.suggestion.rank}, score ${asset.suggestion.score.toFixed(3)}.`,
-        `Sharpness ${asset.metrics.sharpness.toFixed(1)}, completeness ${asset.metrics.completeness.toFixed(2)}, exposure ${asset.metrics.exposure_score.toFixed(2)}.`,
-        `Feature backend: ${asset.feature_backend || 'unknown'}; decoder: ${asset.decoder || 'unknown'}.`,
+        tr('rank', asset),
+        tr('sharpness', asset),
+        tr('similarity', asset),
+        tr('backend', asset),
         detector,
-        ...asset.suggestion.explanations,
+        tr('exposure', asset),
       ];
     }
 
@@ -1026,7 +1159,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           return `<span class="${diffKeys.has(key) ? 'diff' : ''}">${escapeHtml(text)}</span>`;
         })
         .filter(Boolean);
-      return parts.length ? parts.join('') : '<span>EXIF unavailable</span>';
+      return parts.length ? parts.join('') : `<span>${escapeHtml(tr('exifUnavailable'))}</span>`;
     }
 
     function metadataCompareValue(metadata = {}, key) {
@@ -1066,12 +1199,20 @@ const INDEX_HTML: &str = r#"<!doctype html>
 
     async function openViewer(asset) {
       const loadToken = ++viewerLoadToken;
+      const viewer = $('#viewer');
+      if (!viewer.classList.contains('open')) {
+        viewerPreviousFocus = document.activeElement;
+      }
       currentViewerAssetId = asset.id;
+      const burstId = burstByAsset.get(asset.id);
       const clusterId = clusterByAsset.get(asset.id);
-      currentViewerClusterIds = clusterId ? (clusterAssets.get(clusterId) || []).map(item => item.id) : [asset.id];
+      currentViewerClusterIds = burstId
+        ? (burstAssets.get(burstId) || []).map(item => item.id)
+        : clusterId ? (clusterAssets.get(clusterId) || []).map(item => item.id) : [asset.id];
       $('#viewerTitle').textContent = asset.representative.rel_path;
-      $('#viewer').classList.add('open');
-      $('#viewer').setAttribute('aria-hidden', 'false');
+      viewer.classList.add('open');
+      viewer.setAttribute('aria-hidden', 'false');
+      viewer.focus({ preventScroll: true });
       $('#viewerError').hidden = true;
       $('#viewerImg').hidden = true;
       syncViewerKeep(asset);
@@ -1103,7 +1244,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     async function openRawViewer(asset, loadToken) {
-      $('#viewerTitle').textContent = `${asset.representative.rel_path} (RAW preview)`;
+      $('#viewerTitle').textContent = `${asset.representative.rel_path} (${tr('rawPreview')})`;
       const cached = getCachedRawPreview(asset.id);
       if (cached) {
         showViewerBlob(cached, loadToken);
@@ -1220,7 +1361,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       };
       img.onerror = () => {
         if (loadToken !== viewerLoadToken) return;
-        $('#viewerError').textContent = 'Preview image could not be loaded. The source path may be inaccessible or unsupported.';
+        $('#viewerError').textContent = tr('previewUnavailable');
         $('#viewerError').hidden = false;
         setViewerLoading(false);
       };
@@ -1259,6 +1400,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
       if (viewerUrl) URL.revokeObjectURL(viewerUrl);
       viewerUrl = null;
       $('#viewerImg').removeAttribute('src');
+      if (viewerPreviousFocus && viewerPreviousFocus.isConnected) {
+        viewerPreviousFocus.focus({ preventScroll: true });
+      }
+      viewerPreviousFocus = null;
     }
 
     function fitViewer() {
@@ -1285,7 +1430,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
     async function moveRejects() {
       const rejectCount = manifest.assets.filter(asset => finalAction(asset) === 'reject').length;
       if (!rejectCount) return;
-      const ok = window.confirm(`Move ${rejectCount} rejected asset(s) into a local folder under this run directory?\\n\\nThis copies each file, verifies the copy size, then removes the original from the source card/folder. You can delete the local moved_rejects folder yourself later.`);
+      const ok = window.confirm(tr('moveConfirm', rejectCount));
       if (!ok) return;
       const res = await fetch('/api/move-rejects', {
         method: 'POST',
@@ -1298,7 +1443,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         return;
       }
       const result = JSON.parse(text);
-      window.alert(`Moved ${result.moved_files} file(s) from ${result.moved_assets} asset(s).\\nDestination: ${result.destination}\\nMissing: ${result.missing_files.length}\\nFailed: ${result.failed_files.length}`);
+      window.alert(tr('moved', result));
       await load();
     }
 
@@ -1362,17 +1507,23 @@ const INDEX_HTML: &str = r#"<!doctype html>
       visibleClusterLimit = 80;
       renderClusters();
     });
+    $('#locale').addEventListener('change', event => {
+      locale = event.target.value === 'zh-CN' ? 'zh-CN' : 'en';
+      localStorage.setItem('burst-locale', locale);
+      applyLocale();
+    });
     $('#moveBtn').addEventListener('click', moveRejects);
     $('#exportBtn').addEventListener('click', async () => {
       try {
         const res = await fetch('/api/export', { method: 'POST' });
         if (!res.ok) throw new Error(await res.text());
         await load();
-        window.alert('Review files saved in the run directory.');
+        window.alert(tr('saveDone'));
       } catch (error) {
         window.alert(error.message);
       }
     });
+    applyLocale();
     load().catch(error => {
       $('#clusters').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     });

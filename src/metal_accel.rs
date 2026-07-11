@@ -15,7 +15,7 @@ thread_local! {
 }
 
 pub fn focus_metrics(
-    gray: &[f64],
+    gray: &[u8],
     width: usize,
     height: usize,
 ) -> anyhow::Result<MetalFocusMetrics> {
@@ -61,7 +61,7 @@ impl MetalScorer {
 
     fn focus_metrics(
         &self,
-        gray: &[f64],
+        gray: &[u8],
         width: usize,
         height: usize,
     ) -> anyhow::Result<MetalFocusMetrics> {
@@ -69,15 +69,16 @@ impl MetalScorer {
             return Err(anyhow!("invalid grayscale buffer"));
         }
 
-        let gray32: Vec<f32> = gray.iter().map(|value| *value as f32).collect();
         let pixel_count = width * height;
+        const THREADS_PER_GROUP: usize = 256;
+        let partial_count = pixel_count.div_ceil(THREADS_PER_GROUP);
         let input = self.device.new_buffer_with_data(
-            gray32.as_ptr().cast(),
-            (gray32.len() * size_of::<f32>()) as u64,
+            gray.as_ptr().cast(),
+            gray.len() as u64,
             MTLResourceOptions::StorageModeShared,
         );
         let output = self.device.new_buffer(
-            (pixel_count * 4 * size_of::<f32>()) as u64,
+            (partial_count * 4 * size_of::<f32>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
 
@@ -91,17 +92,17 @@ impl MetalScorer {
         encoder.set_bytes(2, size_of::<u32>() as u64, (&width32 as *const u32).cast());
         encoder.set_bytes(3, size_of::<u32>() as u64, (&height32 as *const u32).cast());
 
-        let threads = MTLSize {
-            width: width as u64,
-            height: height as u64,
+        let thread_groups = MTLSize {
+            width: partial_count as u64,
+            height: 1,
             depth: 1,
         };
         let group = MTLSize {
-            width: 16,
-            height: 16,
+            width: THREADS_PER_GROUP as u64,
+            height: 1,
             depth: 1,
         };
-        encoder.dispatch_threads(threads, group);
+        encoder.dispatch_thread_groups(thread_groups, group);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -112,7 +113,7 @@ impl MetalScorer {
         }
 
         let values =
-            unsafe { slice::from_raw_parts(output.contents().cast::<f32>(), pixel_count * 4) };
+            unsafe { slice::from_raw_parts(output.contents().cast::<f32>(), partial_count * 4) };
         let mut lap_sum = 0.0;
         let mut lap_sq_sum = 0.0;
         let mut dx_sum = 0.0;
@@ -142,38 +143,49 @@ const SHADER: &str = r#"
 using namespace metal;
 
 kernel void focus_kernel(
-    device const float* gray [[buffer(0)]],
-    device float4* out [[buffer(1)]],
+    device const uchar* gray [[buffer(0)]],
+    device float4* partials [[buffer(1)]],
     constant uint& width [[buffer(2)]],
     constant uint& height [[buffer(3)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint gid [[thread_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint group_id [[threadgroup_position_in_grid]]
 ) {
-    if (gid.x >= width || gid.y >= height) {
-        return;
-    }
-    uint x = gid.x;
-    uint y = gid.y;
-    uint i = y * width + x;
+    threadgroup float4 sums[256];
+    uint pixel_count = width * height;
+    uint i = gid;
+    uint x = i % width;
+    uint y = i / width;
 
     float lap = 0.0;
     float lap_sq = 0.0;
-    if (x > 0 && x + 1 < width && y > 0 && y + 1 < height) {
-        lap = -4.0 * gray[i] + gray[i - 1] + gray[i + 1] + gray[i - width] + gray[i + width];
+    if (i < pixel_count && x > 0 && x + 1 < width && y > 0 && y + 1 < height) {
+        lap = -4.0 * float(gray[i]) + float(gray[i - 1]) + float(gray[i + 1]) + float(gray[i - width]) + float(gray[i + width]);
         lap_sq = lap * lap;
     }
 
     float dx_sq = 0.0;
-    if (x + 1 < width) {
-        float dx = gray[i + 1] - gray[i];
+    if (i < pixel_count && x + 1 < width) {
+        float dx = float(gray[i + 1]) - float(gray[i]);
         dx_sq = dx * dx;
     }
 
     float dy_sq = 0.0;
-    if (y + 1 < height) {
-        float dy = gray[i + width] - gray[i];
+    if (i < pixel_count && y + 1 < height) {
+        float dy = float(gray[i + width]) - float(gray[i]);
         dy_sq = dy * dy;
     }
 
-    out[i] = float4(lap, lap_sq, dx_sq, dy_sq);
+    sums[lid] = float4(lap, lap_sq, dx_sq, dy_sq);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            sums[lid] += sums[lid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lid == 0) {
+        partials[group_id] = sums[0];
+    }
 }
 "#;

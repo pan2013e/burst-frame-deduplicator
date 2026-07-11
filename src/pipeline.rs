@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,22 +11,34 @@ use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 
 use crate::artifacts::{ensure_review_state, export_reviewed_artifacts, write_manifest};
-use crate::assets::{AssetInput, discover_assets};
+use crate::assets::{AssetInput, discover_assets_with_progress};
 use crate::decode::{decoder_report, load_preview, resize_rgb};
 use crate::detector::{detect_subject, detector_report, merge_detector_metrics};
-use crate::features::{hash_distance, score_image};
+use crate::features::{
+    SimilarityFeatures, compare_similarity, hash_distance, score_image, similarity_features,
+    update_subject_focus,
+};
 use crate::metadata::read_photo_metadata;
+use crate::progress::{ProgressReporter, ProgressStage};
 use crate::types::{
     AccelerationPreference, AccelerationReport, AssetRecord, AssetTimings, BenchmarkReport,
-    BurstCluster, QualityMetrics, RunManifest, ScanOptions, SuggestedAction, Suggestion, Summary,
+    BurstCluster, BurstSequence, QualityMetrics, RunManifest, ScanOptions, SimilarityMetrics,
+    SuggestedAction, Suggestion, Summary,
 };
 
 pub async fn run_scan(
     root: &Path,
     out: Option<PathBuf>,
     options: ScanOptions,
+    progress: ProgressReporter,
 ) -> anyhow::Result<PathBuf> {
     let total_start = Instant::now();
+    progress.emit(
+        ProgressStage::Preparing,
+        0,
+        Some(1),
+        Some(root.display().to_string()),
+    );
     let root = root
         .canonicalize()
         .with_context(|| format!("source folder does not exist: {}", root.display()))?;
@@ -43,17 +55,33 @@ pub async fn run_scan(
     if options.generate_thumbnails {
         fs::create_dir_all(&thumbs_dir)?;
     }
+    progress.emit(ProgressStage::Preparing, 1, Some(1), None);
 
     let discovery_start = Instant::now();
-    let inputs = discover_assets(&root).context("discovering image assets")?;
+    progress.emit(ProgressStage::Discovering, 0, None, None);
+    let discovery_progress = progress.clone();
+    let inputs = discover_assets_with_progress(&root, move |visited, path| {
+        if visited == 1 || visited.is_multiple_of(100) {
+            discovery_progress.emit(
+                ProgressStage::Discovering,
+                visited,
+                None,
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+            );
+        }
+    })
+    .context("discovering image assets")?;
     let discovery_ms = elapsed_ms(discovery_start);
     let image_files = inputs.iter().map(|asset| asset.files.len()).sum();
     let sidecar_files = inputs.iter().map(|asset| asset.sidecars.len()).sum();
-    eprintln!(
-        "Discovered {} assets ({} image files, {} sidecars)",
+    progress.emit(
+        ProgressStage::Discovering,
         inputs.len(),
-        image_files,
-        sidecar_files
+        Some(inputs.len()),
+        Some(format!(
+            "{image_files} image files, {sidecar_files} sidecars"
+        )),
     );
 
     let pool = ThreadPoolBuilder::new()
@@ -64,34 +92,64 @@ pub async fn run_scan(
     let scoring_start = Instant::now();
     let scored = AtomicUsize::new(0);
     let total_inputs = inputs.len();
-    let mut score_results: Vec<ScoreResult> = pool.install(|| {
+    progress.emit(ProgressStage::Analyzing, 0, Some(total_inputs), None);
+    let scoring_progress = progress.clone();
+    let score_results: Vec<ScoreResult> = pool.install(|| {
         inputs
             .par_iter()
             .map(|input| {
                 let result = score_asset(input, &options, thumb_root.as_deref());
                 let done = scored.fetch_add(1, Ordering::Relaxed) + 1;
-                if done == total_inputs || done.is_multiple_of(100) {
-                    eprintln!("Scored {done}/{total_inputs} assets");
-                }
+                scoring_progress.emit(
+                    ProgressStage::Analyzing,
+                    done,
+                    Some(total_inputs),
+                    Some(input.representative.rel_path.clone()),
+                );
                 result
             })
             .collect()
     });
     let scoring_ms = elapsed_ms(scoring_start);
-    let mut assets: Vec<AssetRecord> = score_results.drain(..).map(|result| result.asset).collect();
+    let mut assets = Vec::with_capacity(score_results.len());
+    let mut similarity = Vec::with_capacity(score_results.len());
+    for result in score_results {
+        assets.push(result.asset);
+        similarity.push(result.similarity);
+    }
 
-    let index_clusters = build_clusters(&assets, &options);
+    let grouping_start = Instant::now();
+    progress.emit(ProgressStage::Grouping, 0, Some(1), None);
+    let index_bursts = build_bursts(&assets, &options);
+    let index_clusters =
+        build_near_duplicate_groups(&mut assets, &similarity, &index_bursts, &options);
+    let grouping_ms = elapsed_ms(grouping_start);
+    progress.emit(
+        ProgressStage::Grouping,
+        1,
+        Some(1),
+        Some(format!(
+            "{} bursts, {} stacks",
+            index_bursts.len(),
+            index_clusters.len()
+        )),
+    );
     let refinement_start = Instant::now();
-    let refined_count = refine_cluster_candidates(&mut assets, &index_clusters, &options, &pool);
+    let refined_count =
+        refine_cluster_candidates(&mut assets, &index_clusters, &options, &pool, &progress);
     let refinement_ms = elapsed_ms(refinement_start);
-    let cluster_start = Instant::now();
-    let clusters = rank_clusters(&mut assets, index_clusters, &options);
-    let clustering_ms = elapsed_ms(cluster_start);
+    let ranking_start = Instant::now();
+    progress.emit(ProgressStage::Ranking, 0, Some(1), None);
+    let (clusters, bursts) = rank_clusters(&mut assets, index_clusters, &index_bursts, &options);
+    let ranking_ms = elapsed_ms(ranking_start);
+    progress.emit(ProgressStage::Ranking, 1, Some(1), None);
+    let clustering_ms = grouping_ms + ranking_ms;
     let mut summary = Summary {
         discovered_assets: assets.len(),
         image_files,
         sidecar_files,
         clusters: clusters.len(),
+        bursts: bursts.len(),
         ..Summary::default()
     };
     for asset in &assets {
@@ -143,11 +201,30 @@ pub async fn run_scan(
             assets.iter().map(|asset| asset.timings.thumbnail_ms).sum(),
             Some(assets.len()),
         ),
+        benchmark("burst_and_stack_grouping", grouping_ms, Some(assets.len())),
+        benchmark("ranking_and_suggestions", ranking_ms, Some(assets.len())),
         benchmark("clustering_and_ranking", clustering_ms, Some(assets.len())),
     ];
 
     let acceleration = acceleration_report(options.acceleration);
-    let detector = detector_report(options.detector);
+    let mut detector = detector_report(options.detector);
+    let mut detector_usage = BTreeMap::new();
+    for asset in &assets {
+        let backend = asset
+            .detector
+            .as_ref()
+            .map(|output| output.backend.as_str())
+            .unwrap_or("off");
+        *detector_usage.entry(backend).or_insert(0usize) += 1;
+    }
+    detector.notes.push(format!(
+        "Per-frame backend usage: {}.",
+        detector_usage
+            .iter()
+            .map(|(backend, count)| format!("{backend}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     let mut manifest = RunManifest {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         root,
@@ -158,18 +235,22 @@ pub async fn run_scan(
         decoders: decoder_report(),
         benchmarks: benchmarks.clone(),
         summary,
+        bursts,
         clusters,
         assets,
     };
 
     let manifest_start = Instant::now();
+    progress.emit(ProgressStage::Writing, 0, Some(1), None);
     write_manifest(&run_dir, &manifest)?;
     benchmarks.push(benchmark(
         "manifest_write",
         elapsed_ms(manifest_start),
         None,
     ));
+    progress.emit(ProgressStage::Writing, 1, Some(1), None);
     let export_start = Instant::now();
+    progress.emit(ProgressStage::Exporting, 0, Some(1), None);
     ensure_review_state(&run_dir, &manifest)?;
     export_reviewed_artifacts(&run_dir)?;
     benchmarks.push(benchmark("review_export", elapsed_ms(export_start), None));
@@ -180,19 +261,38 @@ pub async fn run_scan(
     ));
     manifest.benchmarks = benchmarks;
     write_manifest(&run_dir, &manifest)?;
-    eprintln!(
-        "Suggested: keep {}, reject {}, review {}, errors {} across {} clusters",
-        manifest.summary.suggested_keep,
-        manifest.summary.suggested_reject,
-        manifest.summary.suggested_review,
-        manifest.summary.errors,
-        manifest.summary.clusters
+    progress.emit(
+        ProgressStage::Exporting,
+        1,
+        Some(1),
+        Some(format!(
+            "keep {}, reject {}, review {}, errors {}",
+            manifest.summary.suggested_keep,
+            manifest.summary.suggested_reject,
+            manifest.summary.suggested_review,
+            manifest.summary.errors
+        )),
+    );
+    progress.emit(
+        ProgressStage::Complete,
+        1,
+        Some(1),
+        Some(run_dir.display().to_string()),
     );
     Ok(run_dir)
 }
 
 struct ScoreResult {
     asset: AssetRecord,
+    similarity: SimilarityFeatures,
+}
+
+#[derive(Debug, Clone)]
+struct IndexGroup {
+    burst_id: usize,
+    indices: Vec<usize>,
+    similarity_confidence: f64,
+    max_distance: f64,
 }
 
 struct RefineResult {
@@ -210,6 +310,16 @@ fn score_asset(
     thumbs_dir: Option<&Path>,
 ) -> ScoreResult {
     let mut timings = AssetTimings::default();
+    let metadata = read_photo_metadata(&input.representative.path);
+    let (capture_ms, capture_time_source) = if let Some(captured_at_ms) = metadata.captured_at_ms {
+        (Some(captured_at_ms), "exif".to_string())
+    } else if let Some(created_ms) = input.created_ms {
+        (Some(created_ms), "filesystem_created".to_string())
+    } else if let Some(modified_ms) = input.modified_ms {
+        (Some(modified_ms), "filesystem_modified".to_string())
+    } else {
+        (None, "unavailable".to_string())
+    };
     let mut record = AssetRecord {
         id: input.id.clone(),
         representative: input.representative.clone(),
@@ -221,20 +331,24 @@ fn score_asset(
         seq: input.seq,
         created_ms: input.created_ms,
         modified_ms: input.modified_ms,
-        capture_ms: input.time_key_ms(),
+        capture_ms,
+        capture_time_source,
         width: 0,
         height: 0,
         decoder: String::new(),
         feature_backend: String::new(),
-        metadata: read_photo_metadata(&input.representative.path),
+        metadata,
         metrics: QualityMetrics::default(),
         detector: None,
         timings,
+        burst_id: 0,
         cluster_id: 0,
+        similarity: SimilarityMetrics::default(),
         suggestion: Suggestion::default(),
         thumb: None,
         error: None,
     };
+    let mut similarity = SimilarityFeatures::default();
 
     let decode_start = Instant::now();
     match load_preview(
@@ -253,19 +367,28 @@ fn score_asset(
             record.feature_backend = feature.backend;
             record.metrics = feature.metrics;
             record.suggestion.explanations.extend(feature.notes);
+            let descriptor_metrics = record.metrics.clone();
 
             let detector_start = Instant::now();
-            let (detector, detector_notes) = detect_subject(
-                &input.representative.path,
-                &record.metrics,
-                options.detector,
-            );
+            let (detector, detector_notes) =
+                detect_subject(&decoded.image, &record.metrics, options.detector);
             timings.detector_ms = elapsed_ms(detector_start);
             if let Some(detector) = detector {
                 merge_detector_metrics(&mut record.metrics, &detector);
+                if detector.backend != "heuristic_saliency"
+                    && subject_boxes_consistent(&descriptor_metrics, &record.metrics)
+                {
+                    update_subject_focus(&decoded.image, &mut record.metrics);
+                }
                 record.detector = Some(detector);
             }
             record.suggestion.explanations.extend(detector_notes);
+
+            let similarity_start = Instant::now();
+            similarity = similarity_features(&decoded.image, &descriptor_metrics);
+            timings.feature_ms += elapsed_ms(similarity_start);
+            record.similarity.subject_confidence = similarity.confidence;
+            record.similarity.subject_area_fraction = similarity.area_fraction;
 
             if let Some(thumbs_dir) = thumbs_dir {
                 let thumb_start = Instant::now();
@@ -292,7 +415,10 @@ fn score_asset(
         }
     }
     record.timings = timings;
-    ScoreResult { asset: record }
+    ScoreResult {
+        asset: record,
+        similarity,
+    }
 }
 
 fn write_thumbnail(
@@ -309,37 +435,44 @@ fn write_thumbnail(
 
 fn refine_cluster_candidates(
     assets: &mut [AssetRecord],
-    index_clusters: &[Vec<usize>],
+    index_clusters: &[IndexGroup],
     options: &ScanOptions,
     pool: &rayon::ThreadPool,
+    progress: &ProgressReporter,
 ) -> usize {
     if options.disable_refinement
         || options.refine_size <= options.preview_size
         || options.refine_candidates_per_cluster == 0
     {
+        progress.emit(ProgressStage::Refining, 1, Some(1), None);
         return 0;
     }
     let candidates = refinement_candidates(assets, index_clusters, options);
     if candidates.is_empty() {
+        progress.emit(ProgressStage::Refining, 1, Some(1), None);
         return 0;
     }
-    eprintln!(
-        "Refining {}/{} candidate assets at {}px long edge",
-        candidates.len(),
-        assets.len(),
-        options.refine_size
+    progress.emit(
+        ProgressStage::Refining,
+        0,
+        Some(candidates.len()),
+        Some(format!("{}px long edge", options.refine_size)),
     );
     let refined = AtomicUsize::new(0);
     let total = candidates.len();
+    let refinement_progress = progress.clone();
     let results: Vec<Option<RefineResult>> = pool.install(|| {
         candidates
             .par_iter()
             .map(|idx| {
                 let result = refine_asset(*idx, &assets[*idx], options);
                 let done = refined.fetch_add(1, Ordering::Relaxed) + 1;
-                if done == total || done.is_multiple_of(100) {
-                    eprintln!("Refined {done}/{total} candidate assets");
-                }
+                refinement_progress.emit(
+                    ProgressStage::Refining,
+                    done,
+                    Some(total),
+                    Some(assets[*idx].representative.rel_path.clone()),
+                );
                 result
             })
             .collect()
@@ -348,12 +481,7 @@ fn refine_cluster_candidates(
     let mut applied = 0usize;
     for result in results.into_iter().flatten() {
         let asset = &mut assets[result.idx];
-        if let Some(detector) = asset.detector.clone() {
-            asset.metrics = result.metrics;
-            merge_detector_metrics(&mut asset.metrics, &detector);
-        } else {
-            asset.metrics = result.metrics;
-        }
+        asset.metrics = result.metrics;
         asset.feature_backend =
             format!("{}+refined_{}", result.feature_backend, options.refine_size);
         asset.timings.refine_decode_ms = result.decode_ms;
@@ -366,25 +494,23 @@ fn refine_cluster_candidates(
 
 fn refinement_candidates(
     assets: &[AssetRecord],
-    index_clusters: &[Vec<usize>],
+    index_clusters: &[IndexGroup],
     options: &ScanOptions,
 ) -> Vec<usize> {
     let mut selected = BTreeSet::new();
-    for indices in index_clusters {
+    for cluster in index_clusters {
+        let indices = &cluster.indices;
         if indices.len() <= 1 {
             continue;
         }
         let keep_count = keep_count_for_cluster(indices.len(), options.keepers_per_cluster);
         let ranked = ranked_scores(assets, indices);
-        let keep_threshold = ranked
-            .get(keep_count.saturating_sub(1))
-            .map(|(_, score)| *score)
-            .unwrap_or(0.0);
-        let budget = options.refine_candidates_per_cluster.min(indices.len());
-        for (rank_zero, (idx, score)) in ranked.iter().enumerate() {
-            if (rank_zero < budget || *score >= keep_threshold - 0.06)
-                && assets[*idx].error.is_none()
-            {
+        let budget = options
+            .refine_candidates_per_cluster
+            .max(keep_count)
+            .min(indices.len());
+        for (idx, _) in ranked.iter().take(budget) {
+            if assets[*idx].error.is_none() {
                 selected.insert(*idx);
             }
         }
@@ -411,10 +537,20 @@ fn refine_asset(idx: usize, asset: &AssetRecord, options: &ScanOptions) -> Optio
     let decode_ms = elapsed_ms(decode_start);
     let feature_start = Instant::now();
     let feature = score_image(&decoded.image, options.acceleration);
+    let mut metrics = feature.metrics;
+    if let Some(detector) = &asset.detector {
+        let heuristic_metrics = metrics.clone();
+        merge_detector_metrics(&mut metrics, detector);
+        if detector.backend != "heuristic_saliency"
+            && subject_boxes_consistent(&heuristic_metrics, &metrics)
+        {
+            update_subject_focus(&decoded.image, &mut metrics);
+        }
+    }
     let feature_ms = elapsed_ms(feature_start);
     Some(RefineResult {
         idx,
-        metrics: feature.metrics,
+        metrics,
         feature_backend: feature.backend,
         notes: feature.notes,
         decode_ms,
@@ -422,15 +558,31 @@ fn refine_asset(idx: usize, asset: &AssetRecord, options: &ScanOptions) -> Optio
     })
 }
 
+fn subject_boxes_consistent(left: &QualityMetrics, right: &QualityMetrics) -> bool {
+    let intersection_width =
+        (left.bbox_x2.min(right.bbox_x2) - left.bbox_x1.max(right.bbox_x1)).max(0.0);
+    let intersection_height =
+        (left.bbox_y2.min(right.bbox_y2) - left.bbox_y1.max(right.bbox_y1)).max(0.0);
+    let intersection = intersection_width * intersection_height;
+    let left_area = ((left.bbox_x2 - left.bbox_x1) * (left.bbox_y2 - left.bbox_y1)).max(0.0);
+    let right_area = ((right.bbox_x2 - right.bbox_x1) * (right.bbox_y2 - right.bbox_y1)).max(0.0);
+    let union = left_area + right_area - intersection;
+    union > 0.0 && intersection / union >= 0.25
+}
+
 fn rank_clusters(
     assets: &mut [AssetRecord],
-    index_clusters: Vec<Vec<usize>>,
+    index_clusters: Vec<IndexGroup>,
+    index_bursts: &[Vec<usize>],
     options: &ScanOptions,
-) -> Vec<BurstCluster> {
+) -> (Vec<BurstCluster>, Vec<BurstSequence>) {
     let mut clusters = Vec::new();
+    let mut cluster_ids_by_burst = vec![Vec::new(); index_bursts.len()];
 
-    for (cluster_idx, indices) in index_clusters.into_iter().enumerate() {
+    for (cluster_idx, group) in index_clusters.into_iter().enumerate() {
         let cluster_id = cluster_idx + 1;
+        let indices = group.indices;
+        cluster_ids_by_burst[group.burst_id - 1].push(cluster_id);
         let keep_count = keep_count_for_cluster(indices.len(), options.keepers_per_cluster);
         let ranked = ranked_scores(assets, &indices);
         let keep_threshold = ranked
@@ -444,7 +596,8 @@ fn rank_clusters(
             let cluster_len = indices.len();
             let asset = &mut assets[*idx];
             asset.cluster_id = cluster_id;
-            let mut action = SuggestedAction::Reject;
+            asset.burst_id = group.burst_id;
+            let action;
             let reason;
             if let Some(error) = &asset.error {
                 action = SuggestedAction::Error;
@@ -460,23 +613,28 @@ fn rank_clusters(
             }
             if cluster_len == 1 && !options.cull_singletons {
                 action = SuggestedAction::Keep;
-                reason = "unique shot".to_string();
+                reason = "distinct frame".to_string();
             } else if rank <= keep_count {
                 action = SuggestedAction::Keep;
-                reason = format!("top {rank} of {cluster_len}");
+                reason = format!("best quality in stack {cluster_id}");
+            } else if asset.similarity.duplicate_confidence < options.min_duplicate_confidence {
+                action = SuggestedAction::Review;
+                reason = format!("similarity is uncertain in stack {cluster_id}");
             } else if *score >= keep_threshold - 0.035 {
                 action = SuggestedAction::Review;
-                reason = format!("near tie with keeper in cluster {cluster_id}");
+                reason = format!("near quality tie in stack {cluster_id}");
             } else {
-                reason =
-                    format!("duplicate burst frame; better ranked frame in cluster {cluster_id}");
+                action = SuggestedAction::Reject;
+                reason = format!("high-confidence duplicate in stack {cluster_id}");
             }
+            let mut explanations = std::mem::take(&mut asset.suggestion.explanations);
+            explanations.extend(explanations_for(asset, cluster_len, keep_count, rank));
             asset.suggestion = Suggestion {
                 action,
                 rank,
                 score: *score,
                 reason,
-                explanations: explanations_for(asset, cluster_len, keep_count, rank),
+                explanations,
             };
         }
 
@@ -487,6 +645,7 @@ fn rank_clusters(
         let first = indices.first().map(|idx| &assets[*idx]);
         clusters.push(BurstCluster {
             id: cluster_id,
+            burst_id: group.burst_id,
             asset_ids: indices.iter().map(|idx| assets[*idx].id.clone()).collect(),
             directory: first.map(|a| a.directory.clone()).unwrap_or_default(),
             prefix: first.map(|a| a.prefix.clone()).unwrap_or_default(),
@@ -494,11 +653,37 @@ fn rank_clusters(
             end_ms: times.iter().max().copied(),
             keep_count,
             best_asset_id,
+            similarity_confidence: group.similarity_confidence,
+            max_distance: group.max_distance,
         });
     }
 
+    let bursts = index_bursts
+        .iter()
+        .enumerate()
+        .map(|(burst_zero, indices)| {
+            let times: Vec<i64> = indices
+                .iter()
+                .filter_map(|idx| assets[*idx].time_key_ms())
+                .collect();
+            let first = indices.first().map(|idx| &assets[*idx]);
+            BurstSequence {
+                id: burst_zero + 1,
+                asset_ids: indices.iter().map(|idx| assets[*idx].id.clone()).collect(),
+                cluster_ids: cluster_ids_by_burst[burst_zero].clone(),
+                directory: first
+                    .map(|asset| asset.directory.clone())
+                    .unwrap_or_default(),
+                prefix: first.map(|asset| asset.prefix.clone()).unwrap_or_default(),
+                start_ms: times.iter().min().copied(),
+                end_ms: times.iter().max().copied(),
+            }
+        })
+        .collect();
+
     assets.sort_by(|a, b| {
         (
+            a.burst_id,
             a.cluster_id,
             a.suggestion.rank,
             &a.directory,
@@ -507,6 +692,7 @@ fn rank_clusters(
             &a.stem,
         )
             .cmp(&(
+                b.burst_id,
                 b.cluster_id,
                 b.suggestion.rank,
                 &b.directory,
@@ -515,7 +701,7 @@ fn rank_clusters(
                 &b.stem,
             ))
     });
-    clusters
+    (clusters, bursts)
 }
 
 fn ranked_scores(assets: &[AssetRecord], indices: &[usize]) -> Vec<(usize, f64)> {
@@ -531,13 +717,31 @@ fn ranked_scores(assets: &[AssetRecord], indices: &[usize]) -> Vec<(usize, f64)>
             .map(|idx| assets[*idx].metrics.tenengrad.max(0.0).ln_1p())
             .collect(),
     );
+    let subject_sharp_norms = norm(
+        indices
+            .iter()
+            .map(|idx| assets[*idx].metrics.subject_sharpness.max(0.0).ln_1p())
+            .collect(),
+    );
+    let subject_ten_norms = norm(
+        indices
+            .iter()
+            .map(|idx| assets[*idx].metrics.subject_tenengrad.max(0.0).ln_1p())
+            .collect(),
+    );
 
     let mut ranked: Vec<(usize, f64)> = indices
         .iter()
         .enumerate()
         .map(|(pos, idx)| {
             let asset = &assets[*idx];
-            let sharp_component = 0.70 * sharp_norms[pos] + 0.30 * ten_norms[pos];
+            let global_focus = 0.70 * sharp_norms[pos] + 0.30 * ten_norms[pos];
+            let subject_focus = 0.70 * subject_sharp_norms[pos] + 0.30 * subject_ten_norms[pos];
+            let sharp_component = if asset.similarity.subject_confidence >= 0.3 {
+                0.72 * subject_focus + 0.28 * global_focus
+            } else {
+                global_focus
+            };
             (*idx, quality_score(asset, sharp_component))
         })
         .collect();
@@ -549,15 +753,15 @@ fn quality_score(asset: &AssetRecord, sharp_component: f64) -> f64 {
     if asset.error.is_some() {
         return 0.0;
     }
-    0.56 * sharp_component
-        + 0.22 * asset.metrics.completeness
+    0.60 * sharp_component
+        + 0.18 * asset.metrics.completeness
         + 0.10 * asset.metrics.contrast
         + 0.07 * asset.metrics.object_confidence
         + 0.05 * asset.metrics.exposure_score
         - 0.08 * (asset.metrics.border_energy_fraction / 0.35).min(1.0)
 }
 
-fn build_clusters(assets: &[AssetRecord], options: &ScanOptions) -> Vec<Vec<usize>> {
+fn build_bursts(assets: &[AssetRecord], options: &ScanOptions) -> Vec<Vec<usize>> {
     let mut indices: Vec<usize> = (0..assets.len()).collect();
     indices.sort_by(|a, b| {
         let left = &assets[*a];
@@ -587,7 +791,7 @@ fn build_clusters(assets: &[AssetRecord], options: &ScanOptions) -> Vec<Vec<usiz
         let asset = &assets[idx];
         let split = if let Some(prev_idx) = previous_idx {
             let prev = &assets[prev_idx];
-            should_split(prev, asset, cluster_start_ms, current.len(), options)
+            should_split_burst(prev, asset, cluster_start_ms, options)
         } else {
             true
         };
@@ -607,11 +811,10 @@ fn build_clusters(assets: &[AssetRecord], options: &ScanOptions) -> Vec<Vec<usiz
     clusters
 }
 
-fn should_split(
+fn should_split_burst(
     prev: &AssetRecord,
     current: &AssetRecord,
     cluster_start_ms: Option<i64>,
-    current_cluster_len: usize,
     options: &ScanOptions,
 ) -> bool {
     if current.directory != prev.directory || current.prefix != prev.prefix {
@@ -632,12 +835,125 @@ fn should_split(
     {
         return true;
     }
-    if current_cluster_len >= 2
-        && hash_distance(&prev.metrics.dhash, &current.metrics.dhash) > options.max_hash_gap
-    {
-        return true;
-    }
     false
+}
+
+fn build_near_duplicate_groups(
+    assets: &mut [AssetRecord],
+    features: &[SimilarityFeatures],
+    bursts: &[Vec<usize>],
+    options: &ScanOptions,
+) -> Vec<IndexGroup> {
+    let mut groups = Vec::new();
+    for (burst_zero, burst) in bursts.iter().enumerate() {
+        let burst_id = burst_zero + 1;
+        let mut current: Vec<usize> = Vec::new();
+        for idx in burst {
+            assets[*idx].burst_id = burst_id;
+            assets[*idx].similarity.subject_confidence = features[*idx].confidence;
+            assets[*idx].similarity.subject_area_fraction = features[*idx].area_fraction;
+            let split = if let Some(previous) = current.last().copied() {
+                let invalid = assets[*idx].error.is_some() || assets[previous].error.is_some();
+                let scene_change =
+                    hash_distance(&assets[previous].metrics.dhash, &assets[*idx].metrics.dhash)
+                        > options.max_hash_gap;
+                if invalid || scene_change {
+                    true
+                } else {
+                    !fits_complete_link(&current, *idx, features, options.max_duplicate_distance)
+                }
+            } else {
+                false
+            };
+            if split && !current.is_empty() {
+                groups.push(finalize_similarity_group(
+                    burst_id,
+                    std::mem::take(&mut current),
+                    assets,
+                    features,
+                    options.max_duplicate_distance,
+                ));
+            }
+            current.push(*idx);
+        }
+        if !current.is_empty() {
+            groups.push(finalize_similarity_group(
+                burst_id,
+                current,
+                assets,
+                features,
+                options.max_duplicate_distance,
+            ));
+        }
+    }
+    groups
+}
+
+fn fits_complete_link(
+    current: &[usize],
+    candidate: usize,
+    features: &[SimilarityFeatures],
+    threshold: f64,
+) -> bool {
+    current.iter().all(|member| {
+        compare_similarity(&features[*member], &features[candidate]).distance <= threshold
+    })
+}
+
+fn finalize_similarity_group(
+    burst_id: usize,
+    indices: Vec<usize>,
+    assets: &mut [AssetRecord],
+    features: &[SimilarityFeatures],
+    threshold: f64,
+) -> IndexGroup {
+    let mut confidence_sum = 0.0;
+    let mut max_distance: f64 = 0.0;
+    for (position, idx) in indices.iter().enumerate() {
+        if indices.len() == 1 {
+            assets[*idx].similarity.nearest_distance = 1.0;
+            assets[*idx].similarity.duplicate_confidence = 0.0;
+            assets[*idx].similarity.pose_novelty = 1.0;
+            continue;
+        }
+        let mut nearest = None;
+        for (other_position, other) in indices.iter().enumerate() {
+            if position == other_position {
+                continue;
+            }
+            let comparison = compare_similarity(&features[*idx], &features[*other]);
+            max_distance = max_distance.max(comparison.distance);
+            if nearest
+                .as_ref()
+                .is_none_or(|current: &crate::features::SimilarityComparison| {
+                    comparison.distance < current.distance
+                })
+            {
+                nearest = Some(comparison);
+            }
+        }
+        if let Some(nearest) = nearest {
+            let distance_ratio = (nearest.distance / threshold.max(1e-9)).clamp(0.0, 1.0);
+            let duplicate_confidence = nearest.confidence * (1.0 - 0.35 * distance_ratio);
+            assets[*idx].similarity.nearest_distance = nearest.distance;
+            assets[*idx].similarity.nearest_subject_distance = nearest.subject_distance;
+            assets[*idx].similarity.nearest_global_distance = nearest.global_distance;
+            assets[*idx].similarity.duplicate_confidence = duplicate_confidence;
+            assets[*idx].similarity.pose_novelty = distance_ratio;
+            confidence_sum += duplicate_confidence;
+        }
+    }
+    let similarity_confidence = if indices.len() > 1 {
+        confidence_sum / indices.len() as f64
+    } else {
+        0.0
+    };
+    IndexGroup {
+        burst_id,
+        indices,
+        similarity_confidence,
+        max_distance,
+    }
 }
 
 fn explanations_for(
@@ -648,12 +964,19 @@ fn explanations_for(
 ) -> Vec<String> {
     let mut explanations = Vec::new();
     explanations.push(format!(
-        "Ranked {} of {} in this burst; configured keeper count is {}.",
-        rank, cluster_len, keep_count
+        "Ranked {} of {} in near-duplicate stack {}; keeper count is {}.",
+        rank, cluster_len, asset.cluster_id, keep_count
     ));
     explanations.push(format!(
-        "Sharpness {:.1}, gradient {:.1}, contrast {:.2}.",
-        asset.metrics.sharpness, asset.metrics.tenengrad, asset.metrics.contrast
+        "Burst {}; subject confidence {:.2}, nearest visual distance {:.3}, duplicate confidence {:.2}.",
+        asset.burst_id,
+        asset.similarity.subject_confidence,
+        asset.similarity.nearest_distance,
+        asset.similarity.duplicate_confidence
+    ));
+    explanations.push(format!(
+        "Whole-frame sharpness {:.1}; subject sharpness {:.1}; contrast {:.2}.",
+        asset.metrics.sharpness, asset.metrics.subject_sharpness, asset.metrics.contrast
     ));
     explanations.push(format!(
         "Completeness {:.2}; border saliency {:.2} indicates how much subject-like detail touches frame edges.",
@@ -683,13 +1006,7 @@ fn keep_count_for_cluster(size: usize, requested: Option<usize>) -> usize {
     if let Some(requested) = requested {
         return requested.max(1).min(size.max(1));
     }
-    if size <= 8 {
-        1
-    } else if size <= 18 {
-        2
-    } else {
-        3.min(size)
-    }
+    1
 }
 
 fn norm(values: Vec<f64>) -> Vec<f64> {
@@ -720,7 +1037,7 @@ fn default_workers() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .max(1)
+        .clamp(1, 8)
 }
 
 fn acceleration_report(requested: AccelerationPreference) -> AccelerationReport {
@@ -795,5 +1112,41 @@ fn benchmark(stage: &str, elapsed_ms: f64, items: Option<usize>) -> BenchmarkRep
         elapsed_ms,
         items,
         items_per_sec,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fits_complete_link, keep_count_for_cluster};
+    use crate::features::SimilarityFeatures;
+
+    fn features(mask_start: usize) -> SimilarityFeatures {
+        let mut mask = vec![0u8; 20];
+        for value in &mut mask[mask_start..mask_start + 10] {
+            *value = 1;
+        }
+        SimilarityFeatures {
+            global_luma: vec![0, 64, 128, 255],
+            subject_luma: vec![0, 64, 128, 255],
+            subject_edges: vec![32; 20],
+            subject_mask: mask,
+            confidence: 1.0,
+            area_fraction: 0.02,
+        }
+    }
+
+    #[test]
+    fn complete_link_prevents_similarity_chaining() {
+        let features = vec![features(0), features(5), features(10)];
+        assert!(fits_complete_link(&[0], 1, &features, 0.32));
+        assert!(fits_complete_link(&[1], 2, &features, 0.32));
+        assert!(!fits_complete_link(&[0, 1], 2, &features, 0.32));
+    }
+
+    #[test]
+    fn near_duplicate_stacks_default_to_one_keeper() {
+        assert_eq!(keep_count_for_cluster(1, None), 1);
+        assert_eq!(keep_count_for_cluster(120, None), 1);
+        assert_eq!(keep_count_for_cluster(5, Some(2)), 2);
     }
 }

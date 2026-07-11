@@ -1,8 +1,11 @@
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, anyhow};
 use image::{ImageFormat, ImageReader, RgbImage, imageops};
+use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat};
 use tempfile::TempDir;
 
 use crate::assets::is_raw_extension;
@@ -27,6 +30,7 @@ pub fn decoder_report() -> DecoderReport {
     };
     DecoderReport {
         native_compressed: true,
+        scaled_jpeg: true,
         imagemagick: magick,
         sips,
         raw_strategy,
@@ -42,7 +46,7 @@ pub fn load_preview(
         return load_external(path, preview_size, "raw");
     }
 
-    match load_native(path, preview_size) {
+    match load_native(path, extension, preview_size) {
         Ok(decoded) => Ok(decoded),
         Err(native_error) => load_external(path, preview_size, "fallback").with_context(|| {
             format!(
@@ -65,7 +69,18 @@ pub fn resize_rgb(image: &RgbImage, long_edge: u32) -> RgbImage {
     imageops::resize(image, new_width, new_height, imageops::FilterType::Lanczos3)
 }
 
-fn load_native(path: &Path, preview_size: u32) -> anyhow::Result<DecodedPreview> {
+fn load_native(path: &Path, extension: &str, preview_size: u32) -> anyhow::Result<DecodedPreview> {
+    if matches!(extension, "jpg" | "jpeg") && preview_size > 0 {
+        match load_scaled_jpeg(path, preview_size) {
+            Ok(decoded) => return Ok(decoded),
+            Err(err) => {
+                eprintln!(
+                    "Scaled JPEG decode failed for {}; using image-rs fallback: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
     let image = ImageReader::open(path)
         .with_context(|| format!("opening {}", path.display()))?
         .with_guessed_format()
@@ -80,6 +95,49 @@ fn load_native(path: &Path, preview_size: u32) -> anyhow::Result<DecodedPreview>
         width,
         height,
         decoder: "image-rs".to_string(),
+    })
+}
+
+fn load_scaled_jpeg(path: &Path, preview_size: u32) -> anyhow::Result<DecodedPreview> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut decoder = JpegDecoder::new(BufReader::new(file));
+    decoder.read_info().context("reading JPEG dimensions")?;
+    let original = decoder
+        .info()
+        .ok_or_else(|| anyhow!("JPEG dimensions are unavailable"))?;
+    let requested = preview_size.min(u32::from(u16::MAX)) as u16;
+    decoder
+        .scale(requested, requested)
+        .context("configuring scaled JPEG decode")?;
+    let pixels = decoder.decode().context("decoding scaled JPEG")?;
+    let output = decoder
+        .info()
+        .ok_or_else(|| anyhow!("scaled JPEG dimensions are unavailable"))?;
+    let rgb = match output.pixel_format {
+        PixelFormat::RGB24 => {
+            RgbImage::from_raw(u32::from(output.width), u32::from(output.height), pixels)
+                .ok_or_else(|| anyhow!("scaled RGB JPEG buffer has an invalid length"))?
+        }
+        PixelFormat::L8 => {
+            let mut rgb = Vec::with_capacity(pixels.len() * 3);
+            for value in pixels {
+                rgb.extend_from_slice(&[value, value, value]);
+            }
+            RgbImage::from_raw(u32::from(output.width), u32::from(output.height), rgb)
+                .ok_or_else(|| anyhow!("scaled grayscale JPEG buffer has an invalid length"))?
+        }
+        PixelFormat::L16 | PixelFormat::CMYK32 => {
+            return Err(anyhow!(
+                "scaled decoder does not support {:?} output",
+                output.pixel_format
+            ));
+        }
+    };
+    Ok(DecodedPreview {
+        image: resize_rgb(&rgb, preview_size),
+        width: u32::from(original.width),
+        height: u32::from(original.height),
+        decoder: "jpeg-decoder-scaled".to_string(),
     })
 }
 

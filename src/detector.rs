@@ -1,6 +1,5 @@
-use std::path::Path;
-
 use crate::types::{DetectorOutput, DetectorPreference, DetectorReport, QualityMetrics};
+use image::RgbImage;
 
 pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
     let mut capabilities = vec!["heuristic_saliency".to_string()];
@@ -32,6 +31,12 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
             "Vision was requested but is unavailable; heuristic saliency will be used.".to_string(),
         );
     }
+    if requested == DetectorPreference::Vision {
+        notes.push(
+            "Vision contributes advisory completeness and quality metrics; the stable compact saliency track owns near-duplicate comparison."
+                .to_string(),
+        );
+    }
     if requested == DetectorPreference::Auto
         && cfg!(all(target_os = "macos", feature = "macos-vision"))
     {
@@ -47,13 +52,13 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
 }
 
 pub fn detect_subject(
-    path: &Path,
+    image: &RgbImage,
     metrics: &QualityMetrics,
     preference: DetectorPreference,
 ) -> (Option<DetectorOutput>, Vec<String>) {
     match preference {
         DetectorPreference::Off => (None, Vec::new()),
-        DetectorPreference::Vision => vision_or_heuristic(path, metrics),
+        DetectorPreference::Vision => vision_or_heuristic(image, metrics),
         DetectorPreference::Auto | DetectorPreference::Heuristic => {
             (Some(heuristic_output(metrics)), Vec::new())
         }
@@ -75,12 +80,12 @@ pub fn merge_detector_metrics(metrics: &mut QualityMetrics, detector: &DetectorO
 }
 
 fn vision_or_heuristic(
-    path: &Path,
+    image: &RgbImage,
     metrics: &QualityMetrics,
 ) -> (Option<DetectorOutput>, Vec<String>) {
     #[cfg(all(target_os = "macos", feature = "macos-vision"))]
     {
-        match macos_vision::detect(path) {
+        match macos_vision::detect(image) {
             Ok(Some(output)) => (Some(output), Vec::new()),
             Ok(None) => (
                 Some(heuristic_output(metrics)),
@@ -100,7 +105,7 @@ fn vision_or_heuristic(
 
     #[cfg(not(all(target_os = "macos", feature = "macos-vision")))]
     {
-        let _ = path;
+        let _ = image;
         (
             Some(heuristic_output(metrics)),
             vec![
@@ -132,11 +137,11 @@ fn heuristic_output(metrics: &QualityMetrics) -> DetectorOutput {
 #[cfg(all(target_os = "macos", feature = "macos-vision"))]
 #[allow(unexpected_cfgs)]
 mod macos_vision {
-    use std::ffi::{CStr, CString};
-    use std::path::Path;
+    use std::ffi::CStr;
     use std::ptr;
 
     use anyhow::{Context, anyhow};
+    use image::{ExtendedColorType, RgbImage, codecs::jpeg::JpegEncoder};
     use objc::runtime::{Class, Object};
     use objc::{msg_send, sel, sel_impl};
 
@@ -163,22 +168,27 @@ mod macos_vision {
         size: CGSize,
     }
 
-    pub fn detect(path: &Path) -> anyhow::Result<Option<DetectorOutput>> {
-        let path = path
-            .to_str()
-            .ok_or_else(|| anyhow!("image path is not valid UTF-8"))?;
-        let c_path = CString::new(path).context("creating Objective-C path string")?;
+    pub fn detect(image: &RgbImage) -> anyhow::Result<Option<DetectorOutput>> {
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, 82)
+            .encode(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                ExtendedColorType::Rgb8,
+            )
+            .context("encoding the analysis preview for Vision")?;
 
         unsafe {
-            let ns_string: *mut Object =
-                msg_send![class("NSString")?, stringWithUTF8String: c_path.as_ptr()];
-            let url: *mut Object = msg_send![class("NSURL")?, fileURLWithPath: ns_string];
+            let data: *mut Object =
+                msg_send![class("NSData")?, dataWithBytes: encoded.as_ptr() length: encoded.len()];
             let options: *mut Object = msg_send![class("NSDictionary")?, dictionary];
 
             let request_cls = class("VNGenerateObjectnessBasedSaliencyImageRequest")?;
             let request: *mut Object = msg_send![request_cls, new];
             let handler_alloc: *mut Object = msg_send![class("VNImageRequestHandler")?, alloc];
-            let handler: *mut Object = msg_send![handler_alloc, initWithURL: url options: options];
+            let handler: *mut Object =
+                msg_send![handler_alloc, initWithData: data options: options];
             let requests: *mut Object = msg_send![class("NSArray")?, arrayWithObject: request];
 
             let mut error: *mut Object = ptr::null_mut();

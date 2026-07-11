@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+pub use burst_core::QualityMetrics;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +15,8 @@ pub struct ScanOptions {
     pub max_time_gap_ms: i64,
     pub max_cluster_span_ms: i64,
     pub max_hash_gap: u32,
+    pub max_duplicate_distance: f64,
+    pub min_duplicate_confidence: f64,
     pub keepers_per_cluster: Option<usize>,
     pub cull_singletons: bool,
     pub workers: Option<usize>,
@@ -27,13 +30,15 @@ impl Default for ScanOptions {
         Self {
             preview_size: 1280,
             refine_size: 2048,
-            refine_candidates_per_cluster: 6,
+            refine_candidates_per_cluster: 2,
             disable_refinement: false,
             thumb_size: 320,
             max_seq_gap: 12,
             max_time_gap_ms: 1250,
             max_cluster_span_ms: 1800,
             max_hash_gap: 30,
+            max_duplicate_distance: 0.20,
+            min_duplicate_confidence: 0.52,
             keepers_per_cluster: None,
             cull_singletons: false,
             workers: None,
@@ -74,6 +79,8 @@ pub struct AccelerationReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecoderReport {
     pub native_compressed: bool,
+    #[serde(default)]
+    pub scaled_jpeg: bool,
     pub imagemagick: Option<PathBuf>,
     pub sips: Option<PathBuf>,
     pub raw_strategy: String,
@@ -106,16 +113,20 @@ pub struct RunManifest {
     pub decoders: DecoderReport,
     pub benchmarks: Vec<BenchmarkReport>,
     pub summary: Summary,
+    #[serde(default)]
+    pub bursts: Vec<BurstSequence>,
     pub clusters: Vec<BurstCluster>,
     pub assets: Vec<AssetRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Summary {
     pub discovered_assets: usize,
     pub image_files: usize,
     pub sidecar_files: usize,
     pub clusters: usize,
+    pub bursts: usize,
     pub suggested_keep: usize,
     pub suggested_reject: usize,
     pub suggested_review: usize,
@@ -135,6 +146,8 @@ pub struct AssetRecord {
     pub created_ms: Option<i64>,
     pub modified_ms: Option<i64>,
     pub capture_ms: Option<i64>,
+    #[serde(default)]
+    pub capture_time_source: String,
     pub width: u32,
     pub height: u32,
     pub decoder: String,
@@ -144,7 +157,11 @@ pub struct AssetRecord {
     pub metrics: QualityMetrics,
     pub detector: Option<DetectorOutput>,
     pub timings: AssetTimings,
+    #[serde(default)]
+    pub burst_id: usize,
     pub cluster_id: usize,
+    #[serde(default)]
+    pub similarity: SimilarityMetrics,
     pub suggestion: Suggestion,
     pub thumb: Option<String>,
     pub error: Option<String>,
@@ -172,23 +189,6 @@ pub enum FileKind {
     Sidecar,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QualityMetrics {
-    pub sharpness: f64,
-    pub tenengrad: f64,
-    pub contrast: f64,
-    pub exposure_score: f64,
-    pub clipped_fraction: f64,
-    pub completeness: f64,
-    pub object_confidence: f64,
-    pub border_energy_fraction: f64,
-    pub bbox_x1: f64,
-    pub bbox_y1: f64,
-    pub bbox_x2: f64,
-    pub bbox_y2: f64,
-    pub dhash: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PhotoMetadata {
@@ -198,6 +198,19 @@ pub struct PhotoMetadata {
     pub shutter: Option<String>,
     pub focal_length_mm: Option<f64>,
     pub focal_length_35mm: Option<u32>,
+    pub captured_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SimilarityMetrics {
+    pub subject_confidence: f64,
+    pub subject_area_fraction: f64,
+    pub nearest_distance: f64,
+    pub nearest_subject_distance: f64,
+    pub nearest_global_distance: f64,
+    pub duplicate_confidence: f64,
+    pub pose_novelty: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,29 +237,11 @@ pub struct AssetTimings {
     pub thumbnail_ms: f64,
 }
 
-impl Default for QualityMetrics {
-    fn default() -> Self {
-        Self {
-            sharpness: 0.0,
-            tenengrad: 0.0,
-            contrast: 0.0,
-            exposure_score: 0.0,
-            clipped_fraction: 1.0,
-            completeness: 0.0,
-            object_confidence: 0.0,
-            border_energy_fraction: 1.0,
-            bbox_x1: 0.0,
-            bbox_y1: 0.0,
-            bbox_x2: 1.0,
-            bbox_y2: 1.0,
-            dhash: String::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BurstCluster {
     pub id: usize,
+    #[serde(default)]
+    pub burst_id: usize,
     pub asset_ids: Vec<String>,
     pub directory: String,
     pub prefix: String,
@@ -254,6 +249,21 @@ pub struct BurstCluster {
     pub end_ms: Option<i64>,
     pub keep_count: usize,
     pub best_asset_id: Option<String>,
+    #[serde(default)]
+    pub similarity_confidence: f64,
+    #[serde(default)]
+    pub max_distance: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BurstSequence {
+    pub id: usize,
+    pub asset_ids: Vec<String>,
+    pub cluster_ids: Vec<usize>,
+    pub directory: String,
+    pub prefix: String,
+    pub start_ms: Option<i64>,
+    pub end_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

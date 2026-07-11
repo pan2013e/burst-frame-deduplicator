@@ -46,8 +46,12 @@ struct AssetBuilder {
     sidecars: Vec<FileEntry>,
 }
 
-pub fn discover_assets(root: &Path) -> anyhow::Result<Vec<AssetInput>> {
+pub fn discover_assets_with_progress(
+    root: &Path,
+    mut on_file: impl FnMut(usize, &Path),
+) -> anyhow::Result<Vec<AssetInput>> {
     let mut grouped: BTreeMap<(String, String), AssetBuilder> = BTreeMap::new();
+    let mut visited_files = 0usize;
 
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = entry?;
@@ -55,6 +59,8 @@ pub fn discover_assets(root: &Path) -> anyhow::Result<Vec<AssetInput>> {
             continue;
         }
         let path = entry.into_path();
+        visited_files += 1;
+        on_file(visited_files, &path);
         if path
             .file_name()
             .and_then(|name| name.to_str())
