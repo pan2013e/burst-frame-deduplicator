@@ -92,7 +92,21 @@ The **Build distributable binaries** GitHub Actions workflow tests and packages:
 | macOS CLI | macOS 26 Apple Silicon | Standalone executable, notices, archive checksum |
 | macOS app | macOS 26 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
 
-Every push to `main`, pull request, and manual run produces temporary workflow artifacts. A pushed `v*` tag publishes the same files and checksums on GitHub Releases. See [installation and Gatekeeper guidance](docs/USAGE.md#installing-prebuilt-binaries).
+Pushes to `main` and pull requests that include non-documentation changes, plus manual runs, produce temporary workflow artifacts. Documentation-only changes under `docs/` or in Markdown files skip the binary workflow. A pushed `v*` tag always builds and publishes the same files and checksums on GitHub Releases. See [installation and Gatekeeper guidance](docs/USAGE.md#installing-prebuilt-binaries).
+
+<details>
+<summary>Why "Publish GitHub Release assets" is skipped</summary>
+
+The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
+
+```bash
+git tag -a v0.1.1 -m "v0.1.1"
+git push origin main v0.1.1
+```
+
+Do not reuse an existing release tag.
+
+</details>
 
 ## Prerequisites
 

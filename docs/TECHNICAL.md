@@ -143,13 +143,15 @@ The Pages build includes a same-origin isolation service worker because the curr
 
 The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Native acceleration, reliable scan-time EXIF fallback, Rayon, Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
 
-`web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions.
+`web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions. Its path allow-list covers only static-app, shared-core, locale, and workflow inputs, so documentation-only commits do not start a Pages deployment.
 
 ## Binary CI And Releases
 
 `.github/workflows/binaries.yml` builds a portable Linux x86_64 CLI on Ubuntu 24.04 and an Apple Silicon CLI/app/DMG on macOS 26. The macOS 26 SDK is required to compile the availability-gated Liquid Glass and Metal 4 code while the application deployment target remains macOS 14. The Linux job disables macOS features, runs the standalone-resource smoke test, and packages notices. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
 
-Pushes, pull requests, and manual runs upload short-lived Actions artifacts. `v*` tags download those job artifacts into a release job and create or update a GitHub Release. CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
+Pushes and pull requests that contain non-documentation changes, plus manual runs, upload short-lived Actions artifacts. The binary workflow ignores changes confined to `docs/**` and Markdown files. Tag pushes are deliberately not path-filtered: a `v*` tag runs both package jobs, downloads their artifacts into `publish-release`, and creates or updates a GitHub Release. The release job's `startsWith(github.ref, 'refs/tags/v')` condition means GitHub displays it as **skipped** on branch, pull-request, and branch-based manual runs; that is expected.
+
+CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
 
 The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM initialization, browser decode, Rust scoring, clustering, rendering, total time, and throughput. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
 

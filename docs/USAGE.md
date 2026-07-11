@@ -6,6 +6,9 @@ Burst Frame Deduplicator helps you review burst sequences without turning the pr
 
 ## Before You Start
 
+<details>
+<summary>Build prerequisites and benchmark assets</summary>
+
 Install the normal prerequisites:
 
 ```bash
@@ -27,11 +30,15 @@ For the benchmark example in this guide, also fetch Git LFS assets:
 git lfs pull
 ```
 
+</details>
+
 ## First-Launch Tour And Diagnostics
 
 The native app and both browser interfaces show a four-step interactive tour on first launch. The frames are synthetic: opening, advancing, or skipping the tour does not scan a folder or change a decision. **Skip Tutorial** is available on every step.
 
 Open the tour again from **Help > Show Tutorial** in the native app or the `?` button in either website. The native **About** window reports build commit/toolchains and local OS, memory, GPU, and Metal details. Website **About** dialogs link to the source repository and add browser diagnostics; the local CLI review also reports its selected acceleration, detector, and RAW decoder, while the static edition reports its WASM build toolchain.
+
+![First-launch browser tutorial using synthetic frames](assets/usage-tutorial.jpg)
 
 ## Recommended Workflow
 
@@ -71,6 +78,9 @@ Replace `/Volumes/CARD/DCIM` with the mounted SD card folder or any photo folder
 
 The app writes a timestamped run directory under `runs/`. That directory contains the review manifest, thumbnails, CSV exports, and move reports.
 
+<details>
+<summary>Progress logs, standalone binaries, and run relocation</summary>
+
 The command line reports each long-running stage with overall percentage, item progress, and the current file. Redirect standard error if progress should go to a separate log:
 
 ```bash
@@ -92,6 +102,8 @@ cargo run --release -- relocate --run /path/to/run_YYYYMMDD_HHMMSS --to /path/to
 
 Same-volume moves use an atomic rename. Cross-volume moves copy every generated file, verify byte counts, repair internal restore-journal paths, and only then retire the old run folder. Existing names are never overwritten.
 
+</details>
+
 ## Static Browser Edition
 
 Build the browser-only application:
@@ -106,7 +118,7 @@ Open `http://127.0.0.1:4173` and select a folder. The page reports the current s
 
 The static edition supports English and Simplified Chinese, preselected decisions, filtering, stack collapse/expand, RAW EXIF supplied by LibRaw, full-image preview, arrow navigation, zoom/pan, review JSON export, and generated move scripts.
 
-![Static browser edition reviewing a synthetic two-posture burst](assets/usage-browser-edition.png)
+![Static browser edition reviewing a synthetic two-posture burst](assets/usage-browser-edition.jpg)
 
 When a Chromium-style browser supplies read-write File System Access handles, `Save review` can copy, size-check, and move grouped files to a selected local folder, then restore them during the same browser session. A normal folder upload exposes read-only handles instead; in that case, direct move is disabled and the modal provides review JSON plus macOS/Linux and Windows scripts.
 
@@ -115,6 +127,9 @@ Browser-only analysis is not quality-equivalent to the native pipeline. It has n
 The repository’s Pages workflow deploys `web/dist` automatically after GitHub Pages is configured with **GitHub Actions** as its source.
 
 ## Separate Scan And Review
+
+<details>
+<summary>Scan now and open the local review page later</summary>
 
 If you prefer to scan now and review later:
 
@@ -128,7 +143,12 @@ Then serve the review UI for the run directory printed by the scan:
 cargo run --release -- serve --run runs/run_YYYYMMDD_HHMMSS --open
 ```
 
+</details>
+
 ## Try The Included Benchmark
+
+<details>
+<summary>Run the sanitized original-resolution fixture</summary>
 
 The repo includes a sanitized original-resolution burst fixture under `benchmark/assets/original_burst_frames.zip`. It contains aircraft-against-sky frames with metadata stripped.
 
@@ -153,9 +173,13 @@ cargo run --release -- serve --run benchmark/runs/metal_heuristic --open
 
 The benchmark output is safe to use as a practice review because the raw benchmark run directory is ignored by Git.
 
+</details>
+
 ## Reading The Review Page
 
 Each card represents one asset. A RAW+JPEG pair with the same basename is treated as one asset, so the decision applies to both files.
+
+![Local review page showing a sanitized 120-frame aircraft burst](assets/usage-local-review.jpg)
 
 - Checked `Keep`: this frame is selected to keep.
 - Unchecked `Keep`: this frame is currently rejected.
@@ -173,7 +197,7 @@ The compact `文/A` menu switches between English and Simplified Chinese without
 
 Click a thumbnail to open the full-resolution viewer.
 
-![Full-resolution preview with zoom controls and Keep checkbox](assets/usage-preview.png)
+![Full-resolution preview with zoom controls and Keep checkbox](assets/usage-preview.jpg)
 
 In the viewer:
 
@@ -253,6 +277,9 @@ This preset makes posture grouping more conservative and gives tiny or uncertain
 
 ## Useful Scan Options
 
+<details>
+<summary>CLI tuning reference</summary>
+
 ```bash
 cargo run --release -- scan /path/to/photos \
   --preview-size 1280 \
@@ -278,6 +305,8 @@ Common options:
 - `--cull-singletons`: allow unique non-burst images to be rejected when they score poorly.
 - `--workers N`: set worker count for parallel scoring.
 
+</details>
+
 ## What Is Heavy
 
 The scan is the heavy phase. It walks the folder, decodes images, extracts EXIF, scores quality, runs detector/refinement work, generates thumbnails, clusters bursts, and writes artifacts.
@@ -288,6 +317,9 @@ The original source folder must be available throughout discovery, decode, scori
 
 ## Customizing Language Files
 
+<details>
+<summary>Override the English and Simplified Chinese catalogs</summary>
+
 English and Simplified Chinese strings are stored in `locales/en.json` and `locales/zh-CN.json`. Keep both key sets synchronized when editing them. Native development builds and the local server can load another directory:
 
 ```bash
@@ -295,6 +327,8 @@ BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicat
 ```
 
 The packaged macOS app and static web build copy the repository catalogs into their resources.
+
+</details>
 
 ## Installing Prebuilt Binaries
 
@@ -320,6 +354,9 @@ Building locally avoids relying on the CI binary and lets you use your own signi
 
 ## Distributing The macOS App
 
+<details>
+<summary>Build, sign, notarize, and inspect a drag-to-Applications DMG</summary>
+
 Create a local drag-to-Applications DMG:
 
 ```bash
@@ -338,7 +375,12 @@ NOTARY_PROFILE="burst-frame-notary" \
 
 `NOTARY_PROFILE` is a Keychain profile previously configured with `xcrun notarytool store-credentials`. The script signs the embedded Rust library, executable, app, and DMG; submits the DMG; waits for notarization; and staples the ticket. The About window reports the exact source commit plus Rust, Swift, Apple command-line tools, OS, memory, GPU, and Metal-family diagnostics.
 
+</details>
+
 ## Troubleshooting
+
+<details>
+<summary>RAW, benchmark, preview, and acceleration issues</summary>
 
 On macOS, RAW first uses the installed system Camera RAW support. If a particular camera format is not supported there, install the optional ImageMagick fallback:
 
@@ -355,3 +397,5 @@ git lfs pull
 If the review page opens but full-resolution previews fail, confirm the original source folder or SD card is still mounted.
 
 If Metal is requested but unavailable, the app falls back to CPU/Rayon scoring and records the fallback in the manifest.
+
+</details>

@@ -26,6 +26,13 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Treat result-folder relocation as a backend operation shared by CLI and GUI. Never overwrite an existing run; verify cross-volume copies, repair internal move-journal paths, and publish the new path only after the operation succeeds.
 - Package the native GUI for Apple Silicon only. Public DMGs must use Developer ID hardened-runtime signing and notarization; ad-hoc signatures are local-test artifacts. Do not bundle optional external decoders without documenting provenance, licensing, and runtime selection.
 
+## Versioning And Releases
+
+- For substantive implementation work or bug fixes, excluding documentation-only changes, bump the project version according to Semantic Versioning before completion: patch for backward-compatible fixes, minor for backward-compatible functionality, and major for incompatible changes.
+- Keep every version-bearing file synchronized, including the workspace and crate `Cargo.toml` files, `Cargo.lock`, and `macos/BurstFrameDeduplicatorApp/Info.plist`.
+- After the required tests pass, commit and push the implementation and version bump, create an annotated `v<version>` tag, and push that tag. Never move or reuse a published version tag. If authentication, network access, or repository permissions prevent a push, report that blocker explicitly.
+- Documentation-only changes do not require a version bump or release tag.
+
 ## Testing Rules
 
 - Run `cargo fmt` after Rust edits.
@@ -46,6 +53,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - After changing embedded resources or packaging, copy the release CLI to a directory outside the checkout and verify a scan, `/api/diagnostics`, locale response, and LibRaw-WASM response with no repository files available.
 - After changing tutorials or About dialogs, test first launch, skip from a non-final step, explicit reopen, both locales, and responsive browser layouts.
 - Parse or lint edited GitHub Actions YAML and keep the portable and native build commands aligned with local test scripts.
+- Keep usage screenshots current, free of personal paths and metadata, and at least 1920 pixels wide or an equivalent high-density native capture.
 - Run `scripts/build_macos_app.sh` and inspect the packaged app with native UI automation after changing SwiftUI layout, navigation, locale loading, or packaging.
 - After DMG changes, build and mount the image, verify that the app and `/Applications` alias are present, and run `codesign --verify` on the packaged app. Never claim an ad-hoc build is Gatekeeper-ready.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.
