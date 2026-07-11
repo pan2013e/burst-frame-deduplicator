@@ -73,6 +73,24 @@ struct MoveScriptsRequest {
     destination: Option<PathBuf>,
 }
 
+#[derive(Serialize)]
+struct DiagnosticsResponse {
+    mode: &'static str,
+    app_version: &'static str,
+    commit: &'static str,
+    rustc: &'static str,
+    cargo: &'static str,
+    build_target: &'static str,
+    build_profile: &'static str,
+    runtime_os: String,
+    runtime_arch: &'static str,
+    logical_cpus: usize,
+    memory_bytes: Option<u64>,
+    acceleration: String,
+    detector: String,
+    raw_decoder: String,
+}
+
 pub async fn serve(run_dir: PathBuf, addr: SocketAddr) -> anyhow::Result<()> {
     serve_with_shutdown(run_dir, addr, async {
         let _ = tokio::signal::ctrl_c().await;
@@ -102,6 +120,7 @@ where
         .route("/review.css", get(review_css))
         .route("/review.js", get(review_js))
         .route("/api/manifest", get(api_manifest))
+        .route("/api/diagnostics", get(api_diagnostics))
         .route("/api/decision", post(api_decision))
         .route("/api/export", post(api_export))
         .route("/api/image/{id}", get(api_image))
@@ -170,6 +189,26 @@ async fn api_manifest(State(state): State<AppState>) -> Result<Json<ManifestResp
         review: state.inner.review.lock().clone(),
         move_status,
     }))
+}
+
+async fn api_diagnostics(State(state): State<AppState>) -> Json<DiagnosticsResponse> {
+    let manifest = state.inner.manifest.lock();
+    Json(DiagnosticsResponse {
+        mode: "local_cli",
+        app_version: env!("CARGO_PKG_VERSION"),
+        commit: env!("BFD_BUILD_COMMIT"),
+        rustc: env!("BFD_BUILD_RUSTC"),
+        cargo: env!("BFD_BUILD_CARGO"),
+        build_target: env!("BFD_BUILD_TARGET"),
+        build_profile: env!("BFD_BUILD_PROFILE"),
+        runtime_os: runtime_os_name(),
+        runtime_arch: std::env::consts::ARCH,
+        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        memory_bytes: physical_memory_bytes(),
+        acceleration: manifest.acceleration.selected.clone(),
+        detector: manifest.detector.selected.clone(),
+        raw_decoder: manifest.decoders.raw_strategy.clone(),
+    })
 }
 
 async fn api_decision(
@@ -402,22 +441,81 @@ async fn vendor_libraw_wasm(Path(file): Path<String>) -> Response {
     if file.contains('/') || file.contains('\\') || file.contains("..") {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("web")
-        .join("vendor")
-        .join("libraw-wasm")
-        .join(&file);
-    let Ok(bytes) = fs::read(&path) else {
+    let Some((content_type, bytes)) = embedded_libraw_asset(&file) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let content_type = match path.extension().and_then(|extension| extension.to_str()) {
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("wasm") => "application/wasm",
-        Some("json") => "application/json; charset=utf-8",
-        Some("md") => "text/markdown; charset=utf-8",
-        _ => "application/octet-stream",
-    };
     ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+}
+
+fn embedded_libraw_asset(file: &str) -> Option<(&'static str, &'static [u8])> {
+    match file {
+        "index.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("../web/vendor/libraw-wasm/index.js"),
+        )),
+        "worker.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("../web/vendor/libraw-wasm/worker.js"),
+        )),
+        "libraw.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("../web/vendor/libraw-wasm/libraw.js"),
+        )),
+        "libraw.wasm" => Some((
+            "application/wasm",
+            include_bytes!("../web/vendor/libraw-wasm/libraw.wasm"),
+        )),
+        "NOTICE.md" => Some((
+            "text/markdown; charset=utf-8",
+            include_bytes!("../web/vendor/libraw-wasm/NOTICE.md"),
+        )),
+        _ => None,
+    }
+}
+
+fn runtime_os_name() -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(output) = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        && output.status.success()
+    {
+        return format!("macOS {}", String::from_utf8_lossy(&output.stdout).trim());
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(contents) = fs::read_to_string("/etc/os-release")
+        && let Some(value) = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+    {
+        return value.trim_matches('"').to_string();
+    }
+    std::env::consts::OS.to_string()
+}
+
+fn physical_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        return String::from_utf8(output.stdout).ok()?.trim().parse().ok();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let contents = fs::read_to_string("/proc/meminfo").ok()?;
+        let kibibytes: u64 = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("MemTotal:"))?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
+        return kibibytes.checked_mul(1024);
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 fn internal_error(error: anyhow::Error) -> Response {

@@ -19,8 +19,18 @@ pub fn read_locale(code: &str) -> anyhow::Result<Vec<u8>> {
     if !SUPPORTED_LOCALES.contains(&code) {
         return Err(anyhow!("unsupported locale: {code}"));
     }
-    let path = locale_directory()?.join(format!("{code}.json"));
-    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))
+    if let Ok(directory) = locale_directory() {
+        let path = directory.join(format!("{code}.json"));
+        return std::fs::read(&path).with_context(|| format!("reading {}", path.display()));
+    }
+    Ok(embedded_locale(code).to_vec())
+}
+
+fn embedded_locale(code: &str) -> &'static [u8] {
+    match code {
+        "zh-CN" => include_bytes!("../locales/zh-CN.json"),
+        _ => include_bytes!("../locales/en.json"),
+    }
 }
 
 fn candidate_directories() -> Vec<PathBuf> {
@@ -49,10 +59,19 @@ fn locale_files_exist(directory: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::read_locale;
+    use super::{embedded_locale, read_locale};
 
     #[test]
     fn rejects_unknown_locale_names() {
         assert!(read_locale("../../secret").is_err());
+    }
+
+    #[test]
+    fn embeds_every_supported_locale_for_standalone_binaries() {
+        for code in super::SUPPORTED_LOCALES {
+            let parsed: serde_json::Value = serde_json::from_slice(embedded_locale(code)).unwrap();
+            assert_eq!(parsed["locale"], *code);
+            assert!(parsed["reviewWeb"].is_object());
+        }
     }
 }
