@@ -77,7 +77,7 @@ Adding a user-facing key requires updating both catalogs. Locale load failures a
 
 ## Tutorials And Diagnostics
 
-All interfaces use the same four conceptual tutorial steps but native controls and browser dialogs appropriate to each surface. Tutorial visuals are synthetic and never call scan/move APIs. Completion uses a versioned `UserDefaults` or `localStorage` key; Help/`?` always reopens the tour.
+All interfaces use the same four conceptual tutorial steps but native controls and browser dialogs appropriate to each surface. Tutorial visuals are synthetic and never call scan/move APIs. Both completion and skip write a schema-versioned record containing the outcome and timestamp. The native store uses `UserDefaults` and migrates the former Boolean flag. Both browser editions share `web/shared/tutorial-progress.mjs`, migrate their former local-storage keys, and use local storage for normal persistence. The local CLI review also writes a same-host cookie because local storage is port-specific; this preserves the record when the review server moves to another port. Help/`?` always reopens the tour without clearing the record.
 
 The local review server exposes `/api/diagnostics` with compile-time commit, Rust/Cargo versions, target/profile, runtime OS/architecture, CPU/memory, and the run manifest's actual acceleration/detector/RAW selections. Browser code appends user-agent, platform, locale, logical-CPU/memory hints, and cross-origin isolation. The static build writes `build-info.json` with Rust, Cargo, `wasm-pack`, target, app version, and commit, then adds browser diagnostics at display time. Diagnostics intentionally omit source/run paths and file names.
 
@@ -143,7 +143,7 @@ The Pages build includes a same-origin isolation service worker because the curr
 
 The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Native acceleration, reliable scan-time EXIF fallback, Rayon, Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
 
-`web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions. Its path allow-list covers only static-app, shared-core, locale, and workflow inputs, so documentation-only commits do not start a Pages deployment.
+`web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions. Its path allow-list covers only static-app, shared-browser, shared-core, locale, and workflow inputs, so documentation-only commits do not start a Pages deployment.
 
 ## Binary CI And Releases
 

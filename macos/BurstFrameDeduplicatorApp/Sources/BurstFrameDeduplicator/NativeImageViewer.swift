@@ -112,7 +112,7 @@ struct NativeImageViewer: View {
             iconButton("plus.magnifyingglass", help: locale.text("zoomIn")) {
                 canvasCommand = CanvasCommand(action: .zoomIn)
             }
-            iconButton("arrow.up.left.and.arrow.down.right", help: locale.text("fit")) {
+            iconButton("arrow.down.right.and.arrow.up.left", help: locale.text("fit")) {
                 canvasCommand = CanvasCommand(action: .fit)
             }
             iconButton("xmark", help: locale.text("close"), action: close)
@@ -139,6 +139,7 @@ struct NativeImageViewer: View {
         }
         .buttonStyle(.borderless)
         .disabled(disabled)
+        .accessibilityLabel(Text(help))
         .help(help)
     }
 
@@ -225,6 +226,24 @@ private final class CenteredClipView: NSClipView {
     }
 }
 
+private final class ViewportTrackingScrollView: NSScrollView {
+    var onViewportSizeChange: (() -> Void)?
+    private var previousViewportSize = NSSize.zero
+
+    override func layout() {
+        super.layout()
+        let viewportSize = contentView.frame.size
+        guard viewportSize.width > 0,
+              viewportSize.height > 0,
+              viewportSize != previousViewportSize
+        else { return }
+        previousViewportSize = viewportSize
+        DispatchQueue.main.async { [weak self] in
+            self?.onViewportSizeChange?()
+        }
+    }
+}
+
 private struct ZoomableImageCanvas: NSViewRepresentable {
     let image: NSImage
     let command: CanvasCommand
@@ -234,7 +253,7 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = ViewportTrackingScrollView()
         scrollView.contentView = CenteredClipView()
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .underPageBackgroundColor
@@ -245,7 +264,7 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.scrollerStyle = .overlay
         scrollView.documentView = context.coordinator.imageView
-        context.coordinator.scrollView = scrollView
+        context.coordinator.connect(to: scrollView)
         return scrollView
     }
 
@@ -292,21 +311,52 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var image: NSImage?
         var lastCommandID: UUID?
+        private var isFitMode = true
+        private var liveMagnifyObserver: NSObjectProtocol?
+
+        deinit {
+            if let liveMagnifyObserver {
+                NotificationCenter.default.removeObserver(liveMagnifyObserver)
+            }
+        }
+
+        func connect(to scrollView: ViewportTrackingScrollView) {
+            self.scrollView = scrollView
+            scrollView.onViewportSizeChange = { [weak self] in
+                guard self?.isFitMode == true else { return }
+                self?.fit()
+            }
+            liveMagnifyObserver = NotificationCenter.default.addObserver(
+                forName: NSScrollView.willStartLiveMagnifyNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.isFitMode = false
+            }
+        }
 
         func fit() {
             guard let scrollView, imageView.frame.width > 0, imageView.frame.height > 0 else { return }
-            let viewport = scrollView.contentView.bounds.size
+            // The clip view's bounds are expressed in magnified document coordinates.
+            // Its frame remains the physical viewport size needed for a stable fit calculation.
+            let viewport = scrollView.contentView.frame.size
             guard viewport.width > 0, viewport.height > 0 else { return }
-            let fit = min(viewport.width / imageView.frame.width, viewport.height / imageView.frame.height)
-            let clamped = max(0.01, min(1, fit))
-            scrollView.minMagnification = max(0.01, clamped * 0.2)
-            scrollView.maxMagnification = max(8, clamped * 16)
+            let plan = ImageViewportGeometry.magnificationPlan(
+                imageWidth: Double(imageView.frame.width),
+                imageHeight: Double(imageView.frame.height),
+                viewportWidth: Double(viewport.width),
+                viewportHeight: Double(viewport.height)
+            )
+            scrollView.minMagnification = CGFloat(plan.minimum)
+            scrollView.maxMagnification = CGFloat(plan.maximum)
+            isFitMode = true
             let center = NSPoint(x: imageView.frame.midX, y: imageView.frame.midY)
-            scrollView.setMagnification(clamped, centeredAt: center)
+            scrollView.setMagnification(CGFloat(plan.fit), centeredAt: center)
         }
 
         func zoom(by factor: CGFloat) {
             guard let scrollView else { return }
+            isFitMode = false
             let next = max(
                 scrollView.minMagnification,
                 min(scrollView.maxMagnification, scrollView.magnification * factor)

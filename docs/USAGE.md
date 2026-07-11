@@ -38,6 +38,8 @@ The native app and both browser interfaces show a four-step interactive tour on 
 
 Open the tour again from **Help > Show Tutorial** in the native app or the `?` button in either website. The native **About** window reports build commit/toolchains and local OS, memory, GPU, and Metal details. Website **About** dialogs link to the source repository and add browser diagnostics; the local CLI review also reports its selected acceleration, detector, and RAW decoder, while the static edition reports its WASM build toolchain.
 
+Completing or skipping the tour is persistent. The native app stores a structured record in its macOS application preferences. The local CLI review stores the record in browser local storage and a same-host cookie, so changing the local server port does not replay the tour. The static WASM edition uses browser local storage. The tour appears again only when opened from Help/`?`, or after the corresponding app/site data is removed; private browsing may discard the browser record when the private session ends.
+
 ![First-launch browser tutorial using synthetic frames](assets/usage-tutorial.jpg)
 
 ## Recommended Workflow
@@ -206,6 +208,8 @@ In the viewer:
 - Use `+`, `-`, and `Fit` to zoom.
 - Drag the image to pan after zooming.
 - Press `Esc` or click `Close` to leave the viewer.
+
+The native viewer starts in Fit mode with a small margin around the complete image. Fit remains stable after zooming or panning, and the minus control can zoom below the fitted size. Resizing the preview keeps it fitted until you manually change magnification.
 
 The native app loads normal compressed formats from the original path on demand. For RAW-only assets, Rust asks Apple's Camera RAW/ImageIO stack through `/usr/bin/sips` first, writes a high-quality JPEG to `native_previews/` under the run directory, and reuses that cached file when the image is opened again. ImageMagick is an optional fallback and is not bundled in the app.
 

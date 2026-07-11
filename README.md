@@ -15,7 +15,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Uses Metal focus scoring and macOS Vision saliency when selected and available, with recorded CPU fallbacks.
 - Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
-- Opens with a skippable interactive tour and exposes build/runtime diagnostics without reading a photo folder.
+- Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
 
 ## Choose An Interface
 
@@ -100,8 +100,9 @@ Pushes to `main` and pull requests that include non-documentation changes, plus 
 The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
 
 ```bash
-git tag -a v0.1.1 -m "v0.1.1"
-git push origin main v0.1.1
+VERSION=0.1.2 # choose the next unused Semantic Versioning release
+git tag -a "v${VERSION}" -m "v${VERSION}"
+git push origin main "v${VERSION}"
 ```
 
 Do not reuse an existing release tag.
