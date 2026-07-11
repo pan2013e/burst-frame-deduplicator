@@ -175,7 +175,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "burst-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "image",
  "serde",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "burst-frame-deduplicator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "burst-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "burst-core",
  "console_error_panic_hook",

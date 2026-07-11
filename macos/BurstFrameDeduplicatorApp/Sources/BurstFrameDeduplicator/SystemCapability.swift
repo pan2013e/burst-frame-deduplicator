@@ -86,7 +86,7 @@ struct BuildDiagnostics {
             rustVersion: info["BFDRustVersion"] as? String ?? "development",
             swiftVersion: info["BFDSwiftVersion"] as? String ?? "development",
             commandLineToolsVersion: info["BFDCLTVersion"] as? String ?? "development",
-            appVersion: info["CFBundleShortVersionString"] as? String ?? "0.1.0"
+            appVersion: info["CFBundleShortVersionString"] as? String ?? "0.1.1"
         )
     }
 }
