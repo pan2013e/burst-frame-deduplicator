@@ -20,6 +20,8 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - When adding acceleration or detector backends, provide a CPU or heuristic fallback and record the selected backend plus fallback notes in `manifest.json`.
 - Keep user-facing review UI simple. Show recommendations as preselected keep/reject controls and hide low-level metrics behind expandable details.
 - Do not expose permanent delete controls in the web UI. Moving rejects must require a confirmation dialog and leave files recoverable in a local folder.
+- Treat result-folder relocation as a backend operation shared by CLI and GUI. Never overwrite an existing run; verify cross-volume copies, repair internal move-journal paths, and publish the new path only after the operation succeeds.
+- Package the native GUI for Apple Silicon only. Public DMGs must use Developer ID hardened-runtime signing and notarization; ad-hoc signatures are local-test artifacts. Do not bundle optional external decoders without documenting provenance, licensing, and runtime selection.
 
 ## Testing Rules
 
@@ -39,6 +41,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - For clustering changes, run `benchmark/run_benchmarks.py` and preserve the reviewed must-link, cannot-link, and posture-phase coverage expectations in `benchmark/accuracy_labels.json`.
 - Run `web/wasm/build.sh` and browser-test both locales at desktop and mobile widths after changing the static application.
 - Run `scripts/build_macos_app.sh` and inspect the packaged app with native UI automation after changing SwiftUI layout, navigation, locale loading, or packaging.
+- After DMG changes, build and mount the image, verify that the app and `/Applications` alias are present, and run `codesign --verify` on the packaged app. Never claim an ad-hoc build is Gatekeeper-ready.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.
 
 ## Benchmark Expectations

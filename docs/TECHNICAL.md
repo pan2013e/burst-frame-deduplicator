@@ -27,7 +27,7 @@ Use a portable CPU-only build with:
 cargo build --release --no-default-features
 ```
 
-The Rust package has no windowing dependency. Build the native macOS application separately with `scripts/build_macos_app.sh`; GUI support on other operating systems is planned.
+The Rust package has no windowing dependency. Build the Apple Silicon macOS application separately with `scripts/build_macos_app.sh`; GUI support on other operating systems is planned. CUDA is not available on macOS, and deprecated/limited OpenCL is not an Apple Silicon backend target.
 
 ## Native SwiftUI And FFI
 
@@ -41,14 +41,21 @@ The root Rust crate produces both `rlib` and `cdylib` artifacts. Its versioned C
 - exporting reviewed artifacts
 - executing the confirmed, verified reject move
 - restoring moved asset groups to their journaled original paths
+- relocating a complete run with progress and restore-journal path repair
 
 Every exported function catches Rust panics before crossing the ABI. Callers release returned strings with `bfd_free_string`. The Swift bridge centralizes JSON encoding, decoding, callback lifetime, and error conversion; views do not call C functions directly.
 
-The SwiftUI app uses system folder panels, pickers, steppers, checkboxes, menus, split navigation, confirmation dialogs, and SF Symbols. Standard controls automatically adopt macOS 26 Liquid Glass, with an explicit glass-prominent primary action and native fallback on macOS 14/15. Scan work and decision writes run off the main actor. The review grid is lazy, thumbnail images use a bounded `NSCache`, and full-image RAW previews are generated once under the run directory.
+The SwiftUI app uses system folder panels, pickers, steppers, checkboxes, menus, split navigation, confirmation dialogs, and SF Symbols. Standard controls automatically adopt macOS 26 Liquid Glass, with native fallback on earlier supported releases. Scan work, relocation, and decision writes run off the main actor. The review grid is lazy, thumbnail images use a bounded `NSCache`, and full-image RAW previews are generated once under the run directory.
 
-The full-image viewer uses `NSScrollView` rather than a gesture-only SwiftUI transform. Native magnification, two-finger pan, scroll elasticity, fitted centering, keyboard navigation, off-main ImageIO downsampling, and a bounded decoded-image cache keep interaction responsive. Settings live in a separate SwiftUI `Settings` scene and group locale/default destination, quality/acceleration controls, and previous-run storage management.
+The full-image viewer uses `NSScrollView` rather than a gesture-only SwiftUI transform. Native magnification, two-finger pan, scroll elasticity, fitted centering, keyboard navigation, off-main ImageIO downsampling, and a bounded decoded-image cache keep interaction responsive. Settings live in a separate SwiftUI `Settings` scene and group locale/appearance, result and reject destinations, quality/acceleration controls, workload estimates, and selective run storage management.
 
-`scripts/build_macos_app.sh` builds Rust and Swift in release mode, rewrites the dylib install name to `@rpath`, embeds it under `Contents/Frameworks`, copies locale resources, and ad-hoc signs the complete bundle.
+Known run paths are persisted separately from scan manifests. The Get Started view merges that registry with discovered children of the configured and legacy result roots, validates `manifest.json`, and computes directory usage off the main actor. Cleanup only accepts non-symlink directories with a manifest and excludes the currently open run.
+
+Changing the result root for an open run is debounced in Swift and executed by Rust. Same-filesystem relocation uses `rename`; cross-filesystem relocation copies into a destination-volume staging folder, verifies every regular-file size, moves the old run to a cleanup tombstone, then atomically publishes the staged folder. Internal moved-reject destinations are rewritten before the new run is exposed. Existing destination names receive a suffix rather than being overwritten.
+
+`scripts/build_macos_app.sh` builds Rust and Swift in release mode, rewrites the dylib install name to `@rpath`, embeds it under `Contents/Frameworks`, copies locale resources, records commit/toolchain metadata, and signs every nested code object. It defaults to ad-hoc signing for local testing. With `CODE_SIGN_IDENTITY`, it enables hardened runtime and secure timestamps.
+
+`scripts/build_macos_dmg.sh` stages the app beside an `/Applications` alias and creates a compressed UDZO disk image. With `NOTARY_PROFILE`, it submits through `notarytool`, waits, and staples the notarization ticket. ImageMagick is not embedded: RAW on macOS uses the installed Camera RAW/ImageIO stack through `/usr/bin/sips` first, with an optional external ImageMagick fallback.
 
 `scripts/test_macos_app.sh` builds the dylib and runs the Swift package tests. Standalone Xcode Command Line Tools installs keep `Testing.framework` outside SwiftPM's default search path, so the script adds that path conditionally; full Xcode installations use normal framework discovery.
 
@@ -56,7 +63,7 @@ The full-image viewer uses `NSScrollView` rather than a gesture-only SwiftUI tra
 
 `ProgressReporter` emits serializable updates with a stable stage enum, stage item counts, optional current-file detail, stage fraction, and weighted overall fraction. The stages are preparation, discovery, preview analysis, burst/stack grouping, high-resolution refinement, ranking, manifest writing, review export, and completion.
 
-The CLI installs a throttled terminal renderer. The native GUI receives the same serialized updates through the FFI callback, so progress accounting remains in the backend rather than being reconstructed by each interface.
+The CLI installs a throttled terminal renderer. The native GUI receives the same serialized updates through the FFI callback, so progress accounting remains in the backend rather than being reconstructed by each interface. Run relocation emits the same JSON field shape with a `relocating` stage, allowing Swift and the CLI to reuse their progress plumbing.
 
 ## Locale Loading
 
@@ -93,6 +100,10 @@ EXIF extraction is scan-time work. New manifests include capture time plus compa
 JPEG files use scaled-DCT decoding when supported, with `image-rs` as a compatibility fallback. Feature extraction uses an 8-bit grayscale buffer and histogram quantiles rather than cloned `f64` buffers and repeated sorts.
 
 Metal currently accelerates focus metrics only. The kernel reduces within GPU threadgroups and returns compact partial sums. Saliency, descriptors, clustering, and ranking remain CPU-side.
+
+The native settings workload bar is intentionally an estimate, not telemetry. It combines preview/refinement pixel area, candidates per stack, detector cost, and acceleration choice, normalized against logical CPU count, physical memory, and Metal availability. The About window reports runtime hardware/OS diagnostics plus build-time commit, Rust, Swift, and Apple toolchain versions injected into `Info.plist` by the packaging script.
+
+Platform acceleration remains isolated behind Rust feature gates and `cfg(target_os = "macos")`. Adding CUDA, OpenVINO, or another future backend should implement the existing selection/report contract, provide a CPU fallback, and record actual selection and notes in `manifest.json`; it must not introduce CUDA or OpenCL claims for Apple Silicon macOS.
 
 ## Detector Backends
 
@@ -160,3 +171,5 @@ The scanner reads source files and writes run artifacts. It does not delete sour
 The shared native move operation asks for confirmation and works at asset-group granularity. It preflights all group members, copies and size-verifies the complete group, removes originals, and atomically persists `move_state.json`; partial failures trigger rollback. The default target is under the run directory, while explicit custom targets must be outside both temporary storage and the source root. Restore requires the original parent directories to exist and refuses occupied paths. Move and restore reports are written under the run directory and ignored by Git.
 
 The native app invokes the same shared Rust move function only after a destructive-role SwiftUI confirmation dialog. Neither review interface exposes permanent deletion.
+
+Run-folder relocation is distinct from moving source rejects and does not require the source card. Selective cache cleanup removes complete user-selected run directories only. It can therefore remove generated previews and recoverable rejects stored inside those directories, but it does not traverse source roots or external custom move destinations.

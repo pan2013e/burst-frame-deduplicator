@@ -10,7 +10,7 @@ Install the normal prerequisites:
 
 ```bash
 xcode-select --install
-brew install imagemagick git-lfs
+brew install git-lfs
 git lfs install
 ```
 
@@ -36,9 +36,13 @@ Launch the native desktop application when you do not want to use a terminal:
 open "target/macos/Burst Frame Deduplicator.app"
 ```
 
-Choose the photo folder, optionally choose a run folder, and start the scan. If the run folder is left blank, the app creates a timestamped folder under `~/Pictures/Burst Frame Deduplicator Runs`. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
+Select **New Scan** and choose the photo folder or mounted card. The button is always available and starts the scan as soon as the folder is selected. New run folders are created under the result directory configured in **Settings > General**; the default is `~/Pictures/Burst Frame Deduplicator Runs`.
 
-Change the app language in **Settings > General**. The review state remains intact. The macOS 26 build uses the system Liquid Glass treatment for navigation and primary commands; earlier supported macOS versions retain native system controls.
+The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
+
+Change language and system/light/dark appearance in **Settings > General**. The app supplies localized titles, messages, and buttons to its file panels instead of relying on the operating-system language. The review state remains intact. On macOS 26, native controls use the system Liquid Glass treatment; earlier supported macOS versions retain their corresponding system controls.
+
+Use **File > New App Window** or `Command-N` to launch another independent app process. Each process can scan concurrently, and generated run names include a random suffix to avoid output collisions.
 
 For development, the Swift package can also be built directly after the Rust dynamic library exists:
 
@@ -64,6 +68,14 @@ The command line reports each long-running stage with overall percentage, item p
 ```bash
 cargo run --release -- scan /Volumes/CARD/DCIM 2> scan-progress.log
 ```
+
+Move a completed run under another result directory without rescanning:
+
+```bash
+cargo run --release -- relocate --run /path/to/run_YYYYMMDD_HHMMSS --to /path/to/results
+```
+
+Same-volume moves use an atomic rename. Cross-volume moves copy every generated file, verify byte counts, repair internal restore-journal paths, and only then retire the old run folder. Existing names are never overwritten.
 
 ## Static Browser Edition
 
@@ -136,6 +148,7 @@ Each card represents one asset. A RAW+JPEG pair with the same basename is treate
 - `Why`: shows stack ranking, subject/whole-frame sharpness, visual distance, duplicate confidence, completeness, exposure, detector notes, and whether high-resolution refinement was used.
 - EXIF chips: show compact metadata such as ISO, aperture, shutter speed, focal length, and 35mm-equivalent focal length when available.
 - Highlighted EXIF chips: this field differs inside the same stack, which can explain why one frame is sharper, cleaner, or more motion-blurred than another.
+- Image quality bar: shows the continuous quality score from red through green for quick comparison. Expand **Why** only when the underlying metrics are needed.
 
 Stacks are sorted with expanded stacks first. A stack collapses automatically when all frames inside it are kept, and you can manually collapse or expand it with the button on the right side of the header. Headers show both the temporal burst and stack numbers.
 
@@ -155,7 +168,7 @@ In the viewer:
 - Drag the image to pan after zooming.
 - Press `Esc` or click `Close` to leave the viewer.
 
-The native app loads normal compressed formats from the original path on demand. For RAW-only assets, Rust writes a high-quality JPEG to `native_previews/` under the run directory and reuses that cached file when the image is opened again.
+The native app loads normal compressed formats from the original path on demand. For RAW-only assets, Rust asks Apple's Camera RAW/ImageIO stack through `/usr/bin/sips` first, writes a high-quality JPEG to `native_previews/` under the run directory, and reuses that cached file when the image is opened again. ImageMagick is an optional fallback and is not bundled in the app.
 
 The local browser review first tries the bundled LibRaw-WASM decoder for RAW-only images. Its decoded blob cache has a bounded memory budget, and the local server can fall back to generating a JPEG preview. The static WASM edition uses the same local LibRaw worker but has no native fallback.
 
@@ -194,7 +207,15 @@ When confirmed, the app:
 
 Moved cards use a distinct **Moved** status. `Restore moved` returns complete asset groups to their recorded original paths after checking that the source card/folder is connected and no same-name file now occupies a path. The app never recreates an unavailable mounted volume.
 
-Do not remove a run directory that still contains moved rejects or an active restore journal. **Settings > Storage** calculates previous-run usage and warns again before removing such data. Custom move destinations remain outside the cache, but removing their journal prevents one-click restore.
+Do not remove a run directory that still contains moved rejects or an active restore journal. **Settings > Storage** calculates each known run, preselects all removable runs, and lets you uncheck individual folders. The current open run cannot be selected. A second warning appears when the selected folders contain recoverable photos or active restore records.
+
+Cleanup removes each selected run folder in full: manifests, thumbnails, generated RAW previews, reports, scripts, and rejected photos stored inside that run. It does **not** remove original source photos, app preferences, the installed app, build artifacts, or files moved to an external custom destination. Removing a run that recorded an external destination leaves those files in place but removes the one-click restore journal.
+
+## Moving A Run Folder
+
+Change **Settings > General > Default result directory** while a completed run is open to relocate that run. The app waits briefly so repeated setting changes coalesce, then disables affected controls and displays byte-copy progress. It updates the open review only after the backend has completed and verified the move. New scans use the same selected parent directory.
+
+Run relocation does not need the original photo card because it moves generated run data, not source photos. If rejected photos were moved inside the run folder, they move with it and `move_state.json` is repaired so restore continues to work.
 
 ## Best-Quality Scan
 
@@ -212,6 +233,8 @@ cargo run --release -- scan /path/to/photos \
 ```
 
 This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. The benchmark fixture retained `100%` reviewed pair accuracy and posture coverage at `3.29` assets/sec with about `1.89 GB` peak RSS. Use Balanced when turnaround matters more than the additional small-subject margin.
+
+**Settings > Analysis** also shows a quick device-capability assessment and an estimated workload for the current preset or custom settings. These colored bars are comparative planning aids based on CPU count, memory, Metal availability, pixel counts, refinement breadth, and detector choice; they are not live CPU/GPU utilization meters.
 
 ## Useful Scan Options
 
@@ -258,9 +281,29 @@ BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicat
 
 The packaged macOS app and static web build copy the repository catalogs into their resources.
 
+## Installing Or Distributing The macOS App
+
+Create a local drag-to-Applications DMG:
+
+```bash
+./scripts/build_macos_dmg.sh
+```
+
+Open the resulting file under `target/macos/`, then drag **Burst Frame Deduplicator** onto the **Applications** alias. This default artifact is ad-hoc signed and is suitable only for local testing.
+
+For distribution outside the Mac App Store, create an Apple [Developer ID Application certificate](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/), then build with hardened runtime signing and follow Apple's [notarization workflow](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution):
+
+```bash
+CODE_SIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+NOTARY_PROFILE="burst-frame-notary" \
+./scripts/build_macos_dmg.sh
+```
+
+`NOTARY_PROFILE` is a Keychain profile previously configured with `xcrun notarytool store-credentials`. The script signs the embedded Rust library, executable, app, and DMG; submits the DMG; waits for notarization; and staples the ticket. The About window reports the exact source commit plus Rust, Swift, Apple command-line tools, OS, memory, GPU, and Metal-family diagnostics.
+
 ## Troubleshooting
 
-If RAW files do not decode during scan, install ImageMagick:
+On macOS, RAW first uses the installed system Camera RAW support. If a particular camera format is not supported there, install the optional ImageMagick fallback:
 
 ```bash
 brew install imagemagick

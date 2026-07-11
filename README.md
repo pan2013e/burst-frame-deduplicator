@@ -27,14 +27,24 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 
 ## Native macOS App
 
-Requires macOS 14 or newer, Rust, and the Swift toolchain from Xcode Command Line Tools.
+The native app targets Apple Silicon and requires macOS 14 or newer. It uses current SwiftUI controls, with macOS 26 Liquid Glass styling supplied by the system.
 
 ```bash
 ./scripts/build_macos_app.sh
 open "target/macos/Burst Frame Deduplicator.app"
 ```
 
-The app chooses source/output folders, shows weighted stage progress, runs the same Rust pipeline as the CLI, and opens the review grid inside the app. Review decisions are persisted immediately. RAW previews are decoded on demand and cached under the run directory. On macOS 26, standard navigation and command controls adopt Liquid Glass; macOS 14 and 15 use the corresponding native fallback styles.
+The Get Started view opens a source folder directly, resumes recent runs, and keeps result storage in Settings. Scans show weighted stage progress and become a native review workspace in the same window. `Command-N` launches another app process so multiple scans can run concurrently; collision-resistant run names keep their outputs separate.
+
+RAW decoding uses Apple's Camera RAW/ImageIO support through the system `sips` tool first. ImageMagick is not bundled and is only an optional compatibility fallback for the CLI or formats the installed macOS release cannot decode.
+
+Build a drag-to-Applications disk image for local testing:
+
+```bash
+./scripts/build_macos_dmg.sh
+```
+
+The default build is ad-hoc signed. Public distribution requires a Developer ID Application identity and notarization; see [Distribution](docs/USAGE.md#installing-or-distributing-the-macos-app).
 
 ## Command Line
 
@@ -69,12 +79,15 @@ The GitHub Pages workflow builds the same static directory.
 
 ## Prerequisites
 
+<details>
+<summary>Build prerequisites and setup commands</summary>
+
 | Requirement | macOS native | Linux/Windows CLI | Static WASM build |
 | --- | --- | --- | --- |
 | Rust/Cargo | Required | Required | Required |
-| Swift 6 / Xcode Command Line Tools | Required for SwiftUI app | Not required | Not required |
-| ImageMagick | Recommended for RAW/HEIC fallback | Recommended for RAW | Not used |
-| Git LFS | Required for benchmark fixture | Required for benchmark fixture | Required for benchmark fixture |
+| Swift 6 / Apple Command Line Tools | Required | Not required | Not required |
+| ImageMagick | Optional compatibility fallback | Recommended for RAW | Not used |
+| Git LFS | Benchmark fixture only | Benchmark fixture only | Benchmark fixture only |
 | `wasm-pack` | Optional | Optional | Required |
 | Modern browser | Optional local review | Optional local review | Required |
 
@@ -82,30 +95,41 @@ macOS setup:
 
 ```bash
 xcode-select --install
-brew install imagemagick git-lfs
+brew install git-lfs
 git lfs install
 rustup toolchain install stable
 ```
 
+Install ImageMagick only when a required format is not handled by the system Camera RAW stack:
+
+```bash
+brew install imagemagick
+```
+
+</details>
+
 ## Platform Support
 
-| Feature / backend | macOS Apple Silicon | macOS Intel | Linux CPU | Linux NVIDIA | Windows CPU |
-| --- | --- | --- | --- | --- | --- |
-| Headless CLI | Supported | Supported | Supported | Supported | Supported |
-| Native SwiftUI GUI | Supported (macOS 14+) | Supported (macOS 14+) | Planned | Planned | Planned |
-| macOS 26 Liquid Glass controls | Supported | Supported | Not available | Not available | Not available |
-| Static WASM scan/review | Supported | Supported | Supported | Supported | Supported |
-| JPEG/PNG/TIFF/WebP decode | Supported | Supported | Supported | Supported | Supported |
-| RAW via ImageMagick | Supported | Supported | Supported | Supported | Supported |
-| RAW via macOS `sips` | Supported | Supported | Not available | Not available | Not available |
-| Browser RAW via LibRaw-WASM | Supported | Supported | Supported | Supported | Supported |
-| Confirmed move + restore | Native and Chromium-style browsers | Native and Chromium-style browsers | Chromium-style browsers | Chromium-style browsers | Chromium-style browsers |
-| CPU/Rayon scoring | Supported | Supported | Supported | Supported | Supported |
-| Metal focus scoring | Supported | Supported when a Metal device exists | Not available | Not available | Not available |
-| macOS Vision detector | Supported | Supported | Not available | Not available | Not available |
-| CUDA / TensorRT | Planned | Planned | Planned | Planned | Planned |
-| OpenCL / OpenVINO | Planned | Planned | Planned | Planned | Planned |
-| English / Simplified Chinese | Supported | Supported | Supported | Supported | Supported |
+Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · — unavailable/not applicable
+
+| Feature / backend | macOS Apple Silicon | Linux CPU | Linux NVIDIA | Windows CPU |
+| --- | :---: | :---: | :---: | :---: |
+| Headless CLI | ✅ | ✅ | ✅ | ✅ |
+| Native GUI | ✅ SwiftUI | 🧭 | 🧭 | 🧭 |
+| macOS 26 Liquid Glass controls | ✅ | — | — | — |
+| Static WASM scan/review | ✅ | ✅ | ✅ | ✅ |
+| JPEG/PNG/TIFF/WebP decode | ✅ | ✅ | ✅ | ✅ |
+| RAW via Apple Camera RAW / `sips` | ✅ | — | — | — |
+| RAW via ImageMagick fallback | 🟡 optional | ✅ | ✅ | ✅ |
+| Browser RAW via LibRaw-WASM | ✅ | ✅ | ✅ | ✅ |
+| Confirmed move + restore | ✅ | 🟡 browser | 🟡 browser | 🟡 browser |
+| CPU/Rayon scoring | ✅ | ✅ | ✅ | ✅ |
+| Metal focus scoring | ✅ | — | — | — |
+| macOS Vision detector | ✅ | — | — | — |
+| CUDA / TensorRT | — | — | 🧭 | 🧭 |
+| OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
+| OpenVINO | — | 🧭 | 🧭 | 🧭 |
+| English / Simplified Chinese | ✅ | ✅ | ✅ | ✅ |
 
 Requested and selected backends, capabilities, and fallback notes are recorded in every `manifest.json`.
 
