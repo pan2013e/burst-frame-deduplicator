@@ -13,124 +13,9 @@ const SIDECAR_EXTS = new Set(["aae", "dop", "json", "pp3", "xmp"]);
 const BROWSER_FIRST = ["jpg", "jpeg", "png", "webp", "avif", "bmp", "gif", "heic", "heif", "tif", "tiff"];
 const PREVIEW_LONG_EDGE = 1280;
 
-const messages = {
-  en: {
-    title: "Burst Frame Deduplicator",
-    browserMode: "Browser mode",
-    chooseFolder: "Choose photo folder",
-    localOnly: "Photos stay on this device",
-    saveReview: "Save review",
-    cancel: "Cancel",
-    findFilename: "Find filename",
-    filter: "Filter",
-    allFrames: "All frames",
-    needsReview: "Needs review",
-    kept: "Kept",
-    rejected: "Rejected",
-    multiStacks: "Multi-frame stacks",
-    keep: "Keep",
-    fit: "Fit",
-    close: "Close",
-    loading: "Loading preview",
-    images: "Images",
-    bursts: "Bursts",
-    stacks: "Stacks",
-    review: "Review",
-    manual: "Manual edits",
-    discovering: "Discovering photos",
-    loadingEngine: "Loading local analysis engine",
-    decoding: "Decoding and analyzing previews",
-    grouping: "Grouping bursts and near-duplicates",
-    rendering: "Preparing review",
-    complete: "Ready to review",
-    noImages: "No supported photos were found in this folder.",
-    scanCancelled: "Scan cancelled.",
-    scanFailed: "The browser scan could not be completed.",
-    rawIsolation: "RAW decoding needs cross-origin isolation. Reload this page after the service worker activates.",
-    rawDecodeFailed: "RAW preview could not be decoded.",
-    previewFailed: "Preview could not be decoded.",
-    unsupportedSkipped: "Some files could not be decoded and were skipped.",
-    distinct_frame: "Distinct frame; kept by default.",
-    best_quality: "Best quality in this near-duplicate stack.",
-    uncertain_similarity: "Similarity is uncertain; inspect before rejecting.",
-    quality_tie: "Close quality result; inspect before rejecting.",
-    high_confidence_duplicate: "High-confidence near duplicate with a better frame in this stack.",
-    decode_error: "Preview could not be analyzed.",
-    why: "Why",
-    reset: "Reset to suggestion",
-    stackTitle: (burst, stack) => `Burst ${burst} · Stack ${stack}`,
-    frameCount: count => `${count} ${count === 1 ? "frame" : "frames"}`,
-    stackSummary: (count, state, keep, confidence) => `${count} · ${state} · keep ${keep} · confidence ${confidence}`,
-    expanded: "expanded",
-    collapsed: "collapsed",
-    rank: (rank, score) => `Rank ${rank}; quality score ${score}.`,
-    sharpness: (whole, subject) => `Whole-frame sharpness ${whole}; subject sharpness ${subject}.`,
-    similarity: (distance, confidence) => `Nearest visual distance ${distance}; duplicate confidence ${confidence}.`,
-    dimensions: (width, height) => `${width} × ${height}`,
-    exifUnavailable: "EXIF unavailable",
-    saved: "Review file saved.",
-    sourceUnavailable: "This preview is no longer available. Select the folder again.",
-    rawPreview: "RAW preview",
-  },
-  "zh-CN": {
-    title: "连拍照片筛选器",
-    browserMode: "浏览器模式",
-    chooseFolder: "选择照片文件夹",
-    localOnly: "照片仅在本机处理",
-    saveReview: "保存审核结果",
-    cancel: "取消",
-    findFilename: "查找文件名",
-    filter: "筛选",
-    allFrames: "全部照片",
-    needsReview: "需要审核",
-    kept: "保留",
-    rejected: "不保留",
-    multiStacks: "多张相似组",
-    keep: "保留",
-    fit: "适应窗口",
-    close: "关闭",
-    loading: "正在加载预览",
-    images: "照片",
-    bursts: "连拍序列",
-    stacks: "相似组",
-    review: "待审核",
-    manual: "手动修改",
-    discovering: "正在查找照片",
-    loadingEngine: "正在加载本地分析引擎",
-    decoding: "正在解码并分析预览图",
-    grouping: "正在划分连拍与近似照片",
-    rendering: "正在准备审核页面",
-    complete: "可以开始审核",
-    noImages: "所选文件夹中没有支持的照片。",
-    scanCancelled: "扫描已取消。",
-    scanFailed: "浏览器扫描未能完成。",
-    rawIsolation: "RAW 解码需要跨源隔离。服务工作线程启用后请重新加载页面。",
-    rawDecodeFailed: "无法解码 RAW 预览图。",
-    previewFailed: "无法解码预览图。",
-    unsupportedSkipped: "部分文件无法解码，已跳过。",
-    distinct_frame: "这是独特画面，默认保留。",
-    best_quality: "这是本相似组中质量最佳的照片。",
-    uncertain_similarity: "相似度置信度不足，请检查后再决定。",
-    quality_tie: "质量非常接近，请检查后再决定。",
-    high_confidence_duplicate: "这是高置信度近似照片，同组中有更好的画面。",
-    decode_error: "无法分析预览图。",
-    why: "详细原因",
-    reset: "恢复建议",
-    stackTitle: (burst, stack) => `连拍 ${burst} · 相似组 ${stack}`,
-    frameCount: count => `${count} 张照片`,
-    stackSummary: (count, state, keep, confidence) => `${count} · ${state} · 保留 ${keep} · 置信度 ${confidence}`,
-    expanded: "已展开",
-    collapsed: "已折叠",
-    rank: (rank, score) => `组内排名 ${rank}；质量分数 ${score}。`,
-    sharpness: (whole, subject) => `全图清晰度 ${whole}；主体清晰度 ${subject}。`,
-    similarity: (distance, confidence) => `最近视觉距离 ${distance}；重复置信度 ${confidence}。`,
-    dimensions: (width, height) => `${width} × ${height}`,
-    exifUnavailable: "无 EXIF 信息",
-    saved: "审核结果已保存。",
-    sourceUnavailable: "预览图已不可用，请重新选择照片文件夹。",
-    rawPreview: "RAW 预览图",
-  },
-};
+const supportedLocales = new Set(["en", "zh-CN"]);
+let messages = {};
+let languageNames = {};
 
 const elements = Object.fromEntries([
   "folderInput", "pickBtn", "emptyPickBtn", "emptyState", "progressView", "reviewView",
@@ -141,11 +26,11 @@ const elements = Object.fromEntries([
 ].map(id => [id, document.getElementById(id)]));
 
 const queryLocale = new URLSearchParams(location.search).get("lang");
-const requestedLocale = Object.hasOwn(messages, queryLocale) ? queryLocale : null;
+const requestedLocale = supportedLocales.has(queryLocale) ? queryLocale : null;
 const defaultLocale = navigator.language.startsWith("zh") ? "zh-CN" : "en";
 const storedLocale = localStorage.getItem("burst-locale");
 const state = {
-  locale: requestedLocale || (Object.hasOwn(messages, storedLocale) ? storedLocale : defaultLocale),
+  locale: requestedLocale || (supportedLocales.has(storedLocale) ? storedLocale : defaultLocale),
   wasmReady: null,
   result: null,
   assets: new Map(),
@@ -164,14 +49,26 @@ const state = {
   dragStart: null,
 };
 
-function t(key, ...args) {
-  const value = messages[state.locale][key] ?? messages.en[key] ?? key;
-  return typeof value === "function" ? value(...args) : value;
+async function loadLocaleCatalogs() {
+  const catalogs = await Promise.all([...supportedLocales].map(async code => {
+    const response = await fetch(`./locales/${code}.json`);
+    if (!response.ok) throw new Error(`locale ${code}: HTTP ${response.status}`);
+    const catalog = await response.json();
+    return [code, catalog];
+  }));
+  messages = Object.fromEntries(catalogs.map(([code, catalog]) => [code, catalog.staticWeb]));
+  languageNames = Object.fromEntries(catalogs.map(([code, catalog]) => [code, catalog.languageName]));
+}
+
+function t(key, values = {}) {
+  const template = messages[state.locale]?.[key] ?? messages.en?.[key] ?? key;
+  return String(template).replace(/\{([a-zA-Z0-9_]+)\}/g, (_, name) => String(values[name] ?? `{${name}}`));
 }
 
 function applyLocale() {
   document.documentElement.lang = state.locale;
   document.title = t("title");
+  document.querySelector('meta[name="description"]').content = t("description");
   document.querySelectorAll("[data-i18n]").forEach(node => {
     node.textContent = t(node.dataset.i18n);
   });
@@ -179,8 +76,14 @@ function applyLocale() {
     node.placeholder = t(node.dataset.i18nPlaceholder);
   });
   document.querySelectorAll("[data-locale]").forEach(button => {
+    button.textContent = languageNames[button.dataset.locale] || button.dataset.locale;
     button.classList.toggle("active", button.dataset.locale === state.locale);
   });
+  document.querySelector(".locale-switch").setAttribute("aria-label", t("language"));
+  elements.zoomOutBtn.title = t("zoomOut");
+  elements.zoomOutBtn.setAttribute("aria-label", t("zoomOut"));
+  elements.zoomInBtn.title = t("zoomIn");
+  elements.zoomInBtn.setAttribute("aria-label", t("zoomIn"));
   elements.sourceLabel.textContent = state.sourceName || t("browserMode");
   elements.filterSelect.setAttribute("aria-label", t("filter"));
   if (state.result) renderReview();
@@ -269,6 +172,15 @@ async function ensureWasm() {
 }
 
 async function scanFiles(fileList) {
+  const benchmarkStarted = performance.now();
+  const benchmarkStages = {
+    discovery_ms: 0,
+    wasm_initialization_ms: 0,
+    decode_ms: 0,
+    scoring_ms: 0,
+    clustering_ms: 0,
+    render_ms: 0,
+  };
   const token = ++state.scanToken;
   resetResult();
   elements.emptyState.hidden = true;
@@ -279,6 +191,7 @@ async function scanFiles(fileList) {
   await nextPaint();
 
   const groups = groupSelectedFiles(fileList);
+  benchmarkStages.discovery_ms = performance.now() - benchmarkStarted;
   if (!groups.length) {
     showEmpty(t("noImages"));
     return;
@@ -288,6 +201,7 @@ async function scanFiles(fileList) {
   elements.sourceLabel.textContent = state.sourceName;
 
   setProgress("loadingEngine", 0.06);
+  const wasmStarted = performance.now();
   try {
     await ensureWasm();
   } catch (error) {
@@ -295,6 +209,7 @@ async function scanFiles(fileList) {
     showEmpty(t("scanFailed"));
     return;
   }
+  benchmarkStages.wasm_initialization_ms = performance.now() - wasmStarted;
   if (token !== state.scanToken) return;
 
   const session = new BrowserSession();
@@ -309,9 +224,11 @@ async function scanFiles(fileList) {
     setProgress("decoding", fraction, `${index + 1} / ${groups.length} · ${group.relPath}`);
     await nextPaint();
     try {
+      const decodeStarted = performance.now();
       const decoded = group.rawOnly
         ? await decodeRaw(group.representative)
         : await decodeBrowserImage(group.representative);
+      benchmarkStages.decode_ms += performance.now() - decodeStarted;
       if (token !== state.scanToken) {
         URL.revokeObjectURL(decoded.previewUrl);
         return;
@@ -326,7 +243,9 @@ async function scanFiles(fileList) {
         files: group.files.map(file => file.webkitRelativePath || file.name),
         metadata: decoded.metadata,
       };
+      const scoringStarted = performance.now();
       session.add_rgba(input, decoded.width, decoded.height, decoded.rgba);
+      benchmarkStages.scoring_ms += performance.now() - scoringStarted;
       state.assets.set(group.id, { ...group, previewUrl: decoded.previewUrl, rawPreview: group.rawOnly });
       state.objectUrls.set(group.id, decoded.previewUrl);
     } catch (error) {
@@ -342,6 +261,7 @@ async function scanFiles(fileList) {
   }
   setProgress("grouping", 0.91);
   await nextPaint();
+  const clusteringStarted = performance.now();
   try {
     state.result = session.finish(undefined);
   } catch (error) {
@@ -349,15 +269,37 @@ async function scanFiles(fileList) {
     showEmpty(t("scanFailed"));
     return;
   }
+  benchmarkStages.clustering_ms = performance.now() - clusteringStarted;
   setProgress("rendering", 0.97);
+  const renderStarted = performance.now();
   initializeReviewState();
   renderReview();
+  benchmarkStages.render_ms = performance.now() - renderStarted;
   setProgress("complete", 1);
   await nextPaint();
   elements.progressView.hidden = true;
   elements.reviewView.hidden = false;
   elements.saveBtn.hidden = false;
+  publishBenchmark(benchmarkStarted, benchmarkStages, groups.length, failed.length);
   if (failed.length) showToast(`${t("unsupportedSkipped")} (${failed.length})`);
+}
+
+function publishBenchmark(started, stages, selectedAssets, failedAssets) {
+  const totalMs = performance.now() - started;
+  const completedAssets = state.result?.assets.length || 0;
+  const benchmark = {
+    path: "wasm_static",
+    selected_assets: selectedAssets,
+    completed_assets: completedAssets,
+    failed_assets: failedAssets,
+    total_ms: totalMs,
+    assets_per_second: totalMs > 0 ? completedAssets * 1000 / totalMs : 0,
+    stages: stages,
+  };
+  state.lastBenchmark = benchmark;
+  window.__burstBenchmark = benchmark;
+  document.documentElement.dataset.benchmarkComplete = "true";
+  window.dispatchEvent(new CustomEvent("burst-benchmark-complete", { detail: benchmark }));
 }
 
 async function decodeBrowserImage(file) {
@@ -549,12 +491,12 @@ function renderStack(entry) {
   const { stack, allAssets, assets, expanded } = entry;
   const keepCount = allAssets.filter(asset => finalAction(asset) === "keep").length;
   const stateLabel = expanded ? t("expanded") : t("collapsed");
-  const count = searchActive() ? `${assets.length} / ${allAssets.length}` : t("frameCount", allAssets.length);
+  const count = searchActive() ? `${assets.length} / ${allAssets.length}` : t("frameCount", { count: allAssets.length });
   const diffKeys = metadataDifferences(allAssets);
   return `<section class="stack" data-stack="${stack.id}">
     <div class="stack-header">
-      <div><h2>${escapeHtml(t("stackTitle", stack.burst_id, stack.id))}</h2></div>
-      <div class="stack-meta">${escapeHtml(t("stackSummary", count, stateLabel, keepCount, Number(stack.similarity_confidence).toFixed(2)))}</div>
+      <div><h2>${escapeHtml(t("stackTitle", { burst: stack.burst_id, stack: stack.id }))}</h2></div>
+      <div class="stack-meta">${escapeHtml(t("stackSummary", { count, state: stateLabel, keep: keepCount, confidence: Number(stack.similarity_confidence).toFixed(2) }))}</div>
       <button type="button" class="stack-toggle" data-toggle-stack="${stack.id}" title="${escapeHtml(stateLabel)}">${expanded ? "−" : "+"}</button>
     </div>
     <div class="frame-grid" ${expanded ? "" : "hidden"}>${assets.map(asset => renderFrame(asset, diffKeys)).join("")}</div>
@@ -579,10 +521,10 @@ function renderFrame(asset, diffKeys) {
       <div class="exif">${metadataHtml(asset, diffKeys)}</div>
       <div class="reason">${escapeHtml(t(asset.reason_key))}</div>
       <details><summary>${escapeHtml(t("why"))}</summary><ul>
-        <li>${escapeHtml(t("rank", asset.rank, Number(asset.score).toFixed(3)))}</li>
-        <li>${escapeHtml(t("sharpness", Number(asset.metrics.sharpness).toFixed(1), Number(asset.metrics.subject_sharpness).toFixed(1)))}</li>
-        <li>${escapeHtml(t("similarity", Number(asset.similarity.nearest_distance).toFixed(3), Number(asset.similarity.duplicate_confidence).toFixed(2)))}</li>
-        <li>${escapeHtml(t("dimensions", asset.source_width, asset.source_height))}</li>
+        <li>${escapeHtml(t("rank", { rank: asset.rank, score: Number(asset.score).toFixed(3) }))}</li>
+        <li>${escapeHtml(t("sharpness", { whole: Number(asset.metrics.sharpness).toFixed(1), subject: Number(asset.metrics.subject_sharpness).toFixed(1) }))}</li>
+        <li>${escapeHtml(t("similarity", { distance: Number(asset.similarity.nearest_distance).toFixed(3), confidence: Number(asset.similarity.duplicate_confidence).toFixed(2) }))}</li>
+        <li>${escapeHtml(t("dimensions", { width: asset.source_width, height: asset.source_height }))}</li>
       </ul></details>
       ${manual ? `<button type="button" class="reset" data-reset="${escapeHtml(asset.id)}">${escapeHtml(t("reset"))}</button>` : ""}
     </div>
@@ -663,11 +605,11 @@ function syncViewerKeep() {
 
 function adjacentViewer(delta) {
   const asset = state.result.assets.find(item => item.id === state.viewerAssetId);
-  const burst = state.result.bursts.find(item => item.id === asset?.burst_id);
-  if (!burst) return;
-  const index = burst.asset_ids.indexOf(state.viewerAssetId);
-  const next = Math.max(0, Math.min(burst.asset_ids.length - 1, index + delta));
-  if (next !== index) openViewer(burst.asset_ids[next], state.viewerPreviousFocus);
+  const stack = state.result.stacks.find(item => item.id === asset?.stack_id);
+  if (!stack) return;
+  const index = stack.asset_ids.indexOf(state.viewerAssetId);
+  const next = Math.max(0, Math.min(stack.asset_ids.length - 1, index + delta));
+  if (next !== index) openViewer(stack.asset_ids[next], state.viewerPreviousFocus);
 }
 
 function fitViewer() {
@@ -775,9 +717,9 @@ function escapeHtml(value) {
 elements.pickBtn.addEventListener("click", () => elements.folderInput.click());
 elements.emptyPickBtn.addEventListener("click", () => elements.folderInput.click());
 elements.folderInput.addEventListener("change", event => {
-  const files = event.target.files;
-  if (files?.length) scanFiles(files);
+  const files = Array.from(event.target.files || []);
   event.target.value = "";
+  if (files.length) scanFiles(files);
 });
 elements.cancelBtn.addEventListener("click", () => {
   state.scanToken += 1;
@@ -854,12 +796,17 @@ document.addEventListener("keydown", event => {
   if (event.key === "ArrowRight") { event.preventDefault(); adjacentViewer(1); }
 });
 
-applyLocale();
-document.documentElement.dataset.crossOriginIsolated = String(crossOriginIsolated);
-const testFixture = new URLSearchParams(location.search).get("test-fixture");
-if (testFixture === "synthetic" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
-  syntheticFixture().then(scanFiles).catch(error => {
-    console.error(error);
-    showEmpty(t("scanFailed"));
-  });
+async function initialize() {
+  await loadLocaleCatalogs();
+  applyLocale();
+  document.documentElement.dataset.crossOriginIsolated = String(crossOriginIsolated);
+  const testFixture = new URLSearchParams(location.search).get("test-fixture");
+  if (testFixture === "synthetic" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
+    await scanFiles(await syntheticFixture());
+  }
 }
+
+initialize().catch(error => {
+  console.error(error);
+  document.documentElement.dataset.initialization = "failed";
+});

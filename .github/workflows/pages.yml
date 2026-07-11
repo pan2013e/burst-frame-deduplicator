@@ -8,6 +8,7 @@ on:
       - "crates/burst-core/**"
       - "web/wasm/**"
       - "web/vendor/libraw-wasm/**"
+      - "locales/**"
       - "Cargo.lock"
       - "Cargo.toml"
   workflow_dispatch:

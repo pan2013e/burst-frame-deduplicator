@@ -1,0 +1,8 @@
+{
+  "name": "burst-frame-deduplicator-benchmarks",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "playwright-core": "1.61.1"
+  }
+}

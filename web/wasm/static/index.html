@@ -4,24 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Cull burst photos without losing control.">
-  <title>Burst Frame Deduplicator</title>
+  <meta name="description" content="">
+  <title></title>
   <link rel="stylesheet" href="./styles.css">
   <script src="./coi-serviceworker.js"></script>
 </head>
 <body>
   <header class="app-header">
     <div class="brand">
-      <h1 data-i18n="title">Burst Frame Deduplicator</h1>
-      <div id="sourceLabel" class="source-label" data-i18n="browserMode">Browser mode</div>
+      <h1 data-i18n="title"></h1>
+      <div id="sourceLabel" class="source-label" data-i18n="browserMode"></div>
     </div>
     <div class="header-actions">
-      <div class="locale-switch" role="group" aria-label="Language">
-        <button type="button" data-locale="en">English</button>
-        <button type="button" data-locale="zh-CN">简体中文</button>
+      <div class="locale-switch" role="group">
+        <button type="button" data-locale="en"></button>
+        <button type="button" data-locale="zh-CN"></button>
       </div>
-      <button type="button" id="saveBtn" class="secondary" hidden data-i18n="saveReview">Save review</button>
-      <button type="button" id="pickBtn" class="primary" data-i18n="chooseFolder">Choose photo folder</button>
+      <button type="button" id="saveBtn" class="secondary" hidden data-i18n="saveReview"></button>
+      <button type="button" id="pickBtn" class="primary" data-i18n="chooseFolder"></button>
       <input id="folderInput" type="file" webkitdirectory multiple hidden>
     </div>
   </header>
@@ -30,8 +30,8 @@
     <section id="emptyState" class="empty-state">
       <button type="button" id="emptyPickBtn" class="folder-target">
         <span class="folder-icon" aria-hidden="true"></span>
-        <strong data-i18n="chooseFolder">Choose photo folder</strong>
-        <span data-i18n="localOnly">Photos stay on this device</span>
+        <strong data-i18n="chooseFolder"></strong>
+        <span data-i18n="localOnly"></span>
       </button>
     </section>
 
@@ -41,7 +41,7 @@
           <div id="stageLabel" class="stage-label"></div>
           <div id="progressDetail" class="progress-detail"></div>
         </div>
-        <button type="button" id="cancelBtn" class="secondary" data-i18n="cancel">Cancel</button>
+        <button type="button" id="cancelBtn" class="secondary" data-i18n="cancel"></button>
       </div>
       <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
         <div id="progressBar"></div>
@@ -52,13 +52,13 @@
     <section id="reviewView" hidden>
       <div id="stats" class="stats"></div>
       <div class="review-toolbar">
-        <input id="searchInput" type="search" data-i18n-placeholder="findFilename" placeholder="Find filename">
-        <select id="filterSelect" aria-label="Filter">
-          <option value="all" data-i18n="allFrames">All frames</option>
-          <option value="review" data-i18n="needsReview">Needs review</option>
-          <option value="keep" data-i18n="kept">Kept</option>
-          <option value="reject" data-i18n="rejected">Rejected</option>
-          <option value="multi" data-i18n="multiStacks">Multi-frame stacks</option>
+        <input id="searchInput" type="search" data-i18n-placeholder="findFilename">
+        <select id="filterSelect">
+          <option value="all" data-i18n="allFrames"></option>
+          <option value="review" data-i18n="needsReview"></option>
+          <option value="keep" data-i18n="kept"></option>
+          <option value="reject" data-i18n="rejected"></option>
+          <option value="multi" data-i18n="multiStacks"></option>
         </select>
       </div>
       <div id="stacks" class="stacks"></div>
@@ -70,15 +70,15 @@
   <div id="viewer" class="viewer" hidden aria-hidden="true" tabindex="-1">
     <div class="viewer-bar">
       <div id="viewerTitle" class="viewer-title"></div>
-      <label class="viewer-keep"><input id="viewerKeep" type="checkbox"> <span data-i18n="keep">Keep</span></label>
-      <button type="button" id="zoomOutBtn" title="Zoom out" aria-label="Zoom out">−</button>
-      <button type="button" id="zoomInBtn" title="Zoom in" aria-label="Zoom in">+</button>
-      <button type="button" id="fitBtn" data-i18n="fit">Fit</button>
-      <button type="button" id="closeViewerBtn" data-i18n="close">Close</button>
+      <label class="viewer-keep"><input id="viewerKeep" type="checkbox"> <span data-i18n="keep"></span></label>
+      <button type="button" id="zoomOutBtn">−</button>
+      <button type="button" id="zoomInBtn">+</button>
+      <button type="button" id="fitBtn" data-i18n="fit"></button>
+      <button type="button" id="closeViewerBtn" data-i18n="close"></button>
     </div>
     <div id="viewerViewport" class="viewer-viewport">
       <img id="viewerImage" alt="">
-      <div id="viewerLoading" class="viewer-loading"><span></span><b data-i18n="loading">Loading preview</b></div>
+      <div id="viewerLoading" class="viewer-loading"><span></span><b data-i18n="loading"></b></div>
       <div id="viewerError" class="viewer-error" hidden></div>
     </div>
   </div>
