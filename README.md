@@ -15,6 +15,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Uses Metal focus scoring and macOS Vision saliency when selected and available, with recorded CPU fallbacks.
 - Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
+- Opens with a skippable interactive tour and exposes build/runtime diagnostics without reading a photo folder.
 
 ## Choose An Interface
 
@@ -44,7 +45,9 @@ Build a drag-to-Applications disk image for local testing:
 ./scripts/build_macos_dmg.sh
 ```
 
-The default build is ad-hoc signed. Public distribution requires a Developer ID Application identity and notarization; see [Distribution](docs/USAGE.md#installing-or-distributing-the-macos-app).
+The default build is ad-hoc signed. Public distribution requires a Developer ID Application identity and notarization; see [Distribution](docs/USAGE.md#distributing-the-macos-app).
+
+Tagged releases and ordinary CI runs also produce an Apple Silicon DMG. The CI app is intentionally ad-hoc signed, so Gatekeeper cannot verify its developer or notarization status. Follow the trusted-artifact steps in the usage guide, or build and sign it locally.
 
 ## Command Line
 
@@ -63,6 +66,8 @@ cargo run --release -- serve --run runs/run_YYYYMMDD_HHMMSS --open
 
 Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
 
+Release CLI archives are standalone: the local review HTML/CSS/JavaScript, English and Chinese catalogs, and LibRaw-WASM worker are compiled into the executable. `scan`, `export`, and `serve` therefore work outside the repository. ImageMagick remains an optional system dependency for RAW formats that a platform's native/image-rs decoders cannot handle.
+
 ## Static WASM App
 
 ```bash
@@ -76,6 +81,18 @@ Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser 
 The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. It does not use Metal, Vision, Rayon, or native high-resolution refinement.
 
 The GitHub Pages workflow builds the same static directory.
+
+## Binary Builds
+
+The **Build distributable binaries** GitHub Actions workflow tests and packages:
+
+| Artifact | Runner | Contents |
+| --- | --- | --- |
+| Linux CLI | Ubuntu 24.04 x86_64 | Standalone executable, notices, archive checksum |
+| macOS CLI | macOS 15 Apple Silicon | Standalone executable, notices, archive checksum |
+| macOS app | macOS 15 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
+
+Every push to `main`, pull request, and manual run produces temporary workflow artifacts. A pushed `v*` tag publishes the same files and checksums on GitHub Releases. See [installation and Gatekeeper guidance](docs/USAGE.md#installing-prebuilt-binaries).
 
 ## Prerequisites
 
@@ -130,6 +147,7 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
 | OpenVINO | — | 🧭 | 🧭 | 🧭 |
 | English / Simplified Chinese | ✅ | ✅ | ✅ | ✅ |
+| CI release binary | ✅ CLI + app | ✅ CLI | ✅ CPU CLI | 🧭 |
 
 Requested and selected backends, capabilities, and fallback notes are recorded in every `manifest.json`.
 

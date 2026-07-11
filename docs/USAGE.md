@@ -27,6 +27,12 @@ For the benchmark example in this guide, also fetch Git LFS assets:
 git lfs pull
 ```
 
+## First-Launch Tour And Diagnostics
+
+The native app and both browser interfaces show a four-step interactive tour on first launch. The frames are synthetic: opening, advancing, or skipping the tour does not scan a folder or change a decision. **Skip Tutorial** is available on every step.
+
+Open the tour again from **Help > Show Tutorial** in the native app or the `?` button in either website. The native **About** window reports build commit/toolchains and local OS, memory, GPU, and Metal details. Website **About** dialogs link to the source repository and add browser diagnostics; the local CLI review also reports its selected acceleration, detector, and RAW decoder, while the static edition reports its WASM build toolchain.
+
 ## Recommended Workflow
 
 Launch the native desktop application when you do not want to use a terminal:
@@ -41,6 +47,8 @@ Select **New Scan** and choose the photo folder or mounted card. The button is a
 The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
 
 Change language and system/light/dark appearance in **Settings > General**. The app supplies localized titles, messages, and buttons to its file panels instead of relying on the operating-system language. The review state remains intact. On macOS 26, native controls use the system Liquid Glass treatment; earlier supported macOS versions retain their corresponding system controls.
+
+The Settings window sizes each tab independently and caps itself to the current screen's visible area. The complete Analysis form fits without scrolling on a normal-height display; smaller screens retain native scrolling.
 
 Use **File > New App Window** or `Command-N` to launch another independent app process. Each process can scan concurrently, and generated run names include a random suffix to avoid output collisions.
 
@@ -67,6 +75,13 @@ The command line reports each long-running stage with overall percentage, item p
 
 ```bash
 cargo run --release -- scan /Volumes/CARD/DCIM 2> scan-progress.log
+```
+
+A downloaded release CLI does not need the repository checkout. Its local review UI, locale catalogs, and browser RAW decoder are embedded, so the equivalent standalone commands are:
+
+```bash
+./burst-frame-deduplicator scan /Volumes/CARD/DCIM --out "$HOME/Pictures/Burst Runs/card-1"
+./burst-frame-deduplicator serve --run "$HOME/Pictures/Burst Runs/card-1" --open
 ```
 
 Move a completed run under another result directory without rescanning:
@@ -281,7 +296,29 @@ BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicat
 
 The packaged macOS app and static web build copy the repository catalogs into their resources.
 
-## Installing Or Distributing The macOS App
+## Installing Prebuilt Binaries
+
+Download temporary binaries from a successful **Build distributable binaries** workflow run, or download versioned files from GitHub Releases. Each archive or DMG has an adjacent `.sha256` file. Verify it before opening:
+
+```bash
+# macOS
+shasum -a 256 -c Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+
+# Linux
+sha256sum -c burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
+```
+
+The Linux and macOS CLI archives are standalone and can be unpacked anywhere. Optional external RAW compatibility tools such as ImageMagick are not bundled.
+
+The CI-built macOS app is **ad-hoc signed and not notarized**. Gatekeeper cannot establish an identified developer for it. Prefer a Developer ID signed/notarized build when one is available. If you have verified the checksum and trust the repository artifact, first attempt to open the app, then use **System Settings > Privacy & Security > Security > Open Anyway**. Apple warns that overriding this protection can expose the Mac to malicious software; see [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+
+Building locally avoids relying on the CI binary and lets you use your own signing identity:
+
+```bash
+./scripts/build_macos_dmg.sh
+```
+
+## Distributing The macOS App
 
 Create a local drag-to-Applications DMG:
 

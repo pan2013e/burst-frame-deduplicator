@@ -16,6 +16,9 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Keep the macOS GUI under `macos/BurstFrameDeduplicatorApp` as native SwiftUI. It must call the shared Rust backend through the public C ABI; the default Rust CLI build must not require any windowing dependency.
 - Keep CPU scoring primitives in `crates/burst-core` portable to `wasm32-unknown-unknown`; native acceleration wrappers belong in the root crate.
 - Keep English and Simplified Chinese locale keys synchronized in `locales/*.json`. User-facing strings belong in these external catalogs, not Rust, Swift, or JavaScript source, unless they are low-level diagnostics.
+- Keep release CLI binaries self-contained for locale catalogs, the local review frontend, and the browser RAW decoder. Development overrides may load external resources, but the normal fallback must be compile-time embedded.
+- First-launch tutorials must use synthetic data and must not invoke scan, decision, move, or restore APIs. Keep a visible skip action on every step and a persistent Help/`?` entry that reopens the tutorial.
+- Diagnostics may expose build/runtime/backend capabilities but must not include source paths, run paths, filenames, or other user-specific photo data.
 - Gate platform-specific native code with Rust features and `cfg(target_os = "...")`. macOS Metal/Vision code must compile only on supported Apple targets.
 - When adding acceleration or detector backends, provide a CPU or heuristic fallback and record the selected backend plus fallback notes in `manifest.json`.
 - Keep user-facing review UI simple. Show recommendations as preselected keep/reject controls and hide low-level metrics behind expandable details.
@@ -40,6 +43,9 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - For performance-sensitive pipeline changes, benchmark a large real corpus when available, and inspect the stage timings in `manifest.json`.
 - For clustering changes, run `benchmark/run_benchmarks.py` and preserve the reviewed must-link, cannot-link, and posture-phase coverage expectations in `benchmark/accuracy_labels.json`.
 - Run `web/wasm/build.sh` and browser-test both locales at desktop and mobile widths after changing the static application.
+- After changing embedded resources or packaging, copy the release CLI to a directory outside the checkout and verify a scan, `/api/diagnostics`, locale response, and LibRaw-WASM response with no repository files available.
+- After changing tutorials or About dialogs, test first launch, skip from a non-final step, explicit reopen, both locales, and responsive browser layouts.
+- Parse or lint edited GitHub Actions YAML and keep the portable and native build commands aligned with local test scripts.
 - Run `scripts/build_macos_app.sh` and inspect the packaged app with native UI automation after changing SwiftUI layout, navigation, locale loading, or packaging.
 - After DMG changes, build and mount the image, verify that the app and `/Applications` alias are present, and run `codesign --verify` on the packaged app. Never claim an ad-hoc build is Gatekeeper-ready.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.

@@ -4,7 +4,7 @@
 
 - CLI, scan pipeline, local server, and source-file operations: Rust.
 - Native macOS GUI: SwiftUI. `BurstFrameAppCore` calls the Rust dynamic library through the public C ABI in `include/burst_frame_deduplicator.h`.
-- Local review UI: static HTML/CSS/JavaScript under `web/review`, embedded into the Rust server at compile time.
+- Local review UI: static HTML/CSS/JavaScript under `web/review`, embedded into the Rust server at compile time together with locale catalogs and the LibRaw-WASM worker.
 - Portable scoring core: `crates/burst-core`, compiled for both native targets and `wasm32-unknown-unknown`.
 - Static browser app: DOM UI plus the `web/wasm` Rust session, built into `web/dist` by `wasm-pack`.
 - Scan outputs: `manifest.json`, `review_state.json`, burst/stack/asset CSVs, thumbnails, optional move scripts.
@@ -49,6 +49,8 @@ The SwiftUI app uses system folder panels, pickers, steppers, checkboxes, menus,
 
 The full-image viewer uses `NSScrollView` rather than a gesture-only SwiftUI transform. Native magnification, two-finger pan, scroll elasticity, fitted centering, keyboard navigation, off-main ImageIO downsampling, and a bounded decoded-image cache keep interaction responsive. Settings live in a separate SwiftUI `Settings` scene and group locale/appearance, result and reject destinations, quality/acceleration controls, workload estimates, and selective run storage management.
 
+Appearance selection is applied at `NSApplication` and existing-window level, so auxiliary Settings/About scenes follow a dark-to-system transition instead of retaining a stale view override. System mode resolves the current Aqua/high-contrast appearance explicitly and observes macOS theme-change notifications, avoiding a partially repainted window while continuing to follow later OS changes. Settings tabs publish content-specific window heights capped by `NSScreen.visibleFrame`; native `Form` scrolling remains available only when the screen is shorter than the requested content.
+
 Known run paths are persisted separately from scan manifests. The Get Started view merges that registry with discovered children of the configured and legacy result roots, validates `manifest.json`, and computes directory usage off the main actor. Cleanup only accepts non-symlink directories with a manifest and excludes the currently open run.
 
 Changing the result root for an open run is debounced in Swift and executed by Rust. Same-filesystem relocation uses `rename`; cross-filesystem relocation copies into a destination-volume staging folder, verifies every regular-file size, moves the old run to a cleanup tombstone, then atomically publishes the staged folder. Internal moved-reject destinations are rewritten before the new run is exposed. Existing destination names receive a suffix rather than being overwritten.
@@ -69,7 +71,15 @@ The CLI installs a throttled terminal renderer. The native GUI receives the same
 
 Locale files contain separate `macos`, `reviewWeb`, and `staticWeb` namespaces. Rust validates locale identifiers before reading files and the local server exposes only supported catalog names. The native loader searches `BURST_DEDUP_LOCALES_DIR`, app bundle resources, the working directory, and the repository development location. The static build copies the same files into `web/dist/locales`.
 
+The CLI first honors a valid external locale directory and otherwise serves compile-time embedded catalogs. Review HTML/CSS/JavaScript and the vendored LibRaw worker/WASM are also compiled into the binary. Release smoke tests copy only the executable into a temporary directory, run a scan/server, and verify locale, diagnostics, and RAW-WASM responses there.
+
 Adding a user-facing key requires updating both catalogs. Locale load failures are surfaced rather than silently reading arbitrary paths.
+
+## Tutorials And Diagnostics
+
+All interfaces use the same four conceptual tutorial steps but native controls and browser dialogs appropriate to each surface. Tutorial visuals are synthetic and never call scan/move APIs. Completion uses a versioned `UserDefaults` or `localStorage` key; Help/`?` always reopens the tour.
+
+The local review server exposes `/api/diagnostics` with compile-time commit, Rust/Cargo versions, target/profile, runtime OS/architecture, CPU/memory, and the run manifest's actual acceleration/detector/RAW selections. Browser code appends user-agent, platform, locale, logical-CPU/memory hints, and cross-origin isolation. The static build writes `build-info.json` with Rust, Cargo, `wasm-pack`, target, app version, and commit, then adds browser diagnostics at display time. Diagnostics intentionally omit source/run paths and file names.
 
 ## Scoring
 
@@ -134,6 +144,12 @@ The Pages build includes a same-origin isolation service worker because the curr
 The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Native acceleration, reliable scan-time EXIF fallback, Rayon, Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
 
 `web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions.
+
+## Binary CI And Releases
+
+`.github/workflows/binaries.yml` builds a portable Linux x86_64 CLI on Ubuntu 24.04 and an Apple Silicon CLI/app/DMG on macOS 15. The Linux job disables macOS features, runs the standalone-resource smoke test, and packages notices. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
+
+Pushes, pull requests, and manual runs upload short-lived Actions artifacts. `v*` tags download those job artifacts into a release job and create or update a GitHub Release. CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
 
 The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM initialization, browser decode, Rust scoring, clustering, rendering, total time, and throughput. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
 

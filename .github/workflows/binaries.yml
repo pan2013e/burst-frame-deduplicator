@@ -1,0 +1,172 @@
+name: Build distributable binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaries-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  linux-cli:
+    name: Linux CLI (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Test portable workspace
+        run: cargo test --workspace --no-default-features
+
+      - name: Build standalone CLI
+        env:
+          BFD_BUILD_COMMIT: ${{ github.sha }}
+        run: cargo build --release --no-default-features --bin burst-frame-deduplicator
+
+      - name: Smoke-test embedded web resources outside the workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          cp target/release/burst-frame-deduplicator "$smoke/bfd"
+          mkdir -p "$smoke/photos"
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+            | base64 --decode > "$smoke/photos/frame_0001.png"
+          (
+            cd "$smoke"
+            ./bfd scan photos --out run --no-refine --detector off --acceleration cpu
+            ./bfd serve --run run --port 18787 >server.log 2>&1 &
+            server_pid=$!
+            trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+            for _ in {1..30}; do
+              curl --fail --silent http://127.0.0.1:18787/api/diagnostics >diagnostics.json && break
+              sleep 0.2
+            done
+            curl --fail --silent http://127.0.0.1:18787/locales/en.json | grep -q 'reviewWeb'
+            test "$(curl --fail --silent http://127.0.0.1:18787/vendor/libraw-wasm/libraw.wasm | wc -c)" -gt 1000000
+            grep -q 'local_cli' diagnostics.json
+          )
+
+      - name: Package Linux CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="burst-frame-deduplicator-linux-x86_64"
+          mkdir -p "dist/$package"
+          cp target/release/burst-frame-deduplicator "dist/$package/"
+          cp README.md LICENSE web/vendor/libraw-wasm/NOTICE.md "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          sha256sum "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-cli-x86_64
+          path: |
+            dist/burst-frame-deduplicator-linux-x86_64.tar.gz
+            dist/burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
+          retention-days: 14
+
+  macos:
+    name: macOS CLI and app (Apple Silicon)
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build and test macOS CLI
+        env:
+          BFD_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          cargo test
+          cargo build --release --bin burst-frame-deduplicator
+          target/release/burst-frame-deduplicator --version
+
+      - name: Build ad-hoc signed app and DMG
+        env:
+          BFD_BUILD_COMMIT: ${{ github.sha }}
+        run: ./scripts/build_macos_dmg.sh
+
+      - name: Package macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_package="burst-frame-deduplicator-macos-arm64"
+          mkdir -p "dist/$cli_package"
+          cp target/release/burst-frame-deduplicator "dist/$cli_package/"
+          cp README.md LICENSE web/vendor/libraw-wasm/NOTICE.md "dist/$cli_package/"
+          tar -C dist -czf "dist/$cli_package.tar.gz" "$cli_package"
+          dmgs=(target/macos/Burst-Frame-Deduplicator-*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          cp "${dmgs[0]}" dist/Burst-Frame-Deduplicator-macos-arm64.dmg
+          shasum -a 256 "dist/$cli_package.tar.gz" > "dist/$cli_package.tar.gz.sha256"
+          shasum -a 256 dist/Burst-Frame-Deduplicator-macos-arm64.dmg \
+            > dist/Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+          codesign --verify --deep --strict "target/macos/Burst Frame Deduplicator.app"
+
+      - name: Upload macOS CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-cli-arm64
+          path: |
+            dist/burst-frame-deduplicator-macos-arm64.tar.gz
+            dist/burst-frame-deduplicator-macos-arm64.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-app-arm64
+          path: |
+            dist/Burst-Frame-Deduplicator-macos-arm64.dmg
+            dist/Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-cli, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f | sort)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --notes 'The macOS app is ad-hoc signed. See the installation guide for Gatekeeper instructions or build/sign it locally.'
+          fi
