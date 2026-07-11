@@ -109,14 +109,19 @@ final class AppModel: ObservableObject {
     @Published var tutorialPresented = false
 
     private let bridge: RustBridge
+    private let tutorialProgress: TutorialProgressStore
     private var appearanceObserver: NSObjectProtocol?
     private let decisionQueue = DispatchQueue(label: "org.burstframe.deduplicator.decisions", qos: .userInitiated)
     private var decisionGenerations: [String: Int] = [:]
     private var assetIndex: [String: AssetRecord] = [:]
     private var pendingRelocation: DispatchWorkItem?
 
-    init(bridge: RustBridge = RustBridge()) {
+    init(
+        bridge: RustBridge = RustBridge(),
+        tutorialProgress: TutorialProgressStore = TutorialProgressStore()
+    ) {
         self.bridge = bridge
+        self.tutorialProgress = tutorialProgress
         resultsRootPath = UserDefaults.standard.string(forKey: "resultsRootPath")
             ?? RunCacheManager.defaultRunsDirectory.path
         appearanceMode = AppearanceMode(
@@ -141,7 +146,7 @@ final class AppModel: ObservableObject {
                 AppearanceMode.system.applyToApplication()
             }
         }
-        tutorialPresented = !UserDefaults.standard.bool(forKey: "tutorialCompleted")
+        tutorialPresented = !tutorialProgress.hasFinished()
     }
 
     var assetsByID: [String: AssetRecord] {
@@ -152,8 +157,9 @@ final class AppModel: ObservableObject {
         tutorialPresented = true
     }
 
-    func dismissTutorial() {
-        UserDefaults.standard.set(true, forKey: "tutorialCompleted")
+    func dismissTutorial(outcome: TutorialOutcome = .skipped) {
+        guard tutorialPresented else { return }
+        tutorialProgress.record(outcome)
         tutorialPresented = false
     }
 

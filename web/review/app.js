@@ -1,3 +1,5 @@
+import { createTutorialProgressStore } from "/tutorial-progress.mjs";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
@@ -22,6 +24,10 @@ const browserImageExts = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp"]);
 const rawPreviewCache = new Map();
 const RAW_CACHE_MAX_BYTES = 192 * 1024 * 1024;
 const RAW_CACHE_MAX_ITEMS = 24;
+const tutorialProgress = createTutorialProgressStore({
+  legacyKeys: ["burst-tutorial-local-v1"],
+  cookieName: "burst_tutorial_progress_v1",
+});
 
 const state = {
   manifest: null,
@@ -169,8 +175,8 @@ function openTutorial() {
   elements.tutorialDialog.showModal();
 }
 
-function finishTutorial() {
-  try { localStorage.setItem("burst-tutorial-local-v1", "complete"); } catch {}
+function finishTutorial(outcome) {
+  tutorialProgress.finish(outcome);
   if (elements.tutorialDialog.open) elements.tutorialDialog.close();
 }
 
@@ -912,21 +918,21 @@ elements.saveButton.addEventListener("click", openSaveDialog);
 elements.tutorialButton.addEventListener("click", openTutorial);
 elements.aboutButton.addEventListener("click", openAbout);
 elements.closeAboutButton.addEventListener("click", () => elements.aboutDialog.close());
-elements.tutorialSkip.addEventListener("click", finishTutorial);
+elements.tutorialSkip.addEventListener("click", () => finishTutorial("skipped"));
 elements.tutorialBack.addEventListener("click", () => {
   if (state.tutorialStep > 0) state.tutorialStep -= 1;
   renderTutorial();
 });
 elements.tutorialNext.addEventListener("click", () => {
   if (state.tutorialStep === tutorialSteps.length - 1) {
-    finishTutorial();
+    finishTutorial("completed");
     return;
   }
   state.tutorialStep += 1;
   renderTutorial();
 });
 elements.tutorialDialog.addEventListener("cancel", () => {
-  try { localStorage.setItem("burst-tutorial-local-v1", "complete"); } catch {}
+  tutorialProgress.finish("skipped");
 });
 elements.refreshScriptsButton.addEventListener("click", refreshScripts);
 elements.destinationInput.addEventListener("input", () => {
@@ -998,9 +1004,7 @@ async function initialize() {
   await loadLocaleCatalogs();
   applyLocale();
   await loadRun();
-  let tutorialComplete = false;
-  try { tutorialComplete = localStorage.getItem("burst-tutorial-local-v1") === "complete"; } catch {}
-  if (!tutorialComplete) openTutorial();
+  if (!tutorialProgress.hasFinished()) openTutorial();
 }
 
 initialize().catch(error => {

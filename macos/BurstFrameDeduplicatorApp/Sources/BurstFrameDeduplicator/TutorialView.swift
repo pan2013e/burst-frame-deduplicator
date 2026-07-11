@@ -36,7 +36,7 @@ struct TutorialView: View {
 
             HStack {
                 Button(locale.text("tutorialSkip"), role: .cancel) {
-                    model.dismissTutorial()
+                    model.dismissTutorial(outcome: .skipped)
                 }
                 Spacer()
                 HStack(spacing: 6) {
@@ -53,7 +53,7 @@ struct TutorialView: View {
                 .disabled(step == 0)
                 Button(locale.text(step == stepCount - 1 ? "tutorialDone" : "tutorialNext")) {
                     if step == stepCount - 1 {
-                        model.dismissTutorial()
+                        model.dismissTutorial(outcome: .completed)
                     } else {
                         withAnimation(.snappy) { step += 1 }
                     }

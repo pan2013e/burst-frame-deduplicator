@@ -18,7 +18,7 @@ struct RootView: View {
         .sheet(isPresented: Binding(
             get: { model.tutorialPresented },
             set: { presented in
-                if !presented { model.dismissTutorial() }
+                if !presented { model.dismissTutorial(outcome: .skipped) }
             }
         )) {
             TutorialView(model: model)

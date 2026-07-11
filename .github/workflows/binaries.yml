@@ -33,6 +33,9 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Test shared browser preferences
+        run: node --test web/shared/tutorial-progress.test.mjs
+
       - name: Test portable workspace
         run: cargo test --workspace --no-default-features
 
@@ -61,6 +64,7 @@ jobs:
               sleep 0.2
             done
             curl --fail --silent http://127.0.0.1:18787/locales/en.json | grep -q 'reviewWeb'
+            curl --fail --silent http://127.0.0.1:18787/tutorial-progress.mjs | grep -q 'createTutorialProgressStore'
             test "$(curl --fail --silent http://127.0.0.1:18787/vendor/libraw-wasm/libraw.wasm | wc -c)" -gt 1000000
             grep -q 'local_cli' diagnostics.json
           )

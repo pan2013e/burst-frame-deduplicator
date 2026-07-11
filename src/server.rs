@@ -119,6 +119,7 @@ where
         .route("/", get(index))
         .route("/review.css", get(review_css))
         .route("/review.js", get(review_js))
+        .route("/tutorial-progress.mjs", get(tutorial_progress_js))
         .route("/api/manifest", get(api_manifest))
         .route("/api/diagnostics", get(api_diagnostics))
         .route("/api/decision", post(api_decision))
@@ -160,6 +161,14 @@ async fn review_js() -> Response {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         include_str!("../web/review/app.js"),
+    )
+        .into_response()
+}
+
+async fn tutorial_progress_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../web/shared/tutorial-progress.mjs"),
     )
         .into_response()
 }

@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/pages.yml"
       - "crates/burst-core/**"
+      - "web/shared/**"
       - "web/wasm/**"
       - "web/vendor/libraw-wasm/**"
       - "locales/**"
@@ -36,6 +37,9 @@ jobs:
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Test shared browser preferences
+        run: node --test web/shared/tutorial-progress.test.mjs
 
       - name: Build static application
         run: ./web/wasm/build.sh

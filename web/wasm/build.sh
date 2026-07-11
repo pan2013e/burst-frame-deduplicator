@@ -19,6 +19,7 @@ mkdir -p "$DIST/locales"
 )
 
 rsync -a "$ROOT/web/wasm/static/" "$DIST/"
+cp "$ROOT/web/shared/tutorial-progress.mjs" "$DIST/tutorial-progress.mjs"
 rsync -a "$ROOT/web/vendor/libraw-wasm/" "$DIST/vendor/libraw-wasm/"
 rsync -a "$ROOT/locales/" "$DIST/locales/"
 

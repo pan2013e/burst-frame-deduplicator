@@ -1,4 +1,5 @@
 import initWasm, { BrowserSession } from "./pkg/burst_wasm.js";
+import { createTutorialProgressStore } from "./tutorial-progress.mjs";
 
 const RAW_EXTS = new Set([
   "3fr", "arw", "cr2", "cr3", "dcr", "dng", "erf", "fff", "iiq", "kdc", "mef",
@@ -18,6 +19,9 @@ const DECODE_CONCURRENCY = Number.isFinite(requestedDecodeConcurrency) && reques
   ? Math.max(1, Math.min(8, Math.floor(requestedDecodeConcurrency)))
   : Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
 const WEB_CODECS_ENABLED = runtimeOptions.get("decode-backend") !== "image-bitmap";
+const tutorialProgress = createTutorialProgressStore({
+  legacyKeys: ["burst-tutorial-wasm-v1"],
+});
 
 const supportedLocales = new Set(["en", "zh-CN"]);
 let messages = {};
@@ -169,8 +173,8 @@ function openTutorial() {
   elements.tutorialDialog.showModal();
 }
 
-function finishTutorial() {
-  try { localStorage.setItem("burst-tutorial-wasm-v1", "complete"); } catch {}
+function finishTutorial(outcome) {
+  tutorialProgress.finish(outcome);
   if (elements.tutorialDialog.open) elements.tutorialDialog.close();
 }
 
@@ -1313,21 +1317,21 @@ elements.emptyPickBtn.addEventListener("click", chooseSourceFolder);
 elements.tutorialBtn.addEventListener("click", openTutorial);
 elements.aboutBtn.addEventListener("click", openAbout);
 elements.closeAboutBtn.addEventListener("click", () => elements.aboutDialog.close());
-elements.tutorialSkip.addEventListener("click", finishTutorial);
+elements.tutorialSkip.addEventListener("click", () => finishTutorial("skipped"));
 elements.tutorialBack.addEventListener("click", () => {
   if (state.tutorialStep > 0) state.tutorialStep -= 1;
   renderTutorial();
 });
 elements.tutorialNext.addEventListener("click", () => {
   if (state.tutorialStep === tutorialSteps.length - 1) {
-    finishTutorial();
+    finishTutorial("completed");
     return;
   }
   state.tutorialStep += 1;
   renderTutorial();
 });
 elements.tutorialDialog.addEventListener("cancel", () => {
-  try { localStorage.setItem("burst-tutorial-wasm-v1", "complete"); } catch {}
+  tutorialProgress.finish("skipped");
 });
 elements.folderInput.addEventListener("change", event => {
   const files = Array.from(event.target.files || []);
@@ -1443,9 +1447,7 @@ async function initialize() {
   if (testFixture === "synthetic" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
     await scanFiles(await syntheticFixture());
   }
-  let tutorialComplete = false;
-  try { tutorialComplete = localStorage.getItem("burst-tutorial-wasm-v1") === "complete"; } catch {}
-  if (!tutorialComplete) openTutorial();
+  if (!tutorialProgress.hasFinished()) openTutorial();
 }
 
 initialize().catch(error => {
