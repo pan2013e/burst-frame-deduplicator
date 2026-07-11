@@ -1,6 +1,6 @@
 # Usage Guide
 
-Burst Frame Deduplicator helps you review burst sequences without turning the process into a fully automatic delete operation. It scans a folder or mounted card, groups likely burst frames, pre-fills keep/reject suggestions, and gives you a local review page where you can override every decision.
+Burst Frame Deduplicator helps you review burst sequences without turning the process into a fully automatic delete operation. It scans a folder or mounted card, divides each temporal burst into subject-aware near-duplicate stacks, pre-fills keep/reject suggestions, and gives you a local review page where you can override every decision.
 
 ![Review grid showing pre-filled keep/reject choices](assets/usage-review.png)
 
@@ -29,6 +29,25 @@ git lfs pull
 
 ## Recommended Workflow
 
+Launch the native desktop application when you do not want to use a terminal:
+
+```bash
+cargo run --release --features gui -- gui
+```
+
+Choose the photo folder, optionally choose a run folder, and start the scan. If the run folder is left blank, the app creates a timestamped folder under `~/Pictures/Burst Frame Deduplicator Runs`. The window shows the active stage, current file, item count, and weighted overall progress. It opens the local review page when the scan finishes.
+
+Use the `English` / `简体中文` control to change the desktop language. The selected language is passed to the review page, where it can also be changed from the toolbar.
+
+To build a normal macOS application bundle:
+
+```bash
+./scripts/build_macos_app.sh
+open "target/macos/Burst Frame Deduplicator.app"
+```
+
+## Command-Line Workflow
+
 Use `app` for the smoothest workflow. It scans first, then starts the review page:
 
 ```bash
@@ -38,6 +57,32 @@ cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --dete
 Replace `/Volumes/CARD/DCIM` with the mounted SD card folder or any photo folder.
 
 The app writes a timestamped run directory under `runs/`. That directory contains the review manifest, thumbnails, CSV exports, and move reports.
+
+The command line reports each long-running stage with overall percentage, item progress, and the current file. Redirect standard error if progress should go to a separate log:
+
+```bash
+cargo run --release -- scan /Volumes/CARD/DCIM 2> scan-progress.log
+```
+
+## Static Browser Edition
+
+Build the browser-only application:
+
+```bash
+cargo install wasm-pack --version 0.15.0 --locked
+./web/wasm/build.sh
+python3 -m http.server 4173 --directory web/dist
+```
+
+Open `http://127.0.0.1:4173` and select a folder. The page reports the current stage, frame, and overall percentage while it decodes and scores previews; `Cancel` stops the run and releases partial previews. Everything runs locally in the browser. Browser formats use built-in decoding; RAW-only assets use the bundled LibRaw-WASM worker. The Rust WASM module performs subject scoring, burst grouping, posture-aware stack separation, and recommendation ranking.
+
+The static edition supports English and Simplified Chinese, preselected decisions, filtering, stack collapse/expand, RAW EXIF supplied by LibRaw, full-image preview, arrow navigation, zoom/pan, and JSON review export.
+
+![Static browser edition reviewing a synthetic two-posture burst](assets/usage-browser-edition.png)
+
+Browser security does not allow the same verified source-file move operation as the native application. The static edition never modifies selected files; `Save review` downloads a JSON decision list instead. It also uses CPU/WASM preview scoring and does not provide Metal/Vision or native high-resolution refinement.
+
+The repository’s Pages workflow deploys `web/dist` automatically after GitHub Pages is configured with **GitHub Actions** as its source.
 
 ## Separate Scan And Review
 
@@ -78,11 +123,13 @@ Each card represents one asset. A RAW+JPEG pair with the same basename is treate
 - Checked `Keep`: this frame is selected to keep.
 - Unchecked `Keep`: this frame is currently rejected.
 - Indeterminate `Keep`: the scanner marked it as a close call needing review.
-- `Why`: shows the ranking, sharpness, completeness, exposure, detector notes, and whether high-resolution refinement was used.
+- `Why`: shows stack ranking, subject/whole-frame sharpness, visual distance, duplicate confidence, completeness, exposure, detector notes, and whether high-resolution refinement was used.
 - EXIF chips: show compact metadata such as ISO, aperture, shutter speed, focal length, and 35mm-equivalent focal length when available.
-- Highlighted EXIF chips: this field differs inside the same cluster, which can explain why one frame is sharper, cleaner, or more motion-blurred than another.
+- Highlighted EXIF chips: this field differs inside the same stack, which can explain why one frame is sharper, cleaner, or more motion-blurred than another.
 
-Clusters are sorted with expanded clusters first. A cluster collapses automatically when all frames inside it are kept, and you can manually collapse or expand it with the button on the right side of the cluster header.
+Stacks are sorted with expanded stacks first. A stack collapses automatically when all frames inside it are kept, and you can manually collapse or expand it with the button on the right side of the header. Headers show both the temporal burst and stack numbers.
+
+Use the language selector in the toolbar to switch between English and Simplified Chinese without losing review decisions.
 
 ## Inspecting An Image
 
@@ -93,7 +140,7 @@ Click a thumbnail to open the full-resolution viewer.
 In the viewer:
 
 - Use the `Keep` checkbox in the top bar to change the decision for the current image.
-- Use left/right arrow keys to move within the current cluster.
+- Use left/right arrow keys to move through the full temporal burst, including adjacent stacks.
 - Use `+`, `-`, and `Fit` to zoom.
 - Drag the image to pan after zooming.
 - Press `Esc` or click `Close` to leave the viewer.
@@ -110,6 +157,7 @@ Checkbox changes are saved to `review_state.json` as you make them. Use `Save Re
 - `rejects.csv`
 - `review.csv`
 - `all_assets.csv`
+- `bursts.csv`
 - `clusters.csv`
 - `move_rejects.sh`
 
@@ -134,7 +182,9 @@ The destination is local to the run directory, not `/tmp`, so ordinary temporary
 cargo run --release -- scan /path/to/photos \
   --preview-size 1280 \
   --refine-size 2048 \
-  --refine-candidates-per-cluster 6 \
+  --refine-candidates-per-cluster 2 \
+  --max-duplicate-distance 0.20 \
+  --min-duplicate-confidence 0.52 \
   --acceleration metal \
   --detector heuristic
 ```
@@ -143,11 +193,13 @@ Common options:
 
 - `--preview-size`: long edge for the fast first pass.
 - `--refine-size`: long edge for high-resolution refinement of likely keepers and close calls.
-- `--refine-candidates-per-cluster`: maximum frames per burst to refine.
+- `--refine-candidates-per-cluster`: strict maximum candidates per near-duplicate stack to refine.
+- `--max-duplicate-distance`: lower values preserve more posture/angle variation as separate stacks.
+- `--min-duplicate-confidence`: minimum evidence required for an automatic reject; lower-confidence frames remain review items.
 - `--no-refine`: skip high-resolution refinement for faster but less careful scans.
 - `--acceleration cpu|metal|auto`: choose the scoring backend preference.
 - `--detector heuristic|vision|off|auto`: choose the local subject detector.
-- `--keepers-per-cluster N`: force a fixed keep count for every cluster.
+- `--keepers-per-cluster N`: force a fixed keep count for every near-duplicate stack.
 - `--cull-singletons`: allow unique non-burst images to be rejected when they score poorly.
 - `--workers N`: set worker count for parallel scoring.
 

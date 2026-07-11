@@ -9,7 +9,13 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Keep all source-photo operations non-destructive by default. Scans may read source files and write artifacts under the selected output directory, but must not delete, rename, or move source files.
 - Any source-folder mutator must be explicit and confirmed. The web move operation must copy final rejects into a local run-directory folder, verify the copied size, then remove the original source file. Generated helper scripts must move rejects into a local run-directory folder, not `/tmp` or the source card.
 - Treat same-basename RAW/JPEG files as one asset. Decisions must apply to the grouped asset and its sidecars together.
+- Keep temporal bursts and near-duplicate stacks as separate concepts. Filename/time heuristics form parent bursts; subject-aware visual comparison forms culling stacks.
+- Never suggest reject solely because a frame ranks below a fixed keeper count. Automatic reject requires duplicate confidence at or above the configured threshold; uncertain matches must remain review items.
+- Use EXIF original capture time with subseconds/offset when available, then fall back to filesystem timestamps.
 - Keep backend functionality independent from the current web UI. The CLI scan/export path must remain usable without launching a browser.
+- Keep native GUI dependencies optional behind the `gui` Rust feature. The default CLI build must not require a windowing environment.
+- Keep CPU scoring primitives in `crates/burst-core` portable to `wasm32-unknown-unknown`; native acceleration wrappers belong in the root crate.
+- Keep English and Simplified Chinese locale keys synchronized across the desktop GUI, local review UI, and static WASM app when changing user-facing workflows.
 - Gate platform-specific native code with Rust features and `cfg(target_os = "...")`. macOS Metal/Vision code must compile only on supported Apple targets.
 - When adding acceleration or detector backends, provide a CPU or heuristic fallback and record the selected backend plus fallback notes in `manifest.json`.
 - Keep user-facing review UI simple. Show recommendations as preselected keep/reject controls and hide low-level metrics behind expandable details.
@@ -19,6 +25,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 
 - Run `cargo fmt` after Rust edits.
 - Run `cargo check` for compile validation.
+- Run `cargo check --features gui` after desktop GUI changes and `cargo check -p burst-wasm --target wasm32-unknown-unknown` after portable browser changes.
 - Run `cargo test` even when there are no dedicated tests yet, because it builds the test profile.
 - Use `git lfs pull` before benchmark work if the fixture zip is only a pointer file.
 - Run a local sample scan after changing scoring, clustering, export, or UI state behavior:
@@ -28,10 +35,13 @@ This repository implements a non-destructive burst-frame deduplication app for l
   ```
 
 - For performance-sensitive pipeline changes, benchmark a large real corpus when available, and inspect the stage timings in `manifest.json`.
+- For clustering changes, run `benchmark/run_benchmarks.py` and preserve the reviewed must-link, cannot-link, and posture-phase coverage expectations in `benchmark/accuracy_labels.json`.
+- Run `web/wasm/build.sh` and browser-test both locales at desktop and mobile widths after changing the static application.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.
 
 ## Benchmark Expectations
 
 - Record separate timings for discovery, decode, feature scoring, high-resolution refinement, detector scoring, thumbnail generation, clustering, manifest writing, and export.
 - Report throughput as assets/sec where applicable.
+- Report peak RSS where the platform supports it.
 - Compare acceleration and detector selections from `manifest.json`; do not assume a requested hardware backend was actually selected.
