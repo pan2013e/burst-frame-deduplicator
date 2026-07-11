@@ -31,6 +31,7 @@ mkdir -p "$MACOS" "$FRAMEWORKS" "$RESOURCES/locales"
 cp "$SWIFT_BIN/BurstFrameDeduplicator" "$MACOS/BurstFrameDeduplicator"
 cp "$ROOT/target/release/libburst_frame_deduplicator.dylib" "$FRAMEWORKS/"
 cp "$PACKAGE/Info.plist" "$CONTENTS/Info.plist"
+cp "$PACKAGE/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 cp "$ROOT/locales/en.json" "$ROOT/locales/zh-CN.json" "$RESOURCES/locales/"
 
 codesign --force --sign - "$FRAMEWORKS/libburst_frame_deduplicator.dylib"

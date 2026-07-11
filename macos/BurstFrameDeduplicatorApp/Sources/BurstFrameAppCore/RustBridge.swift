@@ -86,10 +86,25 @@ public final class RustBridge: @unchecked Sendable {
         try invoke(RunRequest(runDir: runDirectory), function: bfd_export_run)
     }
 
-    public func moveRejects(runDirectory: String, confirmed: Bool) throws -> MoveResponse {
+    public func moveRejects(
+        runDirectory: String,
+        destination: String?,
+        confirmed: Bool
+    ) throws -> MoveResponse {
         try invoke(
-            MoveRequest(runDir: runDirectory, confirmed: confirmed),
+            MoveRequest(runDir: runDirectory, destination: destination, confirmed: confirmed),
             function: bfd_move_rejects
+        )
+    }
+
+    public func restoreRejects(
+        runDirectory: String,
+        assetIDs: [String]? = nil,
+        confirmed: Bool
+    ) throws -> RestoreResponse {
+        try invoke(
+            RestoreRequest(runDir: runDirectory, assetIds: assetIDs, confirmed: confirmed),
+            function: bfd_restore_rejects
         )
     }
 
@@ -169,5 +184,12 @@ private struct PreviewRequest: Encodable {
 
 private struct MoveRequest: Encodable {
     let runDir: String
+    let destination: String?
+    let confirmed: Bool
+}
+
+private struct RestoreRequest: Encodable {
+    let runDir: String
+    let assetIds: [String]?
     let confirmed: Bool
 }

@@ -22,5 +22,10 @@ struct BurstFrameDeduplicatorApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
         }
+
+        Settings {
+            SettingsView(model: model)
+                .environmentObject(locale)
+        }
     }
 }

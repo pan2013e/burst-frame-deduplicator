@@ -1,10 +1,12 @@
+import AppKit
 import BurstFrameAppCore
 import SwiftUI
 
 struct ReviewView: View {
     @EnvironmentObject private var locale: LocaleCatalog
     @ObservedObject var model: AppModel
-    @State private var confirmingMove = false
+    @State private var presentingMove = false
+    @State private var confirmingRestore = false
 
     var body: some View {
         NavigationSplitView {
@@ -15,6 +17,33 @@ struct ReviewView: View {
                 .navigationTitle(reviewTitle)
                 .toolbar {
                     ToolbarItemGroup {
+                        if model.fileOperationInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help(locale.text("working"))
+                        }
+                        if model.activeMovedCount > 0 {
+                            Button {
+                                confirmingRestore = true
+                            } label: {
+                                Label(locale.text("restoreMoved"), systemImage: "arrow.uturn.backward")
+                            }
+                            .help(locale.text("restoreMoved"))
+                            .disabled(model.fileOperationInProgress)
+                        }
+                        Button {
+                            presentingMove = true
+                        } label: {
+                            Label(
+                                model.movableRejectCount == 0
+                                    ? locale.text("noRejects")
+                                    : locale.text("moveRejects", ["count": model.movableRejectCount]),
+                                systemImage: "tray.and.arrow.down"
+                            )
+                        }
+                        .tint(.red)
+                        .help(locale.text("moveRejects", ["count": model.movableRejectCount]))
+                        .disabled(model.movableRejectCount == 0 || model.fileOperationInProgress)
                         Button(action: model.showRunFolder) {
                             Label(locale.text("showRunFolder"), systemImage: "folder")
                         }
@@ -27,14 +56,18 @@ struct ReviewView: View {
                 }
         }
         .confirmationDialog(
-            locale.text("moveConfirmTitle"),
-            isPresented: $confirmingMove,
+            locale.text("restoreConfirmTitle"),
+            isPresented: $confirmingRestore,
             titleVisibility: .visible
         ) {
-            Button(locale.text("move"), role: .destructive, action: model.moveRejects)
+            Button(locale.text("restore"), action: model.restoreMoved)
             Button(locale.text("cancel"), role: .cancel) {}
         } message: {
-            Text(locale.text("moveConfirmMessage"))
+            Text(locale.text("restoreConfirmMessage"))
+        }
+        .sheet(isPresented: $presentingMove) {
+            MoveRejectsSheet(model: model)
+                .environmentObject(locale)
         }
         .sheet(isPresented: Binding(
             get: { model.viewerAssetID != nil },
@@ -71,6 +104,7 @@ struct ReviewView: View {
                 Text(locale.text("needsReview")).tag(ReviewFilter.review)
                 Text(locale.text("keptFrames")).tag(ReviewFilter.keep)
                 Text(locale.text("rejectedFrames")).tag(ReviewFilter.reject)
+                Text(locale.text("movedFrames")).tag(ReviewFilter.moved)
                 Text(locale.text("multiFrameStacks")).tag(ReviewFilter.multi)
             }
             .labelsHidden()
@@ -84,26 +118,12 @@ struct ReviewView: View {
                 statRow("rectangle.stack", locale.text("stacks"), model.payload?.manifest.summary.clusters ?? 0)
                 statRow("checkmark.circle", locale.text("keep"), model.counts[.keep] ?? 0, color: .green)
                 statRow("xmark.circle", locale.text("rejected"), model.counts[.reject] ?? 0, color: .red)
+                statRow("tray.full", locale.text("moved"), model.activeMovedCount, color: .blue)
                 statRow("questionmark.circle", locale.text("needsReview"), model.counts[.review] ?? 0, color: .orange)
                 statRow("pencil", locale.text("manualEdits"), model.manualDecisions.count)
             }
 
             Spacer()
-
-            Button {
-                confirmingMove = true
-            } label: {
-                Label(
-                    rejectCount == 0
-                        ? locale.text("noRejects")
-                        : locale.text("moveRejects", ["count": rejectCount]),
-                    systemImage: "tray.and.arrow.down"
-                )
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(rejectCount == 0)
         }
         .padding(16)
         .frame(maxHeight: .infinity)
@@ -131,8 +151,6 @@ struct ReviewView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
-
-    private var rejectCount: Int { model.counts[.reject] ?? 0 }
 
     private var reviewTitle: String {
         let folder = URL(fileURLWithPath: model.payload?.manifest.root ?? "").lastPathComponent
@@ -209,12 +227,8 @@ private struct StackSection: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     private func exifDifferences(_ assets: [AssetRecord]) -> Set<String> {
@@ -253,6 +267,8 @@ private struct FrameCard: View {
                         .frame(maxWidth: .infinity)
                         .aspectRatio(4.0 / 3.0, contentMode: .fit)
                         .clipped()
+                        .saturation(decision == .reject && !model.isMoved(asset) ? 0.72 : 1)
+                        .opacity(decision == .reject && !model.isMoved(asset) ? 0.82 : 1)
                     Text(statusText)
                         .font(.caption2.weight(.bold))
                         .padding(.horizontal, 6)
@@ -323,7 +339,6 @@ private struct FrameCard: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(borderColor, lineWidth: decision == .keep ? 1.5 : 1)
         }
-        .opacity(decision == .reject ? 0.76 : 1)
         .animation(.easeInOut(duration: 0.18), value: decision)
     }
 
@@ -333,26 +348,29 @@ private struct FrameCard: View {
     }
 
     private var statusText: String {
+        if model.isMoved(asset) { return locale.text("moved") }
         switch decision {
-        case .keep: locale.text("keep")
-        case .reject: locale.text("rejected")
-        case .review: locale.text("needsReview")
+        case .keep: return locale.text("keep")
+        case .reject: return locale.text("rejected")
+        case .review: return locale.text("needsReview")
         }
     }
 
     private var statusColor: Color {
+        if model.isMoved(asset) { return .blue }
         switch decision {
-        case .keep: .green
-        case .reject: .red
-        case .review: .orange
+        case .keep: return .green
+        case .reject: return .red
+        case .review: return .orange
         }
     }
 
     private var borderColor: Color {
+        if model.isMoved(asset) { return .blue.opacity(0.72) }
         switch decision {
-        case .keep: .green.opacity(0.72)
-        case .review: .orange.opacity(0.68)
-        case .reject: Color(nsColor: .separatorColor)
+        case .keep: return .green.opacity(0.72)
+        case .review: return .orange.opacity(0.68)
+        case .reject: return Color(nsColor: .separatorColor)
         }
     }
 
@@ -412,5 +430,88 @@ private struct FrameCard: View {
 
     private func format(_ value: Double, _ digits: Int) -> String {
         value.formatted(.number.precision(.fractionLength(digits)))
+    }
+}
+
+private struct MoveRejectsSheet: View {
+    @EnvironmentObject private var locale: LocaleCatalog
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: AppModel
+    @State private var destination: URL?
+    @State private var confirmingMove = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 12) {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(locale.text("moveConfirmTitle"))
+                        .font(.title3.weight(.semibold))
+                    Text(locale.text("moveSelectionSummary", ["count": model.movableRejectCount]))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            GroupBox(locale.text("destination")) {
+                HStack(spacing: 12) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                    Text(destinationLabel)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button(locale.text("choose"), action: chooseDestination)
+                    if destination != nil {
+                        Button(locale.text("useRunFolder")) { destination = nil }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            HStack {
+                Button(locale.text("cancel"), role: .cancel) { dismiss() }
+                Spacer()
+                Button(locale.text("move"), role: .destructive) {
+                    confirmingMove = true
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .onAppear {
+            destination = model.defaultMoveDestinationPath.map(URL.init(fileURLWithPath:))
+        }
+        .confirmationDialog(
+            locale.text("moveConfirmTitle"),
+            isPresented: $confirmingMove,
+            titleVisibility: .visible
+        ) {
+            Button(locale.text("move"), role: .destructive) {
+                model.moveRejects(destination: destination)
+                dismiss()
+            }
+            Button(locale.text("cancel"), role: .cancel) {}
+        } message: {
+            Text(locale.text("moveConfirmMessage"))
+        }
+    }
+
+    private var destinationLabel: String {
+        guard let destination else { return locale.text("insideRunFolder") }
+        return destination.path
+    }
+
+    private func chooseDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK { destination = panel.url }
     }
 }

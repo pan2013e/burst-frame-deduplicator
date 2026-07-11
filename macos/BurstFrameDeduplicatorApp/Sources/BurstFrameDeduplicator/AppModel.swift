@@ -20,9 +20,17 @@ enum ReviewFilter: String, CaseIterable, Identifiable {
     case review
     case keep
     case reject
+    case moved
     case multi
 
     var id: String { rawValue }
+}
+
+enum AppNotice: Equatable {
+    case moved(files: Int, assets: Int, destination: String, failures: Int)
+    case restored(files: Int, assets: Int, failures: Int)
+    case sourceUnavailable(String)
+    case message(String)
 }
 
 @MainActor
@@ -30,7 +38,14 @@ final class AppModel: ObservableObject {
     @Published var phase: AppPhase = .setup
     @Published var sourceURL: URL?
     @Published var outputURL: URL?
-    @Published var options = ScanOptions()
+    @Published var options = ScanOptions() {
+        didSet { persistOptions() }
+    }
+    @Published var defaultMoveDestinationPath: String? {
+        didSet {
+            UserDefaults.standard.set(defaultMoveDestinationPath, forKey: "defaultMoveDestinationPath")
+        }
+    }
     @Published var progress: ProgressUpdate?
     @Published var payload: ReviewPayload? {
         didSet {
@@ -43,7 +58,8 @@ final class AppModel: ObservableObject {
     @Published var filter: ReviewFilter = .all
     @Published var viewerAssetID: String?
     @Published var errorMessage: String?
-    @Published var noticeMessage: String?
+    @Published var notice: AppNotice?
+    @Published var fileOperationInProgress = false
 
     private let bridge: RustBridge
     private let decisionQueue = DispatchQueue(label: "org.burstframe.deduplicator.decisions", qos: .userInitiated)
@@ -52,7 +68,12 @@ final class AppModel: ObservableObject {
 
     init(bridge: RustBridge = RustBridge()) {
         self.bridge = bridge
-        if let defaults = try? bridge.defaultOptions() {
+        defaultMoveDestinationPath = UserDefaults.standard.string(forKey: "defaultMoveDestinationPath")
+        if let stored = UserDefaults.standard.data(forKey: "scanOptions"),
+           let decoded = try? JSONDecoder().decode(ScanOptions.self, from: stored)
+        {
+            options = decoded
+        } else if let defaults = try? bridge.defaultOptions() {
             options = defaults
         }
     }
@@ -77,6 +98,7 @@ final class AppModel: ObservableObject {
                     case .review: filterMatches = action == .review
                     case .keep: filterMatches = action == .keep
                     case .reject: filterMatches = action == .reject
+                    case .moved: filterMatches = isMoved(asset)
                     }
                     return queryMatches && filterMatches
                 }
@@ -95,6 +117,24 @@ final class AppModel: ObservableObject {
             result[finalAction(for: asset), default: 0] += 1
         }
         return result
+    }
+
+    var movedAssetIDs: Set<String> {
+        Set(payload?.moveStatus.activeAssetIds ?? [])
+    }
+
+    var activeMovedCount: Int {
+        payload?.moveStatus.activeAssetIds.count ?? 0
+    }
+
+    var movableRejectCount: Int {
+        (payload?.manifest.assets ?? []).filter {
+            finalAction(for: $0) == .reject && !isMoved($0)
+        }.count
+    }
+
+    func isMoved(_ asset: AssetRecord) -> Bool {
+        movedAssetIDs.contains(asset.id)
     }
 
     func startScan() {
@@ -222,6 +262,7 @@ final class AppModel: ObservableObject {
             case .review: return finalAction(for: asset) == .review
             case .keep: return finalAction(for: asset) == .keep
             case .reject: return finalAction(for: asset) == .reject
+            case .moved: return isMoved(asset)
             }
         }
     }
@@ -231,16 +272,66 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: runDirectory)])
     }
 
-    func moveRejects() {
+    func moveRejects(destination: URL?) {
         guard let runDirectory = payload?.runDir else { return }
+        let selectedDestination = destination?.path ?? defaultMoveDestinationPath
+        fileOperationInProgress = true
         DispatchQueue.global(qos: .userInitiated).async { [bridge] in
             do {
-                let result = try bridge.moveRejects(runDirectory: runDirectory, confirmed: true)
+                let result = try bridge.moveRejects(
+                    runDirectory: runDirectory,
+                    destination: selectedDestination,
+                    confirmed: true
+                )
+                let updated = try bridge.loadRun(at: runDirectory)
                 DispatchQueue.main.async { [weak self] in
-                    self?.noticeMessage = "\(result.movedFiles)|\(result.movedAssets)"
+                    self?.refresh(updated)
+                    self?.fileOperationInProgress = false
+                    if !result.sourceAvailable {
+                        self?.notice = .sourceUnavailable(result.message ?? "Source folder unavailable")
+                    } else {
+                        self?.notice = .moved(
+                            files: result.movedFiles,
+                            assets: result.movedAssets,
+                            destination: result.destination,
+                            failures: result.failedFiles.count
+                        )
+                    }
                 }
             } catch {
-                DispatchQueue.main.async { [weak self] in self?.errorMessage = error.localizedDescription }
+                DispatchQueue.main.async { [weak self] in
+                    self?.fileOperationInProgress = false
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func restoreMoved() {
+        guard let runDirectory = payload?.runDir else { return }
+        fileOperationInProgress = true
+        DispatchQueue.global(qos: .userInitiated).async { [bridge] in
+            do {
+                let result = try bridge.restoreRejects(runDirectory: runDirectory, confirmed: true)
+                let updated = try bridge.loadRun(at: runDirectory)
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh(updated)
+                    self?.fileOperationInProgress = false
+                    if !result.sourceAvailable {
+                        self?.notice = .sourceUnavailable(result.message ?? "Original source folder unavailable")
+                    } else {
+                        self?.notice = .restored(
+                            files: result.restoredFiles,
+                            assets: result.restoredAssets,
+                            failures: result.failedFiles.count
+                        )
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.fileOperationInProgress = false
+                    self?.errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -270,6 +361,14 @@ final class AppModel: ObservableObject {
         phase = .review
     }
 
+    private func refresh(_ payload: ReviewPayload) {
+        self.payload = payload
+        manualDecisions = Dictionary(uniqueKeysWithValues: payload.review.decisions.compactMap {
+            guard let decision = $0.decision else { return nil }
+            return ($0.assetId, decision)
+        })
+    }
+
     private func autoCollapseStack(_ stackID: Int) {
         guard let stack = payload?.manifest.clusters.first(where: { $0.id == stackID }) else { return }
         let allKept = stack.assetIds
@@ -288,5 +387,10 @@ final class AppModel: ObservableObject {
         return pictures
             .appendingPathComponent("Burst Frame Deduplicator Runs", isDirectory: true)
             .appendingPathComponent("run_\(formatter.string(from: Date()))", isDirectory: true)
+    }
+
+    private func persistOptions() {
+        guard let data = try? JSONEncoder().encode(options) else { return }
+        UserDefaults.standard.set(data, forKey: "scanOptions")
     }
 }

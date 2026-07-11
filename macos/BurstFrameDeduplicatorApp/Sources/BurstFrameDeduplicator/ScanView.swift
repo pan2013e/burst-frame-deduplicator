@@ -5,7 +5,6 @@ import SwiftUI
 struct ScanView: View {
     @EnvironmentObject private var locale: LocaleCatalog
     @ObservedObject var model: AppModel
-    @State private var qualityExpanded = false
 
     var body: some View {
         ScrollView {
@@ -36,7 +35,7 @@ struct ScanView: View {
 
     private var configurationForm: some View {
         VStack(alignment: .leading, spacing: 18) {
-            GroupBox {
+            GroupBox(locale.text("folders")) {
                 VStack(spacing: 0) {
                     folderRow(
                         title: locale.text("photoFolder"),
@@ -54,59 +53,19 @@ struct ScanView: View {
                 }
             }
 
-            GroupBox {
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 14) {
-                    GridRow {
-                        Label(locale.text("acceleration"), systemImage: "bolt")
-                        Picker("", selection: $model.options.acceleration) {
-                            Text(locale.text("automaticOption")).tag("auto")
-                            Text(locale.text("cpuOption")).tag("cpu")
-                            Text(locale.text("metalOption")).tag("metal")
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 240)
-                    }
-                    GridRow {
-                        Label(locale.text("detector"), systemImage: "viewfinder")
-                        Picker("", selection: $model.options.detector) {
-                            Text(locale.text("automaticOption")).tag("auto")
-                            Text(locale.text("heuristicOption")).tag("heuristic")
-                            Text(locale.text("visionOption")).tag("vision")
-                            Text(locale.text("offOption")).tag("off")
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 240)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
-            }
-
-            DisclosureGroup(isExpanded: $qualityExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Stepper(value: $model.options.previewSize, in: 512...4096, step: 128) {
-                        LabeledContent(locale.text("previewSize"), value: "\(model.options.previewSize) px")
-                    }
-                    Stepper(value: $model.options.refineSize, in: 1024...8192, step: 256) {
-                        LabeledContent(locale.text("refineSize"), value: "\(model.options.refineSize) px")
-                    }
-                }
-                .padding(.top, 10)
-            } label: {
-                Label(locale.text("quality"), systemImage: "slider.horizontal.3")
-            }
-            .padding(.horizontal, 4)
-
             HStack {
                 Button(action: openRun) {
                     Label(locale.text("openRun"), systemImage: "folder")
+                }
+                SettingsLink {
+                    Label(locale.text("settings"), systemImage: "gearshape")
                 }
                 Spacer()
                 Button(action: model.startScan) {
                     Label(locale.text("startScan"), systemImage: "sparkles")
                         .frame(minWidth: 112)
                 }
-                .buttonStyle(.borderedProminent)
+                .primaryActionStyle()
                 .controlSize(.large)
                 .disabled(model.sourceURL == nil)
                 .keyboardShortcut(.defaultAction)
@@ -160,13 +119,7 @@ struct ScanView: View {
             }
             .font(.callout)
         }
-        .padding(22)
-        .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        }
+        .padding(.vertical, 8)
     }
 
     private func folderRow(title: String, value: String?, icon: String, action: @escaping () -> Void) -> some View {

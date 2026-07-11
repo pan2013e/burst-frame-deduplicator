@@ -47,6 +47,7 @@ public struct ReviewPayload: Decodable {
     public let runDir: String
     public let manifest: RunManifest
     public let review: ReviewState
+    public let moveStatus: MoveStatus
 }
 
 public struct PreviewResponse: Decodable {
@@ -58,8 +59,31 @@ public struct MoveResponse: Decodable {
     public let destination: String
     public let movedFiles: Int
     public let movedAssets: Int
+    public let alreadyMovedAssets: Int
+    public let movedAssetIds: [String]
+    public let sourceAvailable: Bool
     public let missingFiles: [String]
     public let failedFiles: [MoveFailure]
+    public let message: String?
+    public let status: MoveStatus
+}
+
+public struct RestoreResponse: Decodable {
+    public let restoredFiles: Int
+    public let restoredAssets: Int
+    public let restoredAssetIds: [String]
+    public let sourceAvailable: Bool
+    public let missingFiles: [String]
+    public let failedFiles: [MoveFailure]
+    public let message: String?
+    public let status: MoveStatus
+}
+
+public struct MoveStatus: Decodable, Equatable, Sendable {
+    public let activeAssetIds: [String]
+    public let activeFiles: Int
+    public let activeBytes: UInt64
+    public let destinations: [String]
 }
 
 public struct MoveFailure: Decodable {

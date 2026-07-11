@@ -13,17 +13,6 @@ struct RootView: View {
                 ScanView(model: model)
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Picker(locale.text("language"), selection: $locale.code) {
-                    ForEach(LocaleCatalog.supportedCodes, id: \.self) { code in
-                        Text(locale.languageName(for: code)).tag(code)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-            }
-        }
         .alert(
             locale.text("appTitle"),
             isPresented: Binding(
@@ -38,19 +27,37 @@ struct RootView: View {
         .alert(
             locale.text("appTitle"),
             isPresented: Binding(
-                get: { model.noticeMessage != nil },
-                set: { if !$0 { model.noticeMessage = nil } }
+                get: { model.notice != nil },
+                set: { if !$0 { model.notice = nil } }
             )
         ) {
-            Button(locale.text("close")) { model.noticeMessage = nil }
+            Button(locale.text("close")) { model.notice = nil }
         } message: {
-            Text(moveNotice)
+            Text(noticeText)
         }
     }
 
-    private var moveNotice: String {
-        let parts = (model.noticeMessage ?? "").split(separator: "|")
-        guard parts.count == 2 else { return model.noticeMessage ?? "" }
-        return locale.text("moveComplete", ["files": parts[0], "assets": parts[1]])
+    private var noticeText: String {
+        switch model.notice {
+        case .moved(let files, let assets, let destination, let failures):
+            let summary = locale.text("moveComplete", ["files": files, "assets": assets])
+            let location = locale.text("moveDestination", ["destination": destination])
+            if failures > 0 {
+                return "\(summary)\n\(location)\n\(locale.text("operationFailures", ["count": failures]))"
+            }
+            return "\(summary)\n\(location)"
+        case .restored(let files, let assets, let failures):
+            let summary = locale.text("restoreComplete", ["files": files, "assets": assets])
+            if failures > 0 {
+                return "\(summary)\n\(locale.text("operationFailures", ["count": failures]))"
+            }
+            return summary
+        case .sourceUnavailable(let message):
+            return "\(locale.text("sourceUnavailableMove"))\n\n\(message)"
+        case .message(let message):
+            return message
+        case nil:
+            return ""
+        }
     }
 }
