@@ -33,11 +33,31 @@ enum AppNotice: Equatable {
     case message(String)
 }
 
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var phase: AppPhase = .setup
     @Published var sourceURL: URL?
     @Published var outputURL: URL?
+    @Published private(set) var resultsRootPath: String
+    @Published var appearanceMode: AppearanceMode {
+        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: "appearanceMode") }
+    }
     @Published var options = ScanOptions() {
         didSet { persistOptions() }
     }
@@ -60,14 +80,22 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var notice: AppNotice?
     @Published var fileOperationInProgress = false
+    @Published var relocationInProgress = false
+    @Published var relocationProgress: ProgressUpdate?
 
     private let bridge: RustBridge
     private let decisionQueue = DispatchQueue(label: "org.burstframe.deduplicator.decisions", qos: .userInitiated)
     private var decisionGenerations: [String: Int] = [:]
     private var assetIndex: [String: AssetRecord] = [:]
+    private var pendingRelocation: DispatchWorkItem?
 
     init(bridge: RustBridge = RustBridge()) {
         self.bridge = bridge
+        resultsRootPath = UserDefaults.standard.string(forKey: "resultsRootPath")
+            ?? RunCacheManager.defaultRunsDirectory.path
+        appearanceMode = AppearanceMode(
+            rawValue: UserDefaults.standard.string(forKey: "appearanceMode") ?? "system"
+        ) ?? .system
         defaultMoveDestinationPath = UserDefaults.standard.string(forKey: "defaultMoveDestinationPath")
         if let stored = UserDefaults.standard.data(forKey: "scanOptions"),
            let decoded = try? JSONDecoder().decode(ScanOptions.self, from: stored)
@@ -139,7 +167,7 @@ final class AppModel: ObservableObject {
 
     func startScan() {
         guard let sourceURL else { return }
-        let destination = outputURL ?? automaticRunDirectory()
+        let destination = automaticRunDirectory()
         outputURL = destination
         phase = .scanning
         progress = nil
@@ -169,6 +197,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func startScan(from source: URL) {
+        sourceURL = source
+        startScan()
+    }
+
     func openRun(at directory: URL) {
         errorMessage = nil
         DispatchQueue.global(qos: .userInitiated).async { [bridge] in
@@ -182,7 +215,9 @@ final class AppModel: ObservableObject {
     }
 
     func resetForNewScan() {
+        pendingRelocation?.cancel()
         phase = .setup
+        sourceURL = nil
         payload = nil
         progress = nil
         outputURL = nil
@@ -201,6 +236,7 @@ final class AppModel: ObservableObject {
     }
 
     func setDecision(_ decision: FrameDecision, for asset: AssetRecord) {
+        guard !fileOperationInProgress, !relocationInProgress else { return }
         let assetID = asset.id
         let previous = manualDecisions[asset.id]
         let suggested = FrameDecision(rawValue: asset.suggestion.action) ?? .review
@@ -270,6 +306,25 @@ final class AppModel: ObservableObject {
     func showRunFolder() {
         guard let runDirectory = payload?.runDir else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: runDirectory)])
+    }
+
+    func changeResultsRoot(to directory: URL) {
+        guard !relocationInProgress else { return }
+        let normalized = directory.standardizedFileURL.path
+        guard normalized != resultsRootPath else { return }
+        resultsRootPath = normalized
+        UserDefaults.standard.set(normalized, forKey: "resultsRootPath")
+        pendingRelocation?.cancel()
+        guard phase == .review, payload != nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.relocateCurrentRun(to: normalized)
+        }
+        pendingRelocation = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
+    }
+
+    func resetResultsRoot() {
+        changeResultsRoot(to: RunCacheManager.defaultRunsDirectory)
     }
 
     func moveRejects(destination: URL?) {
@@ -359,6 +414,7 @@ final class AppModel: ObservableObject {
             autoCollapseStack(stack.id)
         }
         phase = .review
+        RunCacheManager.registerRun(payload.runDir)
     }
 
     private func refresh(_ payload: ReviewPayload) {
@@ -381,12 +437,57 @@ final class AppModel: ObservableObject {
 
     private func automaticRunDirectory() -> URL {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        return pictures
-            .appendingPathComponent("Burst Frame Deduplicator Runs", isDirectory: true)
-            .appendingPathComponent("run_\(formatter.string(from: Date()))", isDirectory: true)
+        formatter.dateFormat = "yyyyMMdd_HHmmss_SSS"
+        let suffix = UUID().uuidString.prefix(6).lowercased()
+        return URL(fileURLWithPath: resultsRootPath, isDirectory: true)
+            .appendingPathComponent("run_\(formatter.string(from: Date()))_\(suffix)", isDirectory: true)
+    }
+
+    private func relocateCurrentRun(to destinationRoot: String) {
+        guard let currentRun = payload?.runDir, !relocationInProgress else { return }
+        let currentParent = URL(fileURLWithPath: currentRun).deletingLastPathComponent().standardizedFileURL.path
+        if currentParent == destinationRoot { return }
+
+        relocationInProgress = true
+        fileOperationInProgress = true
+        relocationProgress = nil
+        errorMessage = nil
+        DispatchQueue.global(qos: .userInitiated).async { [bridge] in
+            do {
+                let result = try bridge.relocateRun(
+                    runDirectory: currentRun,
+                    destinationRoot: destinationRoot
+                ) { [weak self] update in
+                    DispatchQueue.main.async { self?.relocationProgress = update }
+                }
+                let updated = try bridge.loadRun(at: result.runDir)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    RunCacheManager.replaceRegisteredRun(
+                        previous: result.previousRunDir,
+                        relocated: result.runDir
+                    )
+                    payload = updated
+                    outputURL = URL(fileURLWithPath: result.runDir)
+                    relocationInProgress = false
+                    fileOperationInProgress = false
+                    relocationProgress = nil
+                    if !result.warnings.isEmpty {
+                        notice = .message(result.warnings.joined(separator: "\n"))
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    resultsRootPath = currentParent
+                    UserDefaults.standard.set(currentParent, forKey: "resultsRootPath")
+                    relocationInProgress = false
+                    fileOperationInProgress = false
+                    relocationProgress = nil
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
     }
 
     private func persistOptions() {

@@ -46,6 +46,10 @@ public final class LocaleCatalog: ObservableObject {
         catalogs[code]?.languageName ?? code
     }
 
+    public var appleLocaleIdentifier: String {
+        code == "zh-CN" ? "zh-Hans" : "en"
+    }
+
     private static func loadCatalogs() throws -> [String: LocaleFile] {
         let directory = try localeDirectory()
         let decoder = JSONDecoder()

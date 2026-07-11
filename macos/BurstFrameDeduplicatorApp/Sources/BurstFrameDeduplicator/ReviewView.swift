@@ -76,6 +76,7 @@ struct ReviewView: View {
             NativeImageViewer(model: model)
                 .environmentObject(locale)
         }
+        .id(locale.code)
     }
 
     private var sidebar: some View {
@@ -311,6 +312,18 @@ private struct FrameCard: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
 
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(locale.text("imageQuality"))
+                        Spacer()
+                        Text(qualityValue, format: .percent.precision(.fractionLength(0)))
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    ContinuousLevelBar(value: qualityValue)
+                }
+
                 exifView
 
                 Text(reasonText)
@@ -354,6 +367,10 @@ private struct FrameCard: View {
         case .reject: return locale.text("rejected")
         case .review: return locale.text("needsReview")
         }
+    }
+
+    private var qualityValue: Double {
+        max(0, min(1, asset.suggestion.score))
     }
 
     private var statusColor: Color {
@@ -507,11 +524,10 @@ private struct MoveRejectsSheet: View {
     }
 
     private func chooseDestination() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK { destination = panel.url }
+        destination = chooseDirectory(
+            for: .moveDestination,
+            locale: locale,
+            startingAt: destination
+        )
     }
 }

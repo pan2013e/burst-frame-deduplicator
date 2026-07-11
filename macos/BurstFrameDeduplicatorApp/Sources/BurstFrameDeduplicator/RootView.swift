@@ -13,6 +13,9 @@ struct RootView: View {
                 ScanView(model: model)
             }
         }
+        .preferredColorScheme(model.appearanceMode.colorScheme)
+        .environment(\.locale, Locale(identifier: locale.appleLocaleIdentifier))
+        .id(locale.code)
         .alert(
             locale.text("appTitle"),
             isPresented: Binding(
