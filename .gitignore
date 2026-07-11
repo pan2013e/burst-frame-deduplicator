@@ -4,6 +4,8 @@
 /benchmark/runs/
 /benchmark/work/
 /benchmark/assets/*/
+/web/dist/
+/web/wasm/pkg/
 **/moved_rejects/
 **/moved_rejects_from_script/
 **/move_reports/
