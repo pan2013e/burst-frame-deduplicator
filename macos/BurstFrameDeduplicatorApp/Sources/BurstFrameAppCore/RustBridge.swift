@@ -108,6 +108,21 @@ public final class RustBridge: @unchecked Sendable {
         )
     }
 
+    public func relocateRun(
+        runDirectory: String,
+        destinationRoot: String,
+        progress: @escaping (ProgressUpdate) -> Void
+    ) throws -> RelocationResponse {
+        let request = RelocateRequest(runDir: runDirectory, destinationRoot: destinationRoot)
+        let encoded = try encode(request)
+        let context = Unmanaged.passRetained(ProgressContext(handler: progress))
+        defer { context.release() }
+        let response = encoded.withCString { pointer in
+            bfd_relocate_run(pointer, bridgeProgressCallback, context.toOpaque())
+        }
+        return try decodeResponse(response)
+    }
+
     private func invoke<Request: Encodable, Response: Decodable>(
         _ request: Request,
         function: (UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
@@ -192,4 +207,9 @@ private struct RestoreRequest: Encodable {
     let runDir: String
     let assetIds: [String]?
     let confirmed: Bool
+}
+
+private struct RelocateRequest: Encodable {
+    let runDir: String
+    let destinationRoot: String
 }

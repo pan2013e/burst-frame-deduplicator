@@ -17,6 +17,7 @@ use crate::operations::{
 };
 use crate::pipeline::run_scan;
 use crate::progress::{ProgressReporter, ProgressUpdate};
+use crate::run_storage::{RelocationProgress, relocate_run};
 use crate::types::{FileKind, ReviewState, RunManifest, ScanOptions, UserDecision};
 
 pub type BfdProgressCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
@@ -82,6 +83,12 @@ struct RestoreRequest {
     confirmed: bool,
 }
 
+#[derive(Deserialize)]
+struct RelocateRequest {
+    run_dir: PathBuf,
+    destination_root: PathBuf,
+}
+
 #[derive(Serialize)]
 struct Envelope<T: Serialize> {
     ok: bool,
@@ -91,7 +98,7 @@ struct Envelope<T: Serialize> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bfd_api_version() -> u32 {
-    2
+    3
 }
 
 #[unsafe(no_mangle)]
@@ -209,6 +216,30 @@ pub unsafe extern "C" fn bfd_restore_rejects(request_json: *const c_char) -> *mu
 }
 
 #[unsafe(no_mangle)]
+/// Relocates a completed run to a new parent directory.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string. The callback and
+/// context must remain valid until this function returns.
+pub unsafe extern "C" fn bfd_relocate_run(
+    request_json: *const c_char,
+    callback: Option<BfdProgressCallback>,
+    context: *mut c_void,
+) -> *mut c_char {
+    ffi_call(|| {
+        let request: RelocateRequest = parse_request(request_json)?;
+        let callback_context = context as usize;
+        relocate_run(
+            &request.run_dir,
+            &request.destination_root,
+            |update: RelocationProgress| {
+                emit_progress(callback, callback_context, &update);
+            },
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
 /// Releases a response returned by this library.
 ///
 /// # Safety
@@ -277,14 +308,21 @@ fn progress_reporter(
     };
     let context = context as usize;
     ProgressReporter::new(move |update: ProgressUpdate| {
-        let Ok(json) = serde_json::to_string(&update) else {
-            return;
-        };
-        let Ok(json) = CString::new(json) else {
-            return;
-        };
-        unsafe { callback(json.as_ptr(), context as *mut c_void) };
+        emit_progress(Some(callback), context, &update);
     })
+}
+
+fn emit_progress<T: Serialize>(callback: Option<BfdProgressCallback>, context: usize, update: &T) {
+    let Some(callback) = callback else {
+        return;
+    };
+    let Ok(json) = serde_json::to_string(update) else {
+        return;
+    };
+    let Ok(json) = CString::new(json) else {
+        return;
+    };
+    unsafe { callback(json.as_ptr(), context as *mut c_void) };
 }
 
 fn default_preview_size() -> u32 {

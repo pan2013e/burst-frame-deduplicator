@@ -13,5 +13,6 @@ pub mod metal_accel;
 pub mod operations;
 pub mod pipeline;
 pub mod progress;
+pub mod run_storage;
 pub mod server;
 pub mod types;

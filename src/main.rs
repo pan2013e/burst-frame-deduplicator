@@ -5,6 +5,7 @@ use anyhow::Context;
 use burst_frame_deduplicator::artifacts;
 use burst_frame_deduplicator::pipeline::run_scan;
 use burst_frame_deduplicator::progress::terminal_progress_reporter;
+use burst_frame_deduplicator::run_storage;
 use burst_frame_deduplicator::server;
 use burst_frame_deduplicator::types::{AccelerationPreference, DetectorPreference, ScanOptions};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -64,6 +65,15 @@ enum Command {
         /// Existing run directory containing manifest.json and review_state.json.
         #[arg(long)]
         run: PathBuf,
+    },
+    /// Move a completed run folder to a different result directory.
+    Relocate {
+        /// Existing run directory containing manifest.json.
+        #[arg(long)]
+        run: PathBuf,
+        /// Parent directory that should contain the relocated run folder.
+        #[arg(long)]
+        to: PathBuf,
     },
 }
 
@@ -224,6 +234,19 @@ async fn main() -> anyhow::Result<()> {
             artifacts::export_reviewed_artifacts(&run)
                 .with_context(|| format!("exporting reviewed artifacts from {}", run.display()))?;
             println!("Updated CSV exports and move script in {}", run.display());
+        }
+        Command::Relocate { run, to } => {
+            let result = run_storage::relocate_run(&run, &to, |update| {
+                let percent = (update.overall_fraction * 100.0).round() as usize;
+                let detail = update.detail.as_deref().unwrap_or("Moving run");
+                eprint!("\rRelocating [{percent:>3}%] {detail:<60}");
+            })
+            .with_context(|| format!("relocating {} into {}", run.display(), to.display()))?;
+            eprintln!();
+            println!("Moved run to {}", result.run_dir.display());
+            for warning in result.warnings {
+                eprintln!("Warning: {warning}");
+            }
         }
     }
     Ok(())

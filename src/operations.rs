@@ -110,6 +110,31 @@ pub fn read_move_status(run_dir: &Path) -> anyhow::Result<MoveStatus> {
     Ok(move_status(&read_move_state(run_dir)?))
 }
 
+pub fn relocate_move_state_paths(
+    run_dir: &Path,
+    previous_run_dir: &Path,
+    relocated_run_dir: &Path,
+) -> anyhow::Result<usize> {
+    if !run_dir.join(MOVE_STATE_FILE).is_file() {
+        return Ok(0);
+    }
+
+    let mut state = read_move_state(run_dir)?;
+    let mut changed = 0;
+    for record in &mut state.records {
+        let Ok(relative) = record.destination.strip_prefix(previous_run_dir) else {
+            continue;
+        };
+        record.destination = relocated_run_dir.join(relative);
+        changed += 1;
+    }
+    if changed > 0 {
+        state.updated_at = Utc::now().to_rfc3339();
+        write_move_state(run_dir, &state)?;
+    }
+    Ok(changed)
+}
+
 pub fn resolve_available_source(run_dir: &Path, original: &Path) -> anyhow::Result<PathBuf> {
     if original.is_file() {
         return Ok(original.to_path_buf());

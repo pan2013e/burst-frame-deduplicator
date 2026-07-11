@@ -20,6 +20,7 @@ char *bfd_prepare_preview(const char *request_json);
 char *bfd_export_run(const char *request_json);
 char *bfd_move_rejects(const char *request_json);
 char *bfd_restore_rejects(const char *request_json);
+char *bfd_relocate_run(const char *request_json, bfd_progress_callback callback, void *context);
 void bfd_free_string(char *value);
 
 #ifdef __cplusplus

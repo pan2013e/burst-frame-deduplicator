@@ -43,6 +43,15 @@ public struct ScanResponse: Decodable {
     public let runDir: String
 }
 
+public struct RelocationResponse: Decodable, Sendable {
+    public let previousRunDir: String
+    public let runDir: String
+    public let files: Int
+    public let bytes: UInt64
+    public let usedAtomicRename: Bool
+    public let warnings: [String]
+}
+
 public struct ReviewPayload: Decodable {
     public let runDir: String
     public let manifest: RunManifest
