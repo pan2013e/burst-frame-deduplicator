@@ -1,8 +1,8 @@
 # Usage Guide
 
-Burst Frame Deduplicator helps you review burst sequences without turning the process into a fully automatic delete operation. It scans a folder or mounted card, divides each temporal burst into subject-aware near-duplicate stacks, pre-fills keep/reject suggestions, and gives you a local review page where you can override every decision.
+Burst Frame Deduplicator helps you review burst sequences without turning the process into a fully automatic delete operation. It scans a folder or mounted card, divides each temporal burst into subject-aware near-duplicate stacks, pre-fills keep/reject suggestions, and lets you override every decision.
 
-![Review grid showing pre-filled keep/reject choices](assets/usage-review.png)
+![Native macOS review grid showing pre-filled keep/reject choices](assets/usage-native-review.jpg)
 
 ## Before You Start
 
@@ -32,18 +32,19 @@ git lfs pull
 Launch the native desktop application when you do not want to use a terminal:
 
 ```bash
-cargo run --release --features gui -- gui
-```
-
-Choose the photo folder, optionally choose a run folder, and start the scan. If the run folder is left blank, the app creates a timestamped folder under `~/Pictures/Burst Frame Deduplicator Runs`. The window shows the active stage, current file, item count, and weighted overall progress. It opens the local review page when the scan finishes.
-
-Use the `English` / `简体中文` control to change the desktop language. The selected language is passed to the review page, where it can also be changed from the toolbar.
-
-To build a normal macOS application bundle:
-
-```bash
 ./scripts/build_macos_app.sh
 open "target/macos/Burst Frame Deduplicator.app"
+```
+
+Choose the photo folder, optionally choose a run folder, and start the scan. If the run folder is left blank, the app creates a timestamped folder under `~/Pictures/Burst Frame Deduplicator Runs`. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
+
+Use the `English` / `简体中文` control to change language without restarting or losing review state.
+
+For development, the Swift package can also be built directly after the Rust dynamic library exists:
+
+```bash
+cargo build --release --lib
+swift build --package-path macos/BurstFrameDeduplicatorApp
 ```
 
 ## Command-Line Workflow
@@ -108,6 +109,13 @@ Run the benchmark:
 python3 benchmark/run_benchmarks.py
 ```
 
+Compare the headless CLI, native Swift FFI, and static browser/WASM paths:
+
+```bash
+npm install --prefix benchmark
+python3 benchmark/run_frontend_benchmarks.py
+```
+
 Open one of the benchmark review runs:
 
 ```bash
@@ -140,18 +148,26 @@ Click a thumbnail to open the full-resolution viewer.
 In the viewer:
 
 - Use the `Keep` checkbox in the top bar to change the decision for the current image.
-- Use left/right arrow keys to move through the full temporal burst, including adjacent stacks.
+- Use left/right arrow keys to move within the current near-duplicate stack.
 - Use `+`, `-`, and `Fit` to zoom.
 - Drag the image to pan after zooming.
 - Press `Esc` or click `Close` to leave the viewer.
 
-For normal browser image formats, the viewer loads the source file on demand. For RAW-only images, the browser first tries the bundled local LibRaw-WASM decoder. The decoded preview is cached in the page with a bounded memory budget, so reopening the same RAW image avoids another WASM decode while it remains in cache. If browser-side RAW decoding fails, the server falls back to generating a local JPEG preview.
+The native app loads normal compressed formats from the original path on demand. For RAW-only assets, Rust writes a high-quality JPEG to `native_previews/` under the run directory and reuses that cached file when the image is opened again.
+
+The local browser review first tries the bundled LibRaw-WASM decoder for RAW-only images. Its decoded blob cache has a bounded memory budget, and the local server can fall back to generating a JPEG preview. The static WASM edition uses the same local LibRaw worker but has no native fallback.
 
 If the source path is no longer available, for example because the SD card was ejected, the viewer shows an error instead of silently changing the decision.
 
 ## Saving Decisions
 
-Checkbox changes are saved to `review_state.json` as you make them. Use `Save Review` to rewrite the CSV exports and move script after review changes:
+Checkbox changes are saved to `review_state.json` as you make them. The native app and local review UI rewrite exports after each persisted decision. The CLI can regenerate them explicitly:
+
+```bash
+cargo run --release -- export --run runs/run_YYYYMMDD_HHMMSS
+```
+
+Generated artifacts include:
 
 - `keepers.csv`
 - `rejects.csv`
@@ -208,6 +224,16 @@ Common options:
 The scan is the heavy phase. It walks the folder, decodes images, extracts EXIF, scores quality, runs detector/refinement work, generates thumbnails, clusters bursts, and writes artifacts.
 
 The WebUI is light by default. It loads the manifest and thumbnails first. Full-resolution images and RAW previews are loaded only when you open an image.
+
+## Customizing Language Files
+
+English and Simplified Chinese strings are stored in `locales/en.json` and `locales/zh-CN.json`. Keep both key sets synchronized when editing them. Native development builds and the local server can load another directory:
+
+```bash
+BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicator serve --run runs/example
+```
+
+The packaged macOS app and static web build copy the repository catalogs into their resources.
 
 ## Troubleshooting
 

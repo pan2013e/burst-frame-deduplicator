@@ -19,3 +19,12 @@ Run:
 ```
 
 The script unzips the fixture when needed, writes ignored raw run artifacts under `benchmark/runs/`, and writes a sanitized summary to `benchmark/results/latest.md`.
+
+Compare the headless CLI, native Swift FFI, and static browser/WASM paths:
+
+```bash
+npm install --prefix benchmark
+/usr/bin/python3 benchmark/run_frontend_benchmarks.py
+```
+
+This builds all three paths, scans the same original-resolution fixture, and writes `benchmark/results/frontend-latest.md`. The WASM harness uses local headless Chrome and records browser discovery, initialization, decode, scoring, clustering, and render timings.

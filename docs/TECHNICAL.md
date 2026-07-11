@@ -2,14 +2,15 @@
 
 ## Architecture
 
-- CLI and local server: Rust.
-- Native GUI: optional `eframe` feature; it calls the same Rust scan pipeline through a structured progress channel.
+- CLI, scan pipeline, local server, and source-file operations: Rust.
+- Native macOS GUI: SwiftUI. `BurstFrameAppCore` calls the Rust dynamic library through the public C ABI in `include/burst_frame_deduplicator.h`.
 - Review UI: static HTML/CSS/JavaScript embedded in the Rust server.
 - Portable scoring core: `crates/burst-core`, compiled for both native targets and `wasm32-unknown-unknown`.
 - Static browser app: DOM UI plus the `web/wasm` Rust session, built into `web/dist` by `wasm-pack`.
 - Scan outputs: `manifest.json`, `review_state.json`, burst/stack/asset CSVs, thumbnails, optional move scripts.
 - Asset model: same-basename RAW/JPEG files plus sidecars are reviewed as one asset.
 - Grouping model: a temporal burst contains one or more subject-aware near-duplicate stacks. Quality ranking and culling happen inside stacks.
+- Locale resources: `locales/en.json` and `locales/zh-CN.json`; native and browser interfaces load the appropriate namespace at runtime.
 
 ## Feature Flags
 
@@ -18,7 +19,6 @@ default = ["macos-native"]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
-gui = ["dep:eframe", "dep:rfd"]
 ```
 
 Use a portable CPU-only build with:
@@ -27,13 +27,39 @@ Use a portable CPU-only build with:
 cargo build --release --no-default-features
 ```
 
-The default build remains headless. Compile the desktop command explicitly with `--features gui`.
+The Rust package has no windowing dependency. Build the native macOS application separately with `scripts/build_macos_app.sh`; GUI support on other operating systems is planned.
+
+## Native SwiftUI And FFI
+
+The root Rust crate produces both `rlib` and `cdylib` artifacts. Its versioned C boundary accepts UTF-8 JSON requests and returns owned JSON envelopes for:
+
+- default scan options
+- synchronous scans with a progress callback
+- loading a completed run
+- persisting a decision
+- preparing a full-image or cached RAW preview
+- exporting reviewed artifacts
+- executing the confirmed, verified reject move
+
+Every exported function catches Rust panics before crossing the ABI. Callers release returned strings with `bfd_free_string`. The Swift bridge centralizes JSON encoding, decoding, callback lifetime, and error conversion; views do not call C functions directly.
+
+The SwiftUI app uses system folder panels, pickers, steppers, checkboxes, menus, split navigation, confirmation dialogs, and SF Symbols. Scan work and decision writes run off the main actor. The review grid is lazy, thumbnail images use a bounded `NSCache`, and full-image RAW previews are generated once under the run directory.
+
+`scripts/build_macos_app.sh` builds Rust and Swift in release mode, rewrites the dylib install name to `@rpath`, embeds it under `Contents/Frameworks`, copies locale resources, and ad-hoc signs the complete bundle.
+
+`scripts/test_macos_app.sh` builds the dylib and runs the Swift package tests. Standalone Xcode Command Line Tools installs keep `Testing.framework` outside SwiftPM's default search path, so the script adds that path conditionally; full Xcode installations use normal framework discovery.
 
 ## Progress Reporting
 
 `ProgressReporter` emits serializable updates with a stable stage enum, stage item counts, optional current-file detail, stage fraction, and weighted overall fraction. The stages are preparation, discovery, preview analysis, burst/stack grouping, high-resolution refinement, ranking, manifest writing, review export, and completion.
 
-The CLI installs a throttled terminal renderer. The native GUI receives the same events over a channel, so progress accounting remains in the backend rather than being reconstructed by each interface.
+The CLI installs a throttled terminal renderer. The native GUI receives the same serialized updates through the FFI callback, so progress accounting remains in the backend rather than being reconstructed by each interface.
+
+## Locale Loading
+
+Locale files contain separate `macos`, `reviewWeb`, and `staticWeb` namespaces. Rust validates locale identifiers before reading files and the local server exposes only supported catalog names. The native loader searches `BURST_DEDUP_LOCALES_DIR`, app bundle resources, the working directory, and the repository development location. The static build copies the same files into `web/dist/locales`.
+
+Adding a user-facing key requires updating both catalogs. Locale load failures are surfaced rather than silently reading arbitrary paths.
 
 ## Scoring
 
@@ -93,6 +119,8 @@ The static application cannot safely reproduce the native move operation because
 
 `web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions.
 
+The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM initialization, browser decode, Rust scoring, clustering, rendering, total time, and throughput. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
+
 ## Timing Fields
 
 `manifest.json` includes:
@@ -125,3 +153,5 @@ Worker-sum rows are useful for understanding CPU/GPU work, but they are not wall
 The scanner reads source files and writes run artifacts. It does not delete source files.
 
 The web move operation asks for confirmation, copies each rejected source file into a local run-directory folder, verifies copied size, and then removes the original file. Move reports are written under the run directory and ignored by Git.
+
+The native app invokes the same shared Rust move function only after a destructive-role SwiftUI confirmation dialog. Neither review interface exposes permanent deletion.

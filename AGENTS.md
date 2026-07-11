@@ -13,9 +13,9 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Never suggest reject solely because a frame ranks below a fixed keeper count. Automatic reject requires duplicate confidence at or above the configured threshold; uncertain matches must remain review items.
 - Use EXIF original capture time with subseconds/offset when available, then fall back to filesystem timestamps.
 - Keep backend functionality independent from the current web UI. The CLI scan/export path must remain usable without launching a browser.
-- Keep native GUI dependencies optional behind the `gui` Rust feature. The default CLI build must not require a windowing environment.
+- Keep the macOS GUI under `macos/BurstFrameDeduplicatorApp` as native SwiftUI. It must call the shared Rust backend through the public C ABI; the default Rust CLI build must not require any windowing dependency.
 - Keep CPU scoring primitives in `crates/burst-core` portable to `wasm32-unknown-unknown`; native acceleration wrappers belong in the root crate.
-- Keep English and Simplified Chinese locale keys synchronized across the desktop GUI, local review UI, and static WASM app when changing user-facing workflows.
+- Keep English and Simplified Chinese locale keys synchronized in `locales/*.json`. User-facing strings belong in these external catalogs, not Rust, Swift, or JavaScript source, unless they are low-level diagnostics.
 - Gate platform-specific native code with Rust features and `cfg(target_os = "...")`. macOS Metal/Vision code must compile only on supported Apple targets.
 - When adding acceleration or detector backends, provide a CPU or heuristic fallback and record the selected backend plus fallback notes in `manifest.json`.
 - Keep user-facing review UI simple. Show recommendations as preselected keep/reject controls and hide low-level metrics behind expandable details.
@@ -25,7 +25,8 @@ This repository implements a non-destructive burst-frame deduplication app for l
 
 - Run `cargo fmt` after Rust edits.
 - Run `cargo check` for compile validation.
-- Run `cargo check --features gui` after desktop GUI changes and `cargo check -p burst-wasm --target wasm32-unknown-unknown` after portable browser changes.
+- Run `swift build --package-path macos/BurstFrameDeduplicatorApp` and `scripts/test_macos_app.sh` after native GUI or C ABI changes. The test script supplies the standalone Command Line Tools `Testing.framework` path when full Xcode is not selected.
+- Run `cargo check -p burst-wasm --target wasm32-unknown-unknown` after portable browser changes.
 - Run `cargo test` even when there are no dedicated tests yet, because it builds the test profile.
 - Use `git lfs pull` before benchmark work if the fixture zip is only a pointer file.
 - Run a local sample scan after changing scoring, clustering, export, or UI state behavior:
@@ -37,6 +38,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - For performance-sensitive pipeline changes, benchmark a large real corpus when available, and inspect the stage timings in `manifest.json`.
 - For clustering changes, run `benchmark/run_benchmarks.py` and preserve the reviewed must-link, cannot-link, and posture-phase coverage expectations in `benchmark/accuracy_labels.json`.
 - Run `web/wasm/build.sh` and browser-test both locales at desktop and mobile widths after changing the static application.
+- Run `scripts/build_macos_app.sh` and inspect the packaged app with native UI automation after changing SwiftUI layout, navigation, locale loading, or packaging.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.
 
 ## Benchmark Expectations
@@ -45,3 +47,4 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Report throughput as assets/sec where applicable.
 - Report peak RSS where the platform supports it.
 - Compare acceleration and detector selections from `manifest.json`; do not assume a requested hardware backend was actually selected.
+- Run `benchmark/run_frontend_benchmarks.py` for changes that could affect CLI, Swift FFI, or WASM path overhead.
