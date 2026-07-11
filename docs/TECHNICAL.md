@@ -147,7 +147,7 @@ The static application performs verified copy/remove/restore only when the sourc
 
 ## Binary CI And Releases
 
-`.github/workflows/binaries.yml` builds a portable Linux x86_64 CLI on Ubuntu 24.04 and an Apple Silicon CLI/app/DMG on macOS 15. The Linux job disables macOS features, runs the standalone-resource smoke test, and packages notices. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
+`.github/workflows/binaries.yml` builds a portable Linux x86_64 CLI on Ubuntu 24.04 and an Apple Silicon CLI/app/DMG on macOS 26. The macOS 26 SDK is required to compile the availability-gated Liquid Glass and Metal 4 code while the application deployment target remains macOS 14. The Linux job disables macOS features, runs the standalone-resource smoke test, and packages notices. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
 
 Pushes, pull requests, and manual runs upload short-lived Actions artifacts. `v*` tags download those job artifacts into a release job and create or update a GitHub Release. CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
 

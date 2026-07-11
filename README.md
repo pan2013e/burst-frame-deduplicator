@@ -89,8 +89,8 @@ The **Build distributable binaries** GitHub Actions workflow tests and packages:
 | Artifact | Runner | Contents |
 | --- | --- | --- |
 | Linux CLI | Ubuntu 24.04 x86_64 | Standalone executable, notices, archive checksum |
-| macOS CLI | macOS 15 Apple Silicon | Standalone executable, notices, archive checksum |
-| macOS app | macOS 15 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
+| macOS CLI | macOS 26 Apple Silicon | Standalone executable, notices, archive checksum |
+| macOS app | macOS 26 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
 
 Every push to `main`, pull request, and manual run produces temporary workflow artifacts. A pushed `v*` tag publishes the same files and checksums on GitHub Releases. See [installation and Gatekeeper guidance](docs/USAGE.md#installing-prebuilt-binaries).
 

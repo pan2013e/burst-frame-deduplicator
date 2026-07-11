@@ -81,7 +81,7 @@ jobs:
 
   macos:
     name: macOS CLI and app (Apple Silicon)
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
