@@ -21,10 +21,14 @@ pub struct DecodedPreview {
 pub fn decoder_report() -> DecoderReport {
     let magick = which::which("magick").ok();
     let sips = which::which("sips").ok();
-    let raw_strategy = if magick.is_some() {
+    let raw_strategy = if cfg!(target_os = "macos") && sips.is_some() {
+        if magick.is_some() {
+            "macOS Camera RAW via sips; ImageMagick compatibility fallback".to_string()
+        } else {
+            "macOS Camera RAW via sips; no ImageMagick fallback".to_string()
+        }
+    } else if magick.is_some() {
         "ImageMagick RAW/HEIC fallback".to_string()
-    } else if sips.is_some() {
-        "macOS sips RAW/HEIC fallback".to_string()
     } else {
         "native compressed formats only; RAW requires ImageMagick or sips".to_string()
     };
