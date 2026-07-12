@@ -38,7 +38,7 @@ open "target/macos/Burst Frame Deduplicator.app"
 
 The Get Started view opens a source folder directly, resumes recent runs, and keeps result storage in Settings. Scans show weighted stage progress and become a native review workspace in the same window. `Command-N` launches another app process so multiple scans can run concurrently; collision-resistant run names keep their outputs separate.
 
-RAW preview opens from the camera's embedded ImageIO preview first, then prepares a reusable `4096px` JPEG through the system `sips` tool after a short dwell. The decoder writes directly into the run cache without a second Rust decode/re-encode pass. ImageMagick is not bundled and is only an optional compatibility fallback for formats the installed macOS release cannot decode.
+RAW preview opens from the camera's embedded ImageIO preview first. The viewer requests a reusable `4096px` JPEG through the system `sips` tool only when the embedded image cannot cover the current Retina viewport or zoom level, and skips rendering when the possible resolution gain is marginal. The decoder writes directly into the run cache without a second Rust decode/re-encode pass. ImageMagick is not bundled and is only an optional compatibility fallback for formats the installed macOS release cannot decode.
 
 Build a drag-to-Applications disk image for local testing:
 
