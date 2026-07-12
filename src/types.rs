@@ -62,6 +62,7 @@ pub enum AccelerationPreference {
     Auto,
     Cpu,
     Avx2,
+    Neon,
     Metal,
     Cuda,
     OpenCl,

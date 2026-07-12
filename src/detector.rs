@@ -22,7 +22,7 @@ enum DetectorBackend {
     Heuristic,
     Vision,
     #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
-    Ml(crate::ml_detector::MlDetector),
+    Ml(Box<crate::ml_detector::MlDetector>),
 }
 
 impl DetectorEngine {
@@ -40,7 +40,7 @@ impl DetectorEngine {
                             report.selected = detector.backend_name().to_string();
                             report.model = Some(detector.model_report());
                             report.notes.extend(notes);
-                            DetectorBackend::Ml(detector)
+                            DetectorBackend::Ml(Box::new(detector))
                         }
                         Err(note) => {
                             report.notes.push(note);
@@ -96,14 +96,14 @@ impl DetectorEngine {
                 ),
                 Err(first_failure) => (
                     Some(heuristic_output(metrics)),
-                    first_failure
-                        .then(|| {
-                            vec![
-                                "Local ML inference failed; disabled it for this scan and used heuristic detector fallback."
-                                    .to_string(),
-                            ]
-                        })
-                        .unwrap_or_default(),
+                    if first_failure {
+                        vec![
+                            "Local ML inference failed; disabled it for this scan and used heuristic detector fallback."
+                                .to_string(),
+                        ]
+                    } else {
+                        Vec::new()
+                    },
                 ),
             },
         }

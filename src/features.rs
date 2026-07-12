@@ -29,10 +29,21 @@ fn focus_metrics(
     if acceleration == AccelerationPreference::Avx2 {
         let mut result = best_cpu_focus_metrics(gray, width, height);
         if result.backend != "cpu_avx2" {
-            result.notes.push(
-                "AVX2 was requested but is unavailable on this CPU or in this build; used the portable scalar scorer."
-                    .to_string(),
-            );
+            result.notes.push(format!(
+                "AVX2 was requested but is unavailable on this CPU or in this build; used {}.",
+                result.backend
+            ));
+        }
+        return result;
+    }
+
+    if acceleration == AccelerationPreference::Neon {
+        let mut result = best_cpu_focus_metrics(gray, width, height);
+        if result.backend != "cpu_neon" {
+            result.notes.push(format!(
+                "NEON was requested but is unavailable on this CPU or in this build; used {}.",
+                result.backend
+            ));
         }
         return result;
     }
@@ -115,12 +126,18 @@ fn focus_metrics(
 }
 
 fn best_cpu_focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
-    #[cfg(all(target_os = "linux", feature = "avx2-accel"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(feature = "avx2-accel", feature = "neon-accel")
+    ))]
     {
         crate::cpu_accel::focus_metrics(gray, width, height)
     }
 
-    #[cfg(not(all(target_os = "linux", feature = "avx2-accel")))]
+    #[cfg(not(all(
+        target_os = "linux",
+        any(feature = "avx2-accel", feature = "neon-accel")
+    )))]
     {
         scalar_cpu_focus_metrics(gray, width, height)
     }
@@ -160,5 +177,13 @@ mod tests {
         let score = score_image(&test_image(), AccelerationPreference::Avx2);
         assert_eq!(score.backend, crate::cpu_accel::backend_name());
         assert_eq!(score.backend == "cpu_avx2", score.notes.is_empty());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", feature = "neon-accel"))]
+    #[test]
+    fn neon_preference_reports_the_runtime_dispatched_backend() {
+        let score = score_image(&test_image(), AccelerationPreference::Neon);
+        assert_eq!(score.backend, crate::cpu_accel::backend_name());
+        assert_eq!(score.backend == "cpu_neon", score.notes.is_empty());
     }
 }

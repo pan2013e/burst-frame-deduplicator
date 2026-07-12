@@ -12,10 +12,19 @@ resolver = "3"
 
 [features]
 default = ["macos-native", "linux-native"]
-linux-native = ["avx2-accel", "onnx-detector"]
+linux-native = ["avx2-accel", "neon-accel", "onnx-detector"]
 avx2-accel = []
+neon-accel = []
 cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
 onnx-detector = ["dep:ort"]
+libraw-preview = ["dep:libloading"]
+linux-gui = [
+    "linux-native",
+    "libraw-preview",
+    "dep:adw",
+    "dep:gdk-pixbuf",
+    "dep:gtk",
+]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
@@ -27,7 +36,7 @@ burst-core = { path = "crates/burst-core" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 csv = "1.4"
-image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "tiff", "webp"] }
 jpeg-decoder = { version = "0.3.2", default-features = false }
 kamadak-exif = "0.6"
 mime_guess = "2.0"
@@ -45,10 +54,18 @@ walkdir = "2.5"
 which = "8.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+adw = { package = "libadwaita", version = "0.9.2", features = ["v1_5"], optional = true }
 cudarc = { version = "0.19.8", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12000"], optional = true }
+gdk-pixbuf = { version = "0.22.0", optional = true }
+gtk = { package = "gtk4", version = "0.11.4", features = ["v4_14"], optional = true }
 libloading = { version = "0.9", optional = true }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-24", "cuda"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { version = "0.32", optional = true }
 objc = { version = "0.2", optional = true }
+
+[[bin]]
+name = "burst-frame-deduplicator-gtk"
+path = "src/bin/linux_gui.rs"
+required-features = ["linux-gui"]

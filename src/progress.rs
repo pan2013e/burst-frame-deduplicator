@@ -19,6 +19,20 @@ pub enum ProgressStage {
 }
 
 impl ProgressStage {
+    pub fn locale_key(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Discovering => "discovering",
+            Self::Analyzing => "analyzing",
+            Self::Grouping => "grouping",
+            Self::Refining => "refining",
+            Self::Ranking => "ranking",
+            Self::Writing => "writing",
+            Self::Exporting => "exporting",
+            Self::Complete => "complete",
+        }
+    }
+
     pub fn english_label(self) -> &'static str {
         match self {
             Self::Preparing => "Preparing scan",

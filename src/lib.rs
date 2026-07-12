@@ -1,9 +1,13 @@
 #![allow(unexpected_cfgs)]
 
+pub mod app_backend;
 pub mod artifacts;
 pub mod assets;
 pub mod counterpart;
-#[cfg(all(target_os = "linux", feature = "avx2-accel"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "avx2-accel", feature = "neon-accel")
+))]
 pub mod cpu_accel;
 #[cfg(all(target_os = "linux", feature = "cuda-accel"))]
 pub mod cuda_accel;
@@ -11,6 +15,10 @@ pub mod decode;
 pub mod detector;
 pub mod features;
 pub mod ffi;
+#[cfg(all(target_os = "linux", feature = "libraw-preview"))]
+mod libraw_preview;
+#[cfg(all(target_os = "linux", feature = "linux-gui"))]
+pub mod linux_gui;
 pub mod locales;
 pub mod metadata;
 #[cfg(all(target_os = "macos", feature = "metal-accel"))]

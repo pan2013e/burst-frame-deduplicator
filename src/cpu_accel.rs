@@ -8,7 +8,10 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
         return invalid_buffer_result("grayscale buffer does not match its dimensions");
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "avx2-accel",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
     let metrics = if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection above guarantees AVX2 support, and the
         // buffer length and dimensions were validated before entering the kernel.
@@ -17,7 +20,22 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
         cpu_focus_metrics(gray, width, height)
     };
 
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
+    let metrics = if std::arch::is_aarch64_feature_detected!("neon") {
+        // SAFETY: Runtime feature detection above guarantees NEON support, and the
+        // buffer length and dimensions were validated before entering the kernel.
+        unsafe { aarch64::focus_metrics_neon(gray, width, height) }
+    } else {
+        cpu_focus_metrics(gray, width, height)
+    };
+
+    #[cfg(not(any(
+        all(
+            feature = "avx2-accel",
+            any(target_arch = "x86", target_arch = "x86_64")
+        ),
+        all(feature = "neon-accel", target_arch = "aarch64")
+    )))]
     let metrics = cpu_focus_metrics(gray, width, height);
 
     FocusResult {
@@ -28,9 +46,17 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
 }
 
 pub fn backend_name() -> &'static str {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(
+        feature = "avx2-accel",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
     if std::arch::is_x86_feature_detected!("avx2") {
         return "cpu_avx2";
+    }
+
+    #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
+    if std::arch::is_aarch64_feature_detected!("neon") {
+        return "cpu_neon";
     }
 
     "cpu_scalar"
@@ -47,7 +73,10 @@ fn invalid_buffer_result(note: &str) -> FocusResult {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "avx2-accel",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
 mod x86 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
@@ -250,6 +279,172 @@ mod x86 {
     }
 }
 
+#[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
+mod aarch64 {
+    use std::arch::aarch64::*;
+
+    use burst_core::FocusMetrics;
+
+    #[target_feature(enable = "neon")]
+    pub(super) unsafe fn focus_metrics_neon(
+        gray: &[u8],
+        width: usize,
+        height: usize,
+    ) -> FocusMetrics {
+        // SAFETY: The caller verifies NEON support and validates the buffer length.
+        // Vector loads are bounded by their loop conditions and scalar tails handle
+        // every remaining pixel.
+        unsafe {
+            let (lap_sum, lap_sq_sum, lap_count) = laplacian_sums(gray, width, height);
+            let (dx_sum, dx_count) = horizontal_gradient_sum(gray, width, height);
+            let (dy_sum, dy_count) = vertical_gradient_sum(gray, width, height);
+
+            let sharpness = if lap_count == 0 {
+                0.0
+            } else {
+                let count = lap_count as f64;
+                let mean = lap_sum as f64 / count;
+                lap_sq_sum as f64 / count - mean * mean
+            };
+            let tenengrad = dx_sum as f64 / (dx_count as f64).max(1.0)
+                + dy_sum as f64 / (dy_count as f64).max(1.0);
+            FocusMetrics {
+                sharpness,
+                tenengrad,
+            }
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn laplacian_sums(gray: &[u8], width: usize, height: usize) -> (i64, u64, usize) {
+        if width < 3 || height < 3 {
+            return (0, 0, 0);
+        }
+
+        unsafe {
+            let mut sum = 0i64;
+            let mut square_sum = 0u64;
+            for y in 1..(height - 1) {
+                let row = y * width;
+                let mut x = 1usize;
+                while x + 16 < width {
+                    let index = row + x;
+                    let (center_low, center_high) = load_u8x16_as_i16(gray.as_ptr().add(index));
+                    let (left_low, left_high) = load_u8x16_as_i16(gray.as_ptr().add(index - 1));
+                    let (right_low, right_high) = load_u8x16_as_i16(gray.as_ptr().add(index + 1));
+                    let (up_low, up_high) = load_u8x16_as_i16(gray.as_ptr().add(index - width));
+                    let (down_low, down_high) = load_u8x16_as_i16(gray.as_ptr().add(index + width));
+                    let lap_low = laplacian(center_low, left_low, right_low, up_low, down_low);
+                    let lap_high =
+                        laplacian(center_high, left_high, right_high, up_high, down_high);
+                    sum += i64::from(vaddlvq_s16(lap_low)) + i64::from(vaddlvq_s16(lap_high));
+                    square_sum += sum_squares_i16(lap_low) + sum_squares_i16(lap_high);
+                    x += 16;
+                }
+                for x in x..(width - 1) {
+                    let index = row + x;
+                    let value = -4 * i64::from(gray[index])
+                        + i64::from(gray[index - 1])
+                        + i64::from(gray[index + 1])
+                        + i64::from(gray[index - width])
+                        + i64::from(gray[index + width]);
+                    sum += value;
+                    square_sum += (value * value) as u64;
+                }
+            }
+            (sum, square_sum, (width - 2) * (height - 2))
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn horizontal_gradient_sum(gray: &[u8], width: usize, height: usize) -> (u64, usize) {
+        if width < 2 {
+            return (0, 0);
+        }
+
+        unsafe {
+            let mut sum = 0u64;
+            for y in 0..height {
+                let row = y * width;
+                let mut x = 0usize;
+                while x + 16 < width {
+                    let (current_low, current_high) = load_u8x16_as_i16(gray.as_ptr().add(row + x));
+                    let (right_low, right_high) = load_u8x16_as_i16(gray.as_ptr().add(row + x + 1));
+                    sum += sum_squares_i16(vsubq_s16(right_low, current_low));
+                    sum += sum_squares_i16(vsubq_s16(right_high, current_high));
+                    x += 16;
+                }
+                for x in x..(width - 1) {
+                    let difference = i64::from(gray[row + x + 1]) - i64::from(gray[row + x]);
+                    sum += (difference * difference) as u64;
+                }
+            }
+            (sum, height * (width - 1))
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn vertical_gradient_sum(gray: &[u8], width: usize, height: usize) -> (u64, usize) {
+        if height < 2 {
+            return (0, 0);
+        }
+
+        unsafe {
+            let mut sum = 0u64;
+            for y in 0..(height - 1) {
+                let row = y * width;
+                let next_row = row + width;
+                let mut x = 0usize;
+                while x + 16 <= width {
+                    let (current_low, current_high) = load_u8x16_as_i16(gray.as_ptr().add(row + x));
+                    let (down_low, down_high) = load_u8x16_as_i16(gray.as_ptr().add(next_row + x));
+                    sum += sum_squares_i16(vsubq_s16(down_low, current_low));
+                    sum += sum_squares_i16(vsubq_s16(down_high, current_high));
+                    x += 16;
+                }
+                for x in x..width {
+                    let difference = i64::from(gray[next_row + x]) - i64::from(gray[row + x]);
+                    sum += (difference * difference) as u64;
+                }
+            }
+            (sum, (height - 1) * width)
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn load_u8x16_as_i16(pointer: *const u8) -> (int16x8_t, int16x8_t) {
+        unsafe {
+            let bytes = vld1q_u8(pointer);
+            (
+                vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(bytes))),
+                vreinterpretq_s16_u16(vmovl_high_u8(bytes)),
+            )
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn laplacian(
+        center: int16x8_t,
+        left: int16x8_t,
+        right: int16x8_t,
+        up: int16x8_t,
+        down: int16x8_t,
+    ) -> int16x8_t {
+        let horizontal = vaddq_s16(left, right);
+        let vertical = vaddq_s16(up, down);
+        let twice_center = vaddq_s16(center, center);
+        let four_center = vaddq_s16(twice_center, twice_center);
+        vsubq_s16(vaddq_s16(horizontal, vertical), four_center)
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn sum_squares_i16(values: int16x8_t) -> u64 {
+        let low = vmull_s16(vget_low_s16(values), vget_low_s16(values));
+        let high = vmull_high_s16(values, values);
+        vaddlvq_u32(vreinterpretq_u32_s32(low)) + vaddlvq_u32(vreinterpretq_u32_s32(high))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use burst_core::cpu_focus_metrics;
@@ -360,13 +555,28 @@ mod tests {
 
     #[test]
     fn reports_the_runtime_selected_backend() {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(
+            feature = "avx2-accel",
+            any(target_arch = "x86", target_arch = "x86_64")
+        ))]
         let expected = if std::arch::is_x86_feature_detected!("avx2") {
             "cpu_avx2"
         } else {
             "cpu_scalar"
         };
-        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
+        let expected = if std::arch::is_aarch64_feature_detected!("neon") {
+            "cpu_neon"
+        } else {
+            "cpu_scalar"
+        };
+        #[cfg(not(any(
+            all(
+                feature = "avx2-accel",
+                any(target_arch = "x86", target_arch = "x86_64")
+            ),
+            all(feature = "neon-accel", target_arch = "aarch64")
+        )))]
         let expected = "cpu_scalar";
 
         assert_eq!(backend_name(), expected);

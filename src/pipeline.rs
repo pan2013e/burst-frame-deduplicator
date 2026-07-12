@@ -1164,15 +1164,18 @@ fn acceleration_report(
             );
         }
     }
-    #[cfg(all(
-        target_os = "linux",
-        feature = "avx2-accel",
-        not(any(target_arch = "x86", target_arch = "x86_64"))
-    ))]
-    notes.push(
-        "The avx2-accel feature is enabled, but this Linux architecture has no AVX2 implementation; scalar scoring will be used."
-            .to_string(),
-    );
+    #[cfg(all(target_os = "linux", feature = "neon-accel", target_arch = "aarch64"))]
+    {
+        capabilities.push("neon_focus_scoring_compiled".to_string());
+        if auto_cpu_backend() == "cpu_neon" {
+            capabilities.push("neon_focus_scoring".to_string());
+        } else {
+            notes.push(
+                "The NEON scorer is compiled in, but this CPU does not advertise NEON; scalar scoring will be used."
+                    .to_string(),
+            );
+        }
+    }
     #[cfg(all(target_os = "macos", feature = "metal-accel"))]
     let metal_available = crate::metal_accel::is_available();
     #[cfg(not(all(target_os = "macos", feature = "metal-accel")))]
@@ -1237,10 +1240,16 @@ fn acceleration_report(
         );
     }
     if requested == AccelerationPreference::Avx2 && auto_cpu_backend() != "cpu_avx2" {
-        notes.push(
-            "AVX2 was requested but is unavailable at runtime; portable scalar scoring was used."
-                .to_string(),
-        );
+        notes.push(format!(
+            "AVX2 was requested but is unavailable at runtime; {} was used.",
+            auto_cpu_backend()
+        ));
+    }
+    if requested == AccelerationPreference::Neon && auto_cpu_backend() != "cpu_neon" {
+        notes.push(format!(
+            "NEON was requested but is unavailable at runtime; {} was used.",
+            auto_cpu_backend()
+        ));
     }
 
     let mut usage = BTreeMap::new();
@@ -1288,12 +1297,15 @@ fn acceleration_report(
         }
     } else if usage.contains_key("cpu_avx2") {
         "cpu_avx2_rayon"
+    } else if usage.contains_key("cpu_neon") {
+        "cpu_neon_rayon"
     } else if usage.contains_key("cpu_scalar") || usage.contains_key("cpu_small_image") {
         "cpu_scalar_rayon"
     } else {
         match requested {
             AccelerationPreference::Cpu => "cpu_scalar_rayon",
             _ if auto_cpu_backend() == "cpu_avx2" => "cpu_avx2_rayon",
+            _ if auto_cpu_backend() == "cpu_neon" => "cpu_neon_rayon",
             _ => "cpu_scalar_rayon",
         }
     };
@@ -1306,12 +1318,18 @@ fn acceleration_report(
 }
 
 fn auto_cpu_backend() -> &'static str {
-    #[cfg(all(target_os = "linux", feature = "avx2-accel"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(feature = "avx2-accel", feature = "neon-accel")
+    ))]
     {
         crate::cpu_accel::backend_name()
     }
 
-    #[cfg(not(all(target_os = "linux", feature = "avx2-accel")))]
+    #[cfg(not(all(
+        target_os = "linux",
+        any(feature = "avx2-accel", feature = "neon-accel")
+    )))]
     {
         "cpu_scalar"
     }

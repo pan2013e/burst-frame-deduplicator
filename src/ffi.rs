@@ -1,23 +1,17 @@
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::artifacts::{
-    ensure_review_state, export_reviewed_artifacts, read_manifest, upsert_decision,
-};
+use crate::app_backend::{export_run, load_run, prepare_preview, set_decision};
 use crate::counterpart::{apply_counterparts, plan_counterparts, restore_counterparts};
-use crate::decode::write_preview_jpeg;
-use crate::operations::{
-    MoveStatus, move_rejects, read_move_status, resolve_available_source, restore_moved,
-};
+use crate::operations::{move_rejects, restore_moved};
 use crate::pipeline::run_scan;
 use crate::progress::{ProgressReporter, ProgressUpdate};
 use crate::run_storage::{RelocationProgress, relocate_run};
-use crate::types::{FileKind, ReviewState, RunManifest, ScanOptions, UserDecision};
+use crate::types::{ScanOptions, UserDecision};
 
 pub type BfdProgressCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
 
@@ -39,14 +33,6 @@ struct RunRequest {
     run_dir: PathBuf,
 }
 
-#[derive(Serialize)]
-struct ReviewPayload {
-    run_dir: PathBuf,
-    manifest: RunManifest,
-    review: ReviewState,
-    move_status: MoveStatus,
-}
-
 #[derive(Deserialize)]
 struct DecisionRequest {
     run_dir: PathBuf,
@@ -62,12 +48,6 @@ struct PreviewRequest {
     max_long_edge: u32,
     #[serde(default = "default_generate_preview")]
     generate_if_missing: bool,
-}
-
-#[derive(Serialize)]
-struct PreviewResponse {
-    path: PathBuf,
-    generated: bool,
 }
 
 #[derive(Deserialize)]
@@ -164,7 +144,7 @@ pub unsafe extern "C" fn bfd_scan(
 pub unsafe extern "C" fn bfd_load_run(request_json: *const c_char) -> *mut c_char {
     ffi_call(|| {
         let request: RunRequest = parse_request(request_json)?;
-        load_review_payload(request.run_dir)
+        load_run(request.run_dir)
     })
 }
 
@@ -176,8 +156,7 @@ pub unsafe extern "C" fn bfd_load_run(request_json: *const c_char) -> *mut c_cha
 pub unsafe extern "C" fn bfd_set_decision(request_json: *const c_char) -> *mut c_char {
     ffi_call(|| {
         let request: DecisionRequest = parse_request(request_json)?;
-        upsert_decision(&request.run_dir, request.asset_id, request.decision, None)?;
-        load_review_payload(request.run_dir)
+        set_decision(&request.run_dir, request.asset_id, request.decision)
     })
 }
 
@@ -189,7 +168,12 @@ pub unsafe extern "C" fn bfd_set_decision(request_json: *const c_char) -> *mut c
 pub unsafe extern "C" fn bfd_prepare_preview(request_json: *const c_char) -> *mut c_char {
     ffi_call(|| {
         let request: PreviewRequest = parse_request(request_json)?;
-        prepare_preview(&request)
+        prepare_preview(
+            &request.run_dir,
+            &request.asset_id,
+            request.max_long_edge,
+            request.generate_if_missing,
+        )
     })
 }
 
@@ -201,8 +185,7 @@ pub unsafe extern "C" fn bfd_prepare_preview(request_json: *const c_char) -> *mu
 pub unsafe extern "C" fn bfd_export_run(request_json: *const c_char) -> *mut c_char {
     ffi_call(|| {
         let request: RunRequest = parse_request(request_json)?;
-        export_reviewed_artifacts(&request.run_dir)?;
-        load_review_payload(request.run_dir)
+        export_run(&request.run_dir)
     })
 }
 
@@ -311,58 +294,6 @@ pub unsafe extern "C" fn bfd_free_string(value: *mut c_char) {
     if !value.is_null() {
         drop(unsafe { CString::from_raw(value) });
     }
-}
-
-fn load_review_payload(run_dir: PathBuf) -> anyhow::Result<ReviewPayload> {
-    let manifest = read_manifest(&run_dir)?;
-    let review = ensure_review_state(&run_dir, &manifest)?;
-    let move_status = read_move_status(&run_dir)?;
-    Ok(ReviewPayload {
-        run_dir,
-        manifest,
-        review,
-        move_status,
-    })
-}
-
-fn prepare_preview(request: &PreviewRequest) -> anyhow::Result<PreviewResponse> {
-    let manifest = read_manifest(&request.run_dir)?;
-    let asset = manifest
-        .assets
-        .iter()
-        .find(|asset| asset.id == request.asset_id)
-        .ok_or_else(|| anyhow!("asset not found: {}", request.asset_id))?;
-    let source_path = resolve_available_source(&request.run_dir, &asset.representative.path)?;
-    if asset.representative.kind != FileKind::Raw {
-        return Ok(PreviewResponse {
-            path: source_path,
-            generated: false,
-        });
-    }
-
-    let max_long_edge = request.max_long_edge.clamp(1024, 8192);
-    let preview_dir = request.run_dir.join("native_previews");
-    fs::create_dir_all(&preview_dir)?;
-    let output = preview_dir.join(format!("{}_{}.jpg", asset.id, max_long_edge));
-    if output.is_file() {
-        return Ok(PreviewResponse {
-            path: output,
-            generated: true,
-        });
-    }
-
-    if !request.generate_if_missing {
-        return Ok(PreviewResponse {
-            path: source_path,
-            generated: false,
-        });
-    }
-
-    write_preview_jpeg(&source_path, max_long_edge, &output)?;
-    Ok(PreviewResponse {
-        path: output,
-        generated: true,
-    })
 }
 
 fn progress_reporter(
