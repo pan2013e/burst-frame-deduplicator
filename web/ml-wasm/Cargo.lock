@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "burst-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "image",
  "serde",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "burst-ml-wasm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "burn",
  "burn-store",

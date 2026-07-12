@@ -157,7 +157,7 @@ Pushes to `main` and pull requests that include non-documentation changes, plus 
 The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
 
 ```bash
-VERSION=0.5.0 # choose the next unused Semantic Versioning release
+VERSION=0.6.0 # choose the next unused Semantic Versioning release
 git tag -a "v${VERSION}" -m "v${VERSION}"
 git push origin main "v${VERSION}"
 ```
