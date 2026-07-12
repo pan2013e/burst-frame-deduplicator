@@ -2,8 +2,66 @@ import AppKit
 import BurstFrameAppCore
 import SwiftUI
 
+private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    static weak var current: AppLifecycleDelegate?
+
+    var prepareForTermination: ((@escaping () -> Void) -> Void)?
+    private var quitEventMonitor: Any?
+    private var terminationPending = false
+
+    override init() {
+        super.init()
+        Self.current = self
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        quitEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let isQuitKey = event.charactersIgnoringModifiers?.lowercased() == "q"
+            let hasExtraShortcutModifier = !modifiers
+                .intersection([.control, .option, .shift])
+                .isEmpty
+            guard modifiers.contains(.command), !hasExtraShortcutModifier, isQuitKey
+            else { return event }
+            self?.requestTermination(NSApplication.shared)
+            return nil
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let quitEventMonitor {
+            NSEvent.removeMonitor(quitEventMonitor)
+        }
+    }
+
+    func requestTermination(_ application: NSApplication = .shared) {
+        guard !terminationPending else { return }
+        terminationPending = true
+        let finish = { [weak self, weak application] in
+            guard let self, let application else { return }
+            for sheet in application.windows where sheet.sheetParent != nil {
+                sheet.sheetParent?.endSheet(sheet)
+            }
+            DispatchQueue.main.async {
+                application.terminate(nil)
+                self.terminationPending = false
+            }
+        }
+        if let prepareForTermination {
+            prepareForTermination(finish)
+        } else {
+            finish()
+        }
+    }
+}
+
 @main
 struct BurstFrameDeduplicatorApp: App {
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
     @StateObject private var locale = LocaleCatalog()
     @StateObject private var model = AppModel()
 
@@ -12,6 +70,9 @@ struct BurstFrameDeduplicatorApp: App {
             RootView(model: model)
                 .environmentObject(locale)
                 .frame(minWidth: 780, minHeight: 580)
+                .onAppear {
+                    appDelegate.prepareForTermination = model.prepareForTermination
+                }
         }
         .defaultSize(width: 1120, height: 760)
         .windowStyle(.titleBar)
@@ -55,6 +116,20 @@ private struct ApplicationCommands: Commands {
             Button(locale.text("tutorialMenu")) {
                 model.showTutorial()
             }
+        }
+        CommandGroup(replacing: .appTermination) {
+            Button(locale.text("quitApp")) {
+                terminateApplication()
+            }
+            .keyboardShortcut("q", modifiers: .command)
+        }
+    }
+
+    private func terminateApplication() {
+        if let delegate = AppLifecycleDelegate.current {
+            delegate.requestTermination()
+        } else {
+            NSApplication.shared.terminate(nil)
         }
     }
 

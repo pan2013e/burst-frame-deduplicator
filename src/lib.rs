@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod assets;
+pub mod counterpart;
 #[cfg(all(target_os = "linux", feature = "avx2-accel"))]
 pub mod cpu_accel;
 #[cfg(all(target_os = "linux", feature = "cuda-accel"))]

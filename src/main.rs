@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use burst_frame_deduplicator::artifacts;
+use burst_frame_deduplicator::counterpart::{
+    apply_counterparts, plan_counterparts, restore_counterparts,
+};
 use burst_frame_deduplicator::pipeline::run_scan;
 use burst_frame_deduplicator::progress::terminal_progress_reporter;
 use burst_frame_deduplicator::run_storage;
@@ -74,6 +77,42 @@ enum Command {
         /// Parent directory that should contain the relocated run folder.
         #[arg(long)]
         to: PathBuf,
+    },
+    /// Preview basename-only matches on a swapped RAW/JPEG card without changing files.
+    CounterpartPlan {
+        /// Existing run directory containing reviewed decisions.
+        #[arg(long)]
+        run: PathBuf,
+        /// Root folder of the currently mounted counterpart card.
+        #[arg(long)]
+        card: PathBuf,
+    },
+    /// Apply rejected decisions to opposite-format files on a swapped card.
+    CounterpartApply {
+        /// Existing run directory containing reviewed decisions.
+        #[arg(long)]
+        run: PathBuf,
+        /// Root folder of the currently mounted counterpart card.
+        #[arg(long)]
+        card: PathBuf,
+        /// Local parent folder for recoverable moved files. Defaults inside the run.
+        #[arg(long)]
+        destination: Option<PathBuf>,
+        /// Confirm the verified copy-then-remove operation.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Restore moved opposite-format files to a currently mounted card.
+    CounterpartRestore {
+        /// Existing run directory containing move_state.json.
+        #[arg(long)]
+        run: PathBuf,
+        /// Root folder of the currently mounted counterpart card.
+        #[arg(long)]
+        card: PathBuf,
+        /// Confirm the verified restore operation.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -249,6 +288,26 @@ async fn main() -> anyhow::Result<()> {
             for warning in result.warnings {
                 eprintln!("Warning: {warning}");
             }
+        }
+        Command::CounterpartPlan { run, card } => {
+            let result = plan_counterparts(&run, &card)
+                .with_context(|| format!("planning counterpart matches in {}", card.display()))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::CounterpartApply {
+            run,
+            card,
+            destination,
+            confirm,
+        } => {
+            let result = apply_counterparts(&run, &card, destination.as_deref(), confirm)
+                .with_context(|| format!("applying decisions to {}", card.display()))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::CounterpartRestore { run, card, confirm } => {
+            let result = restore_counterparts(&run, &card, confirm)
+                .with_context(|| format!("restoring counterpart files to {}", card.display()))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
     Ok(())

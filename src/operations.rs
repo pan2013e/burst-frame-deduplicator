@@ -17,11 +17,25 @@ const MOVE_STATE_FILE: &str = "move_state.json";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoveRecord {
     pub asset_id: String,
+    #[serde(default)]
+    pub source_set: SourceSet,
+    #[serde(default)]
+    pub source_root: Option<PathBuf>,
+    #[serde(default)]
+    pub source_rel_path: Option<String>,
     pub source: PathBuf,
     pub destination: PathBuf,
     pub size: u64,
     pub moved_at: String,
     pub restored_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSet {
+    #[default]
+    Primary,
+    Counterpart,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +58,10 @@ impl Default for MoveState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MoveStatus {
     pub active_asset_ids: Vec<String>,
+    #[serde(default)]
+    pub active_primary_asset_ids: Vec<String>,
+    #[serde(default)]
+    pub active_counterpart_asset_ids: Vec<String>,
     pub active_files: usize,
     pub active_bytes: u64,
     pub destinations: Vec<PathBuf>,
@@ -82,10 +100,10 @@ pub struct MoveFailure {
 }
 
 #[derive(Debug, Clone)]
-struct TransferPlan {
-    source: PathBuf,
-    target: PathBuf,
-    size: u64,
+pub(crate) struct TransferPlan {
+    pub(crate) source: PathBuf,
+    pub(crate) target: PathBuf,
+    pub(crate) size: u64,
 }
 
 pub fn read_move_state(run_dir: &Path) -> anyhow::Result<MoveState> {
@@ -145,7 +163,8 @@ pub fn resolve_available_source(run_dir: &Path, original: &Path) -> anyhow::Resu
         .iter()
         .rev()
         .find(|record| {
-            record.source == original
+            record.source_set == SourceSet::Primary
+                && record.source == original
                 && record.restored_at.is_none()
                 && record.destination.is_file()
         })
@@ -168,7 +187,7 @@ pub fn move_rejects(
     let destination = move_destination(run_dir, destination_root)?;
     validate_destination(&manifest.root, &destination)?;
     let mut state = read_move_state(run_dir)?;
-    let active_assets = active_asset_ids(&state);
+    let active_assets = active_asset_ids(&state, SourceSet::Primary);
     let mut response = MoveRejectsResponse {
         destination: destination.clone(),
         moved_files: 0,
@@ -239,13 +258,22 @@ pub fn move_rejects(
 
         let moved_at = Utc::now().to_rfc3339();
         let old_len = state.records.len();
-        state.records.extend(plans.iter().map(|plan| MoveRecord {
-            asset_id: asset.id.clone(),
-            source: plan.source.clone(),
-            destination: plan.target.clone(),
-            size: plan.size,
-            moved_at: moved_at.clone(),
-            restored_at: None,
+        state.records.extend(plans.iter().map(|plan| {
+            MoveRecord {
+                asset_id: asset.id.clone(),
+                source_set: SourceSet::Primary,
+                source_root: Some(manifest.root.clone()),
+                source_rel_path: plan
+                    .source
+                    .strip_prefix(&manifest.root)
+                    .ok()
+                    .map(|path| path.to_string_lossy().replace('\\', "/")),
+                source: plan.source.clone(),
+                destination: plan.target.clone(),
+                size: plan.size,
+                moved_at: moved_at.clone(),
+                restored_at: None,
+            }
         }));
         state.updated_at = moved_at;
         if let Err(error) = write_move_state(run_dir, &state) {
@@ -307,6 +335,7 @@ pub fn restore_moved(
     let mut by_asset: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, record) in state.records.iter().enumerate() {
         if record.restored_at.is_none()
+            && record.source_set == SourceSet::Primary
             && asset_ids.is_none_or(|selected| selected.contains(&record.asset_id))
         {
             by_asset
@@ -423,31 +452,41 @@ pub fn final_action_for_asset(asset: &AssetRecord, review: &ReviewState) -> User
     }
 }
 
-fn active_asset_ids(state: &MoveState) -> HashSet<String> {
+pub(crate) fn active_asset_ids(state: &MoveState, source_set: SourceSet) -> HashSet<String> {
     state
         .records
         .iter()
-        .filter(|record| record.restored_at.is_none())
+        .filter(|record| record.restored_at.is_none() && record.source_set == source_set)
         .map(|record| record.asset_id.clone())
         .collect()
 }
 
-fn move_status(state: &MoveState) -> MoveStatus {
+pub(crate) fn move_status(state: &MoveState) -> MoveStatus {
     let active: Vec<_> = state
         .records
         .iter()
         .filter(|record| record.restored_at.is_none())
         .collect();
-    let asset_ids: BTreeSet<_> = active
+    let primary_asset_ids: BTreeSet<_> = active
         .iter()
+        .filter(|record| record.source_set == SourceSet::Primary)
+        .map(|record| record.asset_id.clone())
+        .collect();
+    let counterpart_asset_ids: BTreeSet<_> = active
+        .iter()
+        .filter(|record| record.source_set == SourceSet::Counterpart)
         .map(|record| record.asset_id.clone())
         .collect();
     let destinations: BTreeSet<_> = active
         .iter()
         .filter_map(|record| record.destination.parent().map(Path::to_path_buf))
         .collect();
+    let primary_asset_ids: Vec<_> = primary_asset_ids.into_iter().collect();
     MoveStatus {
-        active_asset_ids: asset_ids.into_iter().collect(),
+        // Preserve the original API field's primary-card meaning for older web clients.
+        active_asset_ids: primary_asset_ids.clone(),
+        active_primary_asset_ids: primary_asset_ids,
+        active_counterpart_asset_ids: counterpart_asset_ids.into_iter().collect(),
         active_files: active.len(),
         active_bytes: active.iter().map(|record| record.size).sum(),
         destinations: destinations.into_iter().collect(),
@@ -467,7 +506,7 @@ fn move_destination(run_dir: &Path, destination_root: Option<&Path>) -> anyhow::
     unique_directory(&base.join(name))
 }
 
-fn unique_directory(path: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) fn unique_directory(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
         return Ok(path.to_path_buf());
     }
@@ -487,7 +526,7 @@ fn unique_directory(path: &Path) -> anyhow::Result<PathBuf> {
     unreachable!()
 }
 
-fn validate_destination(source_root: &Path, destination: &Path) -> anyhow::Result<()> {
+pub(crate) fn validate_destination(source_root: &Path, destination: &Path) -> anyhow::Result<()> {
     let source_root = lexical_absolute(source_root)?;
     let destination = lexical_absolute(destination)?;
     if destination.starts_with(&source_root) {
@@ -536,7 +575,7 @@ fn lexical_absolute(path: &Path) -> io::Result<PathBuf> {
     Ok(normalized)
 }
 
-fn unique_target(path: &Path, reserved: &mut HashSet<PathBuf>) -> PathBuf {
+pub(crate) fn unique_target(path: &Path, reserved: &mut HashSet<PathBuf>) -> PathBuf {
     if !path.exists() && reserved.insert(path.to_path_buf()) {
         return path.to_path_buf();
     }
@@ -560,7 +599,7 @@ fn unique_target(path: &Path, reserved: &mut HashSet<PathBuf>) -> PathBuf {
     unreachable!()
 }
 
-fn move_target(destination: &Path, relative_path: &str, source: &Path) -> PathBuf {
+pub(crate) fn move_target(destination: &Path, relative_path: &str, source: &Path) -> PathBuf {
     let mut safe_relative = PathBuf::new();
     for component in Path::new(relative_path).components() {
         if let Component::Normal(value) = component {
@@ -577,7 +616,10 @@ fn move_target(destination: &Path, relative_path: &str, source: &Path) -> PathBu
     destination.join(safe_relative)
 }
 
-fn transfer_verified(plans: &[TransferPlan], create_target_parents: bool) -> anyhow::Result<()> {
+pub(crate) fn transfer_verified(
+    plans: &[TransferPlan],
+    create_target_parents: bool,
+) -> anyhow::Result<()> {
     let mut copied = Vec::new();
     for plan in plans {
         if !plan.source.is_file() {
@@ -673,7 +715,7 @@ fn rollback_partial_transfer(
     Ok(())
 }
 
-fn rollback_completed_transfer(plans: &[TransferPlan]) -> anyhow::Result<()> {
+pub(crate) fn rollback_completed_transfer(plans: &[TransferPlan]) -> anyhow::Result<()> {
     let reverse: Vec<_> = plans
         .iter()
         .map(|plan| TransferPlan {
@@ -691,7 +733,7 @@ fn cleanup_files(paths: &[PathBuf]) {
     }
 }
 
-fn write_move_state(run_dir: &Path, state: &MoveState) -> anyhow::Result<()> {
+pub(crate) fn write_move_state(run_dir: &Path, state: &MoveState) -> anyhow::Result<()> {
     fs::create_dir_all(run_dir)?;
     let path = run_dir.join(MOVE_STATE_FILE);
     let mut temp = NamedTempFile::new_in(run_dir)?;
@@ -708,7 +750,7 @@ fn write_move_state(run_dir: &Path, state: &MoveState) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn write_operation_report<T: Serialize>(
+pub(crate) fn write_operation_report<T: Serialize>(
     run_dir: &Path,
     operation: &str,
     response: &T,
@@ -723,7 +765,7 @@ fn write_operation_report<T: Serialize>(
     Ok(())
 }
 
-fn remove_empty_destination_parents(records: &[MoveRecord]) {
+pub(crate) fn remove_empty_destination_parents(records: &[MoveRecord]) {
     for record in records {
         let Some(operation_root) = move_operation_root(&record.destination) else {
             continue;
@@ -744,11 +786,12 @@ fn remove_empty_destination_parents(records: &[MoveRecord]) {
 fn move_operation_root(destination: &Path) -> Option<PathBuf> {
     destination.ancestors().skip(1).find_map(|directory| {
         let name = directory.file_name()?.to_string_lossy();
-        let is_custom_operation = name.starts_with("Burst Rejects ");
+        let is_custom_operation =
+            name.starts_with("Burst Rejects ") || name.starts_with("Burst Counterparts ");
         let is_run_operation = directory
             .parent()
             .and_then(Path::file_name)
-            .is_some_and(|parent| parent == "moved_rejects");
+            .is_some_and(|parent| parent == "moved_rejects" || parent == "moved_counterparts");
         (is_custom_operation || is_run_operation).then(|| directory.to_path_buf())
     })
 }
@@ -865,5 +908,22 @@ mod tests {
             )),
             Some(Path::new("run/moved_rejects/20260712_020824").to_path_buf())
         );
+    }
+
+    #[test]
+    fn old_move_journals_default_to_the_primary_source_set() {
+        let record: super::MoveRecord = serde_json::from_value(serde_json::json!({
+            "asset_id": "legacy",
+            "source": "/card/frame.raw",
+            "destination": "/runs/moved/frame.raw",
+            "size": 12,
+            "moved_at": "2026-01-01T00:00:00Z",
+            "restored_at": null
+        }))
+        .unwrap();
+
+        assert_eq!(record.source_set, super::SourceSet::Primary);
+        assert!(record.source_root.is_none());
+        assert!(record.source_rel_path.is_none());
     }
 }

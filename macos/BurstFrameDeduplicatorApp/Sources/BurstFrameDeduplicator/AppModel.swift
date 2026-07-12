@@ -29,6 +29,8 @@ enum ReviewFilter: String, CaseIterable, Identifiable {
 enum AppNotice: Equatable {
     case moved(files: Int, assets: Int, destination: String, failures: Int)
     case restored(files: Int, assets: Int, failures: Int)
+    case counterpartMoved(files: Int, assets: Int, destination: String, failures: Int)
+    case counterpartRestored(files: Int, assets: Int, failures: Int)
     case sourceUnavailable(String)
     case message(String)
 }
@@ -107,6 +109,8 @@ final class AppModel: ObservableObject {
     @Published var relocationInProgress = false
     @Published var relocationProgress: ProgressUpdate?
     @Published var tutorialPresented = false
+    @Published var counterpartPlan: CounterpartPlan?
+    @Published var counterpartCardURL: URL?
 
     private let bridge: RustBridge
     private let tutorialProgress: TutorialProgressStore
@@ -163,6 +167,18 @@ final class AppModel: ObservableObject {
         tutorialPresented = false
     }
 
+    func prepareForTermination(completion: @escaping () -> Void) {
+        if tutorialPresented {
+            dismissTutorial(outcome: .skipped)
+        }
+        viewerAssetID = nil
+        counterpartPlan = nil
+        counterpartCardURL = nil
+        decisionQueue.async {
+            DispatchQueue.main.async(execute: completion)
+        }
+    }
+
     var visibleStacks: [BurstStack] {
         guard let payload else { return [] }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -201,11 +217,11 @@ final class AppModel: ObservableObject {
     }
 
     var movedAssetIDs: Set<String> {
-        Set(payload?.moveStatus.activeAssetIds ?? [])
+        Set(payload?.moveStatus.activePrimaryAssetIds ?? [])
     }
 
     var activeMovedCount: Int {
-        payload?.moveStatus.activeAssetIds.count ?? 0
+        payload?.moveStatus.activePrimaryAssetIds.count ?? 0
     }
 
     var movableRejectCount: Int {
@@ -216,6 +232,18 @@ final class AppModel: ObservableObject {
 
     func isMoved(_ asset: AssetRecord) -> Bool {
         movedAssetIDs.contains(asset.id)
+    }
+
+    var counterpartMovedAssetIDs: Set<String> {
+        Set(payload?.moveStatus.activeCounterpartAssetIds ?? [])
+    }
+
+    var activeCounterpartMovedCount: Int {
+        payload?.moveStatus.activeCounterpartAssetIds.count ?? 0
+    }
+
+    func isCounterpartMoved(_ asset: AssetRecord) -> Bool {
+        counterpartMovedAssetIDs.contains(asset.id)
     }
 
     func startScan() {
@@ -279,6 +307,8 @@ final class AppModel: ObservableObject {
         searchText = ""
         filter = .all
         viewerAssetID = nil
+        counterpartPlan = nil
+        counterpartCardURL = nil
     }
 
     func finalAction(for asset: AssetRecord) -> FrameDecision {
@@ -384,7 +414,7 @@ final class AppModel: ObservableObject {
         guard let runDirectory = payload?.runDir else { return }
         let selectedDestination = destination?.path ?? defaultMoveDestinationPath
         fileOperationInProgress = true
-        DispatchQueue.global(qos: .userInitiated).async { [bridge] in
+        decisionQueue.async { [bridge] in
             do {
                 let result = try bridge.moveRejects(
                     runDirectory: runDirectory,
@@ -429,6 +459,106 @@ final class AppModel: ObservableObject {
                         self?.notice = .sourceUnavailable(result.message ?? "Original source folder unavailable")
                     } else {
                         self?.notice = .restored(
+                            files: result.restoredFiles,
+                            assets: result.restoredAssets,
+                            failures: result.failedFiles.count
+                        )
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.fileOperationInProgress = false
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func planCounterparts(on card: URL) {
+        guard let runDirectory = payload?.runDir else { return }
+        counterpartPlan = nil
+        counterpartCardURL = card
+        fileOperationInProgress = true
+        errorMessage = nil
+        decisionQueue.async { [bridge] in
+            do {
+                let plan = try bridge.planCounterparts(
+                    runDirectory: runDirectory,
+                    cardRoot: card.path
+                )
+                DispatchQueue.main.async { [weak self] in
+                    self?.counterpartPlan = plan
+                    self?.fileOperationInProgress = false
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.fileOperationInProgress = false
+                    self?.counterpartCardURL = nil
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func dismissCounterpartPlan() {
+        counterpartPlan = nil
+        counterpartCardURL = nil
+    }
+
+    func applyCounterparts(destination: URL?) {
+        guard let runDirectory = payload?.runDir,
+              let card = counterpartCardURL
+        else { return }
+        let selectedDestination = destination?.path ?? defaultMoveDestinationPath
+        counterpartPlan = nil
+        fileOperationInProgress = true
+        decisionQueue.async { [bridge] in
+            do {
+                let result = try bridge.applyCounterparts(
+                    runDirectory: runDirectory,
+                    cardRoot: card.path,
+                    destination: selectedDestination,
+                    confirmed: true
+                )
+                let updated = try bridge.loadRun(at: runDirectory)
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh(updated)
+                    self?.counterpartCardURL = nil
+                    self?.fileOperationInProgress = false
+                    self?.notice = .counterpartMoved(
+                        files: result.movedFiles,
+                        assets: result.movedAssets,
+                        destination: result.destination,
+                        failures: result.failedFiles.count
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.fileOperationInProgress = false
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func restoreCounterparts(to card: URL) {
+        guard let runDirectory = payload?.runDir else { return }
+        fileOperationInProgress = true
+        DispatchQueue.global(qos: .userInitiated).async { [bridge] in
+            do {
+                let result = try bridge.restoreCounterparts(
+                    runDirectory: runDirectory,
+                    cardRoot: card.path,
+                    confirmed: true
+                )
+                let updated = try bridge.loadRun(at: runDirectory)
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh(updated)
+                    self?.fileOperationInProgress = false
+                    if !result.sourceAvailable {
+                        self?.notice = .sourceUnavailable(result.message ?? "Counterpart card unavailable")
+                    } else {
+                        self?.notice = .counterpartRestored(
                             files: result.restoredFiles,
                             assets: result.restoredAssets,
                             failures: result.failedFiles.count

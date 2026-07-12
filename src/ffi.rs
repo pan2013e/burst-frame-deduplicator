@@ -4,14 +4,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow};
-use image::DynamicImage;
-use image::codecs::jpeg::JpegEncoder;
 use serde::{Deserialize, Serialize};
 
 use crate::artifacts::{
     ensure_review_state, export_reviewed_artifacts, read_manifest, upsert_decision,
 };
-use crate::decode::load_preview;
+use crate::counterpart::{apply_counterparts, plan_counterparts, restore_counterparts};
+use crate::decode::write_preview_jpeg;
 use crate::operations::{
     MoveStatus, move_rejects, read_move_status, resolve_available_source, restore_moved,
 };
@@ -61,6 +60,8 @@ struct PreviewRequest {
     asset_id: String,
     #[serde(default = "default_preview_size")]
     max_long_edge: u32,
+    #[serde(default = "default_generate_preview")]
+    generate_if_missing: bool,
 }
 
 #[derive(Serialize)]
@@ -89,6 +90,27 @@ struct RelocateRequest {
     destination_root: PathBuf,
 }
 
+#[derive(Deserialize)]
+struct CounterpartPlanRequest {
+    run_dir: PathBuf,
+    card_root: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct CounterpartMoveRequest {
+    run_dir: PathBuf,
+    card_root: PathBuf,
+    destination: Option<PathBuf>,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+struct CounterpartRestoreRequest {
+    run_dir: PathBuf,
+    card_root: PathBuf,
+    confirmed: bool,
+}
+
 #[derive(Serialize)]
 struct Envelope<T: Serialize> {
     ok: bool,
@@ -98,7 +120,7 @@ struct Envelope<T: Serialize> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bfd_api_version() -> u32 {
-    3
+    4
 }
 
 #[unsafe(no_mangle)]
@@ -216,6 +238,47 @@ pub unsafe extern "C" fn bfd_restore_rejects(request_json: *const c_char) -> *mu
 }
 
 #[unsafe(no_mangle)]
+/// Matches rejected decisions to opposite-format files on another card.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string.
+pub unsafe extern "C" fn bfd_plan_counterparts(request_json: *const c_char) -> *mut c_char {
+    ffi_call(|| {
+        let request: CounterpartPlanRequest = parse_request(request_json)?;
+        plan_counterparts(&request.run_dir, &request.card_root)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Moves matched rejected files from an opposite-format card.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string.
+pub unsafe extern "C" fn bfd_apply_counterparts(request_json: *const c_char) -> *mut c_char {
+    ffi_call(|| {
+        let request: CounterpartMoveRequest = parse_request(request_json)?;
+        apply_counterparts(
+            &request.run_dir,
+            &request.card_root,
+            request.destination.as_deref(),
+            request.confirmed,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Restores previously moved opposite-format files to a selected card.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string.
+pub unsafe extern "C" fn bfd_restore_counterparts(request_json: *const c_char) -> *mut c_char {
+    ffi_call(|| {
+        let request: CounterpartRestoreRequest = parse_request(request_json)?;
+        restore_counterparts(&request.run_dir, &request.card_root, request.confirmed)
+    })
+}
+
+#[unsafe(no_mangle)]
 /// Relocates a completed run to a new parent directory.
 ///
 /// # Safety
@@ -288,11 +351,14 @@ fn prepare_preview(request: &PreviewRequest) -> anyhow::Result<PreviewResponse> 
         });
     }
 
-    let decoded = load_preview(&source_path, &asset.representative.extension, max_long_edge)?;
-    let file =
-        fs::File::create(&output).with_context(|| format!("creating {}", output.display()))?;
-    let mut encoder = JpegEncoder::new_with_quality(file, 92);
-    encoder.encode_image(&DynamicImage::ImageRgb8(decoded.image))?;
+    if !request.generate_if_missing {
+        return Ok(PreviewResponse {
+            path: source_path,
+            generated: false,
+        });
+    }
+
+    write_preview_jpeg(&source_path, max_long_edge, &output)?;
     Ok(PreviewResponse {
         path: output,
         generated: true,
@@ -327,6 +393,10 @@ fn emit_progress<T: Serialize>(callback: Option<BfdProgressCallback>, context: u
 
 fn default_preview_size() -> u32 {
     4096
+}
+
+fn default_generate_preview() -> bool {
+    true
 }
 
 fn ffi_call<T>(operation: impl FnOnce() -> anyhow::Result<T>) -> *mut c_char

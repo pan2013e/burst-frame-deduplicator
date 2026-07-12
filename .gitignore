@@ -12,6 +12,7 @@ node_modules/
 *.xcuserstate
 *.xccheckout
 **/moved_rejects/
+**/moved_counterparts/
 **/moved_rejects_from_script/
 **/move_reports/
 .DS_Store

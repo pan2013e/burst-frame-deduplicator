@@ -74,10 +74,16 @@ public final class RustBridge: @unchecked Sendable {
     public func preparePreview(
         runDirectory: String,
         assetID: String,
-        maxLongEdge: UInt32 = 4096
+        maxLongEdge: UInt32 = 4096,
+        generateIfMissing: Bool = true
     ) throws -> PreviewResponse {
         try invoke(
-            PreviewRequest(runDir: runDirectory, assetId: assetID, maxLongEdge: maxLongEdge),
+            PreviewRequest(
+                runDir: runDirectory,
+                assetId: assetID,
+                maxLongEdge: maxLongEdge,
+                generateIfMissing: generateIfMissing
+            ),
             function: bfd_prepare_preview
         )
     }
@@ -105,6 +111,48 @@ public final class RustBridge: @unchecked Sendable {
         try invoke(
             RestoreRequest(runDir: runDirectory, assetIds: assetIDs, confirmed: confirmed),
             function: bfd_restore_rejects
+        )
+    }
+
+    public func planCounterparts(
+        runDirectory: String,
+        cardRoot: String
+    ) throws -> CounterpartPlan {
+        try invoke(
+            CounterpartPlanRequest(runDir: runDirectory, cardRoot: cardRoot),
+            function: bfd_plan_counterparts
+        )
+    }
+
+    public func applyCounterparts(
+        runDirectory: String,
+        cardRoot: String,
+        destination: String?,
+        confirmed: Bool
+    ) throws -> CounterpartMoveResponse {
+        try invoke(
+            CounterpartMoveRequest(
+                runDir: runDirectory,
+                cardRoot: cardRoot,
+                destination: destination,
+                confirmed: confirmed
+            ),
+            function: bfd_apply_counterparts
+        )
+    }
+
+    public func restoreCounterparts(
+        runDirectory: String,
+        cardRoot: String,
+        confirmed: Bool
+    ) throws -> RestoreResponse {
+        try invoke(
+            CounterpartRestoreRequest(
+                runDir: runDirectory,
+                cardRoot: cardRoot,
+                confirmed: confirmed
+            ),
+            function: bfd_restore_counterparts
         )
     }
 
@@ -195,6 +243,7 @@ private struct PreviewRequest: Encodable {
     let runDir: String
     let assetId: String
     let maxLongEdge: UInt32
+    let generateIfMissing: Bool
 }
 
 private struct MoveRequest: Encodable {
@@ -212,4 +261,22 @@ private struct RestoreRequest: Encodable {
 private struct RelocateRequest: Encodable {
     let runDir: String
     let destinationRoot: String
+}
+
+private struct CounterpartPlanRequest: Encodable {
+    let runDir: String
+    let cardRoot: String
+}
+
+private struct CounterpartMoveRequest: Encodable {
+    let runDir: String
+    let cardRoot: String
+    let destination: String?
+    let confirmed: Bool
+}
+
+private struct CounterpartRestoreRequest: Encodable {
+    let runDir: String
+    let cardRoot: String
+    let confirmed: Bool
 }

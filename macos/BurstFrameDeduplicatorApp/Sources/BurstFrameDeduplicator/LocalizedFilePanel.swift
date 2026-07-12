@@ -6,6 +6,7 @@ enum DirectoryPanelPurpose {
     case run
     case results
     case moveDestination
+    case counterpartCard
 
     var titleKey: String {
         switch self {
@@ -13,6 +14,7 @@ enum DirectoryPanelPurpose {
         case .run: "selectRunTitle"
         case .results: "selectResultsTitle"
         case .moveDestination: "selectMoveDestinationTitle"
+        case .counterpartCard: "selectCounterpartCardTitle"
         }
     }
 
@@ -22,6 +24,7 @@ enum DirectoryPanelPurpose {
         case .run: "selectRunMessage"
         case .results: "selectResultsMessage"
         case .moveDestination: "selectMoveDestinationMessage"
+        case .counterpartCard: "selectCounterpartCardMessage"
         }
     }
 }

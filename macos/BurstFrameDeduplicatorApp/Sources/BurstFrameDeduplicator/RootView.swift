@@ -63,6 +63,19 @@ struct RootView: View {
                 return "\(summary)\n\(locale.text("operationFailures", ["count": failures]))"
             }
             return summary
+        case .counterpartMoved(let files, let assets, let destination, let failures):
+            let summary = locale.text("counterpartMoveComplete", ["files": files, "assets": assets])
+            let location = locale.text("moveDestination", ["destination": destination])
+            if failures > 0 {
+                return "\(summary)\n\(location)\n\(locale.text("operationFailures", ["count": failures]))"
+            }
+            return "\(summary)\n\(location)"
+        case .counterpartRestored(let files, let assets, let failures):
+            let summary = locale.text("counterpartRestoreComplete", ["files": files, "assets": assets])
+            if failures > 0 {
+                return "\(summary)\n\(locale.text("operationFailures", ["count": failures]))"
+            }
+            return summary
         case .sourceUnavailable(let message):
             return "\(locale.text("sourceUnavailableMove"))\n\n\(message)"
         case .message(let message):

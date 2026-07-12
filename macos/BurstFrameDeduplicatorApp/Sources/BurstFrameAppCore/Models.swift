@@ -90,9 +90,51 @@ public struct RestoreResponse: Decodable {
 
 public struct MoveStatus: Decodable, Equatable, Sendable {
     public let activeAssetIds: [String]
+    public let activePrimaryAssetIds: [String]
+    public let activeCounterpartAssetIds: [String]
     public let activeFiles: Int
     public let activeBytes: UInt64
     public let destinations: [String]
+}
+
+public struct CounterpartFile: Decodable, Sendable {
+    public let path: String
+    public let relPath: String
+    public let kind: String
+    public let size: UInt64
+}
+
+public struct CounterpartMatch: Decodable, Sendable {
+    public let assetId: String
+    public let stem: String
+    public let expectedKind: String
+    public let files: [CounterpartFile]
+}
+
+public struct CounterpartPlan: Decodable, Sendable {
+    public let cardRoot: String
+    public let expectedAssets: Int
+    public let matchedAssets: Int
+    public let matchedFiles: Int
+    public let alreadyAppliedAssets: Int
+    public let skippedPairedAssets: Int
+    public let matches: [CounterpartMatch]
+    public let unmatchedStems: [String]
+    public let ambiguousStems: [String]
+    public let conflictingRunStems: [String]
+}
+
+public struct CounterpartMoveResponse: Decodable {
+    public let destination: String
+    public let movedFiles: Int
+    public let movedAssets: Int
+    public let alreadyAppliedAssets: Int
+    public let movedAssetIds: [String]
+    public let sourceAvailable: Bool
+    public let failedFiles: [MoveFailure]
+    public let message: String?
+    public let plan: CounterpartPlan
+    public let status: MoveStatus
 }
 
 public struct MoveFailure: Decodable {

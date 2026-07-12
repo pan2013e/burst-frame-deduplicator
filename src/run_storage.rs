@@ -433,7 +433,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{RelocationProgress, copy_inventory, inventory, relocate_run};
-    use crate::operations::{MoveRecord, MoveState};
+    use crate::operations::{MoveRecord, MoveState, SourceSet};
     use crate::types::{
         AccelerationPreference, AccelerationReport, DecoderReport, DetectorPreference,
         DetectorReport, RunManifest,
@@ -538,6 +538,9 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             records: vec![MoveRecord {
                 asset_id: "frame".to_string(),
+                source_set: SourceSet::Primary,
+                source_root: Some(temp.path().join("card")),
+                source_rel_path: Some("frame.raw".to_string()),
                 source: temp.path().join("card/frame.raw"),
                 destination: moved,
                 size: 3,

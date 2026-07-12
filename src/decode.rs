@@ -3,10 +3,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use image::{ImageFormat, ImageReader, RgbImage, imageops};
 use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat};
-use tempfile::TempDir;
+use tempfile::{Builder, TempDir};
 
 use crate::assets::is_raw_extension;
 use crate::types::DecoderReport;
@@ -59,6 +59,143 @@ pub fn load_preview(
             )
         }),
     }
+}
+
+/// Writes a browser-compatible JPEG without decoding and re-encoding it in Rust.
+///
+/// Native preview callers use this for RAW files because platform decoders can render
+/// directly into the cache with substantially lower latency and peak memory.
+pub fn write_preview_jpeg(
+    path: &Path,
+    preview_size: u32,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    if destination.is_file() {
+        return Ok(());
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "preview destination has no parent: {}",
+            destination.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating preview cache {}", parent.display()))?;
+    let temp = Builder::new()
+        .prefix(".preview-")
+        .tempdir_in(parent)
+        .context("creating temporary preview cache directory")?;
+    let temporary_output = temp.path().join("preview.jpg");
+    let imagemagick = find_imagemagick();
+    let sips = which::which("sips").ok();
+    let mut failures = Vec::new();
+
+    if cfg!(target_os = "macos")
+        && let Some(executable) = &sips
+    {
+        match write_with_sips(executable, path, preview_size, &temporary_output) {
+            Ok(()) => return publish_preview(&temporary_output, destination),
+            Err(error) => failures.push(format!("sips ({}): {error:#}", executable.display())),
+        }
+    }
+
+    if let Some(executable) = &imagemagick {
+        match write_with_imagemagick(executable, path, preview_size, &temporary_output) {
+            Ok(()) => return publish_preview(&temporary_output, destination),
+            Err(error) => {
+                failures.push(format!("ImageMagick ({}): {error:#}", executable.display()))
+            }
+        }
+    }
+
+    if !cfg!(target_os = "macos")
+        && let Some(executable) = &sips
+    {
+        match write_with_sips(executable, path, preview_size, &temporary_output) {
+            Ok(()) => return publish_preview(&temporary_output, destination),
+            Err(error) => failures.push(format!("sips ({}): {error:#}", executable.display())),
+        }
+    }
+
+    if failures.is_empty() {
+        bail!(
+            "no external decoder found for {}; install ImageMagick or use a camera JPEG pair",
+            path.display()
+        );
+    }
+    bail!(
+        "external decoder failed for {}: {}",
+        path.display(),
+        failures.join("; ")
+    )
+}
+
+fn publish_preview(temporary: &Path, destination: &Path) -> anyhow::Result<()> {
+    let (width, height) = ImageReader::open(temporary)
+        .with_context(|| format!("opening generated preview {}", temporary.display()))?
+        .with_guessed_format()
+        .context("detecting generated preview format")?
+        .into_dimensions()
+        .context("reading generated preview dimensions")?;
+    if width == 0 || height == 0 {
+        bail!("generated preview has invalid dimensions");
+    }
+    if destination.is_file() {
+        return Ok(());
+    }
+    std::fs::rename(temporary, destination).with_context(|| {
+        format!(
+            "publishing generated preview {} to {}",
+            temporary.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn write_with_sips(
+    sips: &Path,
+    path: &Path,
+    preview_size: u32,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    let output = Command::new(sips)
+        .arg("-s")
+        .arg("format")
+        .arg("jpeg")
+        .arg("--resampleHeightWidthMax")
+        .arg(preview_size.to_string())
+        .arg(path)
+        .arg("--out")
+        .arg(destination)
+        .output()
+        .with_context(|| format!("running sips for {}", path.display()))?;
+    if !output.status.success() || !destination.is_file() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(())
+}
+
+fn write_with_imagemagick(
+    imagemagick: &Path,
+    path: &Path,
+    preview_size: u32,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    let output = Command::new(imagemagick)
+        .arg(path)
+        .arg("-auto-orient")
+        .arg("-resize")
+        .arg(format!("{preview_size}x{preview_size}>"))
+        .arg("-quality")
+        .arg("92")
+        .arg(destination)
+        .output()
+        .with_context(|| format!("running ImageMagick for {}", path.display()))?;
+    if !output.status.success() || !destination.is_file() {
+        bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(())
 }
 
 pub fn resize_rgb(image: &RgbImage, long_edge: u32) -> RgbImage {
@@ -240,23 +377,7 @@ fn load_with_sips(
 ) -> anyhow::Result<DecodedPreview> {
     let tmp = TempDir::new().context("creating temporary sips output directory")?;
     let out = tmp.path().join("preview.jpg");
-    let output = Command::new(sips)
-        .arg("-s")
-        .arg("format")
-        .arg("jpeg")
-        .arg("--resampleHeightWidthMax")
-        .arg(preview_size.to_string())
-        .arg(path)
-        .arg("--out")
-        .arg(&out)
-        .output()
-        .with_context(|| format!("running sips for {}", path.display()))?;
-    if !output.status.success() || !out.exists() {
-        return Err(anyhow!(
-            "{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
+    write_with_sips(sips, path, preview_size, &out)?;
     let image = ImageReader::open(&out)?.decode()?;
     let rgb = image.to_rgb8();
     let (width, height) = rgb.dimensions();

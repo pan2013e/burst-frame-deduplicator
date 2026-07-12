@@ -3,7 +3,9 @@ import Testing
 
 @Test
 func rustBridgeDefaultOptions() throws {
-    let options = try RustBridge().defaultOptions()
+    let bridge = RustBridge()
+    #expect(bridge.apiVersion == 4)
+    let options = try bridge.defaultOptions()
     #expect(options.previewSize == 1280)
     #expect(options.refineSize == 2048)
     #expect(options.acceleration == "auto")
@@ -15,8 +17,10 @@ func externalLocaleCatalogLoadsBothLanguages() {
     #expect(catalog.loadError == nil)
     catalog.code = "en"
     #expect(catalog.text("keep") == "Keep")
+    #expect(catalog.text("counterpartCard") == "Counterpart Card")
     catalog.code = "zh-CN"
     #expect(catalog.text("keep") == "保留")
+    #expect(catalog.text("counterpartCard") == "对应格式存储卡")
 }
 
 @Test

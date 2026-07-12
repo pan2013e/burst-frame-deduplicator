@@ -7,6 +7,8 @@ struct ReviewView: View {
     @ObservedObject var model: AppModel
     @State private var presentingMove = false
     @State private var confirmingRestore = false
+    @State private var confirmingCounterpartRestore = false
+    @State private var counterpartRestoreURL: URL?
 
     var body: some View {
         NavigationSplitView {
@@ -48,6 +50,19 @@ struct ReviewView: View {
                             Label(locale.text("showRunFolder"), systemImage: "folder")
                         }
                         .help(locale.text("showRunFolder"))
+                        Menu {
+                            Button(action: selectCounterpartCard) {
+                                Label(locale.text("applyToCounterpartCard"), systemImage: "externaldrive.badge.plus")
+                            }
+                            Button(action: selectCounterpartRestoreCard) {
+                                Label(locale.text("restoreCounterpartCard"), systemImage: "arrow.uturn.backward")
+                            }
+                            .disabled(model.activeCounterpartMovedCount == 0)
+                        } label: {
+                            Label(locale.text("counterpartCard"), systemImage: "rectangle.2.swap")
+                        }
+                        .help(locale.text("counterpartCardHelp"))
+                        .disabled(model.fileOperationInProgress)
                         Button(action: model.resetForNewScan) {
                             Label(locale.text("newScan"), systemImage: "plus")
                         }
@@ -65,8 +80,30 @@ struct ReviewView: View {
         } message: {
             Text(locale.text("restoreConfirmMessage"))
         }
+        .confirmationDialog(
+            locale.text("counterpartRestoreConfirmTitle"),
+            isPresented: $confirmingCounterpartRestore,
+            titleVisibility: .visible
+        ) {
+            Button(locale.text("restore")) {
+                if let counterpartRestoreURL {
+                    model.restoreCounterparts(to: counterpartRestoreURL)
+                }
+                counterpartRestoreURL = nil
+            }
+            Button(locale.text("cancel"), role: .cancel) { counterpartRestoreURL = nil }
+        } message: {
+            Text(locale.text("counterpartRestoreConfirmMessage"))
+        }
         .sheet(isPresented: $presentingMove) {
             MoveRejectsSheet(model: model)
+                .environmentObject(locale)
+        }
+        .sheet(isPresented: Binding(
+            get: { model.counterpartPlan != nil },
+            set: { if !$0 { model.dismissCounterpartPlan() } }
+        )) {
+            CounterpartPlanSheet(model: model)
                 .environmentObject(locale)
         }
         .sheet(isPresented: Binding(
@@ -77,6 +114,17 @@ struct ReviewView: View {
                 .environmentObject(locale)
         }
         .id(locale.code)
+    }
+
+    private func selectCounterpartCard() {
+        guard let card = chooseDirectory(for: .counterpartCard, locale: locale) else { return }
+        model.planCounterparts(on: card)
+    }
+
+    private func selectCounterpartRestoreCard() {
+        guard let card = chooseDirectory(for: .counterpartCard, locale: locale) else { return }
+        counterpartRestoreURL = card
+        confirmingCounterpartRestore = true
     }
 
     private var sidebar: some View {
@@ -362,6 +410,7 @@ private struct FrameCard: View {
 
     private var statusText: String {
         if model.isMoved(asset) { return locale.text("moved") }
+        if model.isCounterpartMoved(asset) { return locale.text("counterpartMoved") }
         switch decision {
         case .keep: return locale.text("keep")
         case .reject: return locale.text("rejected")
@@ -375,6 +424,7 @@ private struct FrameCard: View {
 
     private var statusColor: Color {
         if model.isMoved(asset) { return .blue }
+        if model.isCounterpartMoved(asset) { return .teal }
         switch decision {
         case .keep: return .green
         case .reject: return .red
@@ -384,6 +434,7 @@ private struct FrameCard: View {
 
     private var borderColor: Color {
         if model.isMoved(asset) { return .blue.opacity(0.72) }
+        if model.isCounterpartMoved(asset) { return .teal.opacity(0.72) }
         switch decision {
         case .keep: return .green.opacity(0.72)
         case .review: return .orange.opacity(0.68)
@@ -521,6 +572,146 @@ private struct MoveRejectsSheet: View {
     private var destinationLabel: String {
         guard let destination else { return locale.text("insideRunFolder") }
         return destination.path
+    }
+
+    private func chooseDestination() {
+        destination = chooseDirectory(
+            for: .moveDestination,
+            locale: locale,
+            startingAt: destination
+        )
+    }
+}
+
+private struct CounterpartPlanSheet: View {
+    @EnvironmentObject private var locale: LocaleCatalog
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: AppModel
+    @State private var destination: URL?
+    @State private var confirmingMove = false
+
+    private var plan: CounterpartPlan? { model.counterpartPlan }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.2.swap")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(locale.text("counterpartPlanTitle"))
+                        .font(.title3.weight(.semibold))
+                    Text(locale.text("counterpartStemRule"))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let plan {
+                Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 7) {
+                    GridRow {
+                        summaryValue(plan.matchedAssets, label: "counterpartMatched")
+                        summaryValue(plan.matchedFiles, label: "counterpartFiles")
+                        summaryValue(plan.expectedAssets, label: "counterpartExpected")
+                    }
+                }
+
+                if hasWarnings(plan) {
+                    GroupBox(locale.text("counterpartNeedsAttention")) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            warningRow("counterpartUnmatched", values: plan.unmatchedStems)
+                            warningRow("counterpartAmbiguous", values: plan.ambiguousStems)
+                            warningRow("counterpartRunConflicts", values: plan.conflictingRunStems)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                    }
+                }
+
+                if !plan.matches.isEmpty {
+                    GroupBox(locale.text("counterpartMatches")) {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 5) {
+                                ForEach(plan.matches, id: \.assetId) { match in
+                                    HStack {
+                                        Text(match.stem).font(.callout.monospaced())
+                                        Spacer()
+                                        Text(locale.text("counterpartFileCount", ["count": match.files.count]))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 140)
+                    }
+                }
+
+                GroupBox(locale.text("destination")) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        Text(destination?.path ?? locale.text("insideRunFolder"))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button(locale.text("choose"), action: chooseDestination)
+                        if destination != nil {
+                            Button(locale.text("useRunFolder")) { destination = nil }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+
+            HStack {
+                Button(locale.text("cancel"), role: .cancel) { dismiss() }
+                Spacer()
+                Button(locale.text("applyCounterpartMove"), role: .destructive) {
+                    confirmingMove = true
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .keyboardShortcut(.defaultAction)
+                .disabled(plan?.matchedAssets == 0)
+            }
+        }
+        .padding(24)
+        .frame(width: 590)
+        .onAppear {
+            destination = model.defaultMoveDestinationPath.map(URL.init(fileURLWithPath:))
+        }
+        .confirmationDialog(
+            locale.text("counterpartMoveConfirmTitle"),
+            isPresented: $confirmingMove,
+            titleVisibility: .visible
+        ) {
+            Button(locale.text("applyCounterpartMove"), role: .destructive) {
+                model.applyCounterparts(destination: destination)
+                dismiss()
+            }
+            Button(locale.text("cancel"), role: .cancel) {}
+        } message: {
+            Text(locale.text("counterpartMoveConfirmMessage"))
+        }
+    }
+
+    private func summaryValue(_ value: Int, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value, format: .number).font(.title2.weight(.semibold)).monospacedDigit()
+            Text(locale.text(label)).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func warningRow(_ key: String, values: [String]) -> some View {
+        if !values.isEmpty {
+            Text(locale.text(key, ["count": values.count, "stems": values.joined(separator: ", ")]))
+                .font(.callout)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func hasWarnings(_ plan: CounterpartPlan) -> Bool {
+        !plan.unmatchedStems.isEmpty || !plan.ambiguousStems.isEmpty || !plan.conflictingRunStems.isEmpty
     }
 
     private func chooseDestination() {
