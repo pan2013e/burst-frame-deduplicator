@@ -57,8 +57,12 @@ jobs:
           smoke="$(mktemp -d)"
           cp target/release/burst-frame-deduplicator "$smoke/bfd"
           mkdir -p "$smoke/photos"
-          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQEAIAAADAAbR1AAAAS0lEQVQ4y2NUUHBwSEhgoBlg4XvDMZFJhYYW8L7mnMikOpR9wPeGk/YWMNPUgtcctI4DmgcRx6QhHsnDIA5onUxpnpNpXRbx0tgHAPqJG54Cdy1zAAAAAElFTkSuQmCC' \
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAIAAABC8jL9AAAD9UlEQVR42u3asa2jUBCGUWO5HwqgAUqmAQogvw3cAsidWw4sIdn3H58Tb8Iw3w773k6tnzcg090IQMCAgAEBg4ABAQMCBgQMAgYEDAgYBAwIGBAwIGAQMCBgQMCAgEHAgIABAYOAAQEDAgYEDAIGBAwIGBAwCBgQMCBgEDAgYEDAgIBBwICAAQGDgAEBAwIGBAwCBgQMCBgQMAgYEDAgYBAwIGBAwICAQcCAgAEBAwIGAQMCBgQMAgYEDAgYEDAIGBAwIGBAwCBgQMCAgEHAgIABAQMCBgEDAgauexhBGesyf/6Ht/0wsQKm1k9TKJ+rpAVMwWjFLGDqdKtkAVOhWyULmCLpyljAxKcrYwETn66MBUx8ujIWMPHpyngE/iulej2LC4x1d4pdYPV6OgRsvz2jT2istc9pF5i/PUpOsYDtsWdHwDbYBASM3TUHAdta00DA9tVMELBNNRkBY0fNR8C205QQsL00KwFjI01MwHYRcxMwIGBnxPQEjP0zQwHbPExSwCBgHA3zFLBtw1QFDAjYoTBbAQMCdiIwYQHbLXNGwCBgZwHTFjAgYAfBzAUMCNgpwOQFDAgYBOwrDvMXMCBgf/17CwgYBAwI2Jcb3oWAQcCAgAEB+0cX3oiAQcCAgH2t4b0IGBAwCBgQMCDgS/ykxNsRMCBgQMAgYEDAgIABAb/yWwrvSMCAgAEBg4ABAQMCBgQMAgYEDAgYBAwIGBAwIGAQMCBgQMAgYCMAARex7YcheEcCBgQMCBgEDAgYEDAg4Df8lsLbETAgYEDAIGBAwAn8pMR7ETAgYEDAvta8EQEDAgYEDAjYP7q8CwEDAgYE7MvNWxAwIGB//WP+AgYEDAL2FYfJCxgQsFNg5gIGBOwgYNoCBgTsLJizgLFbJixgQMBOhNkiYBCwQ4GpCti2YZ4CBgHjaJikgG0eZihg+2d6CBgEjDNibgK2i5iYgG2kWSFge2lKAsZ2mo+A7ajJIGCbaiYCxr6ahoBtra01BwHbXRNAwDbYswsYe+ypRzK1fprC16zLLF1cYJvtGRGw/fZ0PqHxOS1dF9gp9iy4wE6xdAWMjKUrYGpmLF0BE5mxdAVMZMbSFTB5JetWwOSVrFsBExazaAVMTNJyFTDwY/4rJQgYEDAgYBAwIGBAwICAQcCAgAEBg4ABAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDAgYEDAIGBAwIGBAwCBgQMCBgEDAgYEDAgIBBwICAAQEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgYBxP5qVO6prvyuQAAAAASUVORK5CYII=' \
             | base64 --decode > "$smoke/photos/frame_0001.png"
+          scripts/install_linux_ml_models.sh \
+            --dest "$smoke/model-pack" \
+            --models light \
+            --runtime cpu
           (
             cd "$smoke"
             ./bfd scan photos --out run --no-refine --detector off --acceleration cpu --workers 1
@@ -67,6 +71,14 @@ jobs:
             ./bfd scan photos --out run-cuda-fallback --no-refine --detector off --acceleration cuda --workers 1
             grep -q '"requested": "cuda"' run-cuda-fallback/manifest.json
             grep -q '"selected": "cpu_' run-cuda-fallback/manifest.json
+            ./bfd scan photos --out run-ml-fallback --no-refine --detector ml-light --detector-device cpu --workers 1
+            grep -q '"requested": "ml_light"' run-ml-fallback/manifest.json
+            grep -q '"selected": "heuristic_saliency"' run-ml-fallback/manifest.json
+            grep -q 'offline model pack' run-ml-fallback/manifest.json
+            ./bfd scan photos --out run-ml-light --no-refine --detector ml-light --detector-device cpu --detector-model-pack model-pack --workers 1
+            jq -e '.detector.selected == "onnx_u2netp-sod-v1_cpu"' run-ml-light/manifest.json
+            jq -e '.detector.model.sha256 == "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"' run-ml-light/manifest.json
+            jq -e '.benchmarks[] | select(.stage == "detector_inference_worker_sum") | .items == 1' run-ml-light/manifest.json
             ./bfd serve --run run --port 18787 >server.log 2>&1 &
             server_pid=$!
             trap 'kill "$server_pid" 2>/dev/null || true' EXIT
@@ -85,9 +97,11 @@ jobs:
         run: |
           set -euo pipefail
           package="burst-frame-deduplicator-linux-x86_64"
-          mkdir -p "dist/$package"
+          mkdir -p "dist/$package/scripts" "dist/$package/docs"
           cp target/release/burst-frame-deduplicator "dist/$package/"
           cp README.md LICENSE web/vendor/libraw-wasm/NOTICE.md "dist/$package/"
+          cp scripts/install_linux_ml_models.sh "dist/$package/scripts/"
+          cp docs/LINUX_ML_MODELS.md "dist/$package/docs/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
           sha256sum "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
 
