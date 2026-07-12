@@ -10,6 +10,14 @@ private let previewImageCache: NSCache<NSString, NSImage> = {
     return cache
 }()
 
+private let refinedPreviewLongEdge = 4_096
+
+private struct ImageResolutionDemand {
+    let availablePixelSize: NSSize
+    let magnification: CGFloat
+    let backingScale: CGFloat
+}
+
 private struct CanvasCommand: Equatable {
     enum Action {
         case fit
@@ -28,6 +36,8 @@ struct NativeImageViewer: View {
     @State private var image: NSImage?
     @State private var loading = true
     @State private var refining = false
+    @State private var rawRefinementAvailable = false
+    @State private var refinementRequestAssetID: String?
     @State private var loadError: String?
     @State private var canvasCommand = CanvasCommand(action: .fit)
     @FocusState private var focused: Bool
@@ -53,7 +63,11 @@ struct NativeImageViewer: View {
                         Text(loadError)
                     }
                 } else if let image {
-                    ZoomableImageCanvas(image: image, command: canvasCommand)
+                    ZoomableImageCanvas(
+                        image: image,
+                        command: canvasCommand,
+                        onResolutionDemand: handleResolutionDemand
+                    )
                 }
             }
         }
@@ -76,6 +90,11 @@ struct NativeImageViewer: View {
         .task(id: model.viewerAssetID) {
             await loadCurrentImage()
         }
+        .task(id: refinementRequestAssetID) {
+            guard let assetID = refinementRequestAssetID else { return }
+            await refineCurrentImage(assetID: assetID)
+        }
+        .onDisappear { refinementRequestAssetID = nil }
     }
 
     private var viewerToolbar: some View {
@@ -104,11 +123,15 @@ struct NativeImageViewer: View {
                         .font(.callout)
                         .foregroundStyle(.teal)
                 }
-                if refining {
-                    ProgressView()
-                        .controlSize(.small)
-                        .help(locale.text("loadingPreview"))
+                ZStack {
+                    if refining {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
+                .frame(width: 16, height: 16)
+                .help(locale.text("loadingPreview"))
+                .accessibilityHidden(!refining)
             }
             Divider().frame(height: 22)
             iconButton("chevron.left", help: locale.text("previousFrame"), disabled: adjacent(-1) == nil) {
@@ -172,6 +195,8 @@ struct NativeImageViewer: View {
         guard let asset = currentAsset, let runDirectory = model.payload?.runDir else { return }
         loading = true
         refining = false
+        rawRefinementAvailable = false
+        refinementRequestAssetID = nil
         loadError = nil
         image = nil
         let initialResult = await Task.detached(priority: .userInitiated) {
@@ -179,56 +204,86 @@ struct NativeImageViewer: View {
                 let preview = try bridge.preparePreview(
                     runDirectory: runDirectory,
                     assetID: asset.id,
-                    maxLongEdge: 4096,
+                    maxLongEdge: UInt32(refinedPreviewLongEdge),
                     generateIfMissing: false
                 )
                 let loaded = try loadDownsampledImage(
                     at: preview.path,
-                    maxPixelSize: 4096,
+                    maxPixelSize: refinedPreviewLongEdge,
                     preferEmbeddedPreview: asset.representative.kind == "raw" && !preview.generated
                 )
                 return (loaded, preview.generated)
             }
         }.value
         guard !Task.isCancelled, model.viewerAssetID == asset.id else { return }
-        let alreadyGenerated: Bool
         switch initialResult {
         case .success(let (loaded, generated)):
             image = loaded
             canvasCommand = CanvasCommand(action: .fit)
-            alreadyGenerated = generated
+            rawRefinementAvailable = asset.representative.kind == "raw" && !generated
         case .failure(let error):
             loadError = error.localizedDescription
             loading = false
             return
         }
         loading = false
+    }
 
-        guard asset.representative.kind == "raw", !alreadyGenerated else { return }
+    private func handleResolutionDemand(_ demand: ImageResolutionDemand) {
+        guard let asset = currentAsset,
+              asset.representative.kind == "raw",
+              rawRefinementAvailable
+        else {
+            if !refining, refinementRequestAssetID != nil {
+                refinementRequestAssetID = nil
+            }
+            return
+        }
+        let needsRefinement = ImageViewportGeometry.previewNeedsRefinement(
+            availableWidth: Double(demand.availablePixelSize.width),
+            availableHeight: Double(demand.availablePixelSize.height),
+            magnification: Double(demand.magnification),
+            backingScale: Double(demand.backingScale),
+            targetLongEdge: Double(refinedPreviewLongEdge)
+        )
+        if needsRefinement {
+            refinementRequestAssetID = asset.id
+        } else if !refining, refinementRequestAssetID == asset.id {
+            refinementRequestAssetID = nil
+        }
+    }
+
+    private func refineCurrentImage(assetID: String) async {
         do {
             try await Task.sleep(for: .milliseconds(350))
         } catch {
             return
         }
-        guard !Task.isCancelled, model.viewerAssetID == asset.id else { return }
+        guard !Task.isCancelled,
+              model.viewerAssetID == assetID,
+              rawRefinementAvailable,
+              let runDirectory = model.payload?.runDir
+        else { return }
         refining = true
         let refinedResult = await Task.detached(priority: .utility) {
             Result {
                 let preview = try bridge.preparePreview(
                     runDirectory: runDirectory,
-                    assetID: asset.id,
-                    maxLongEdge: 4096,
+                    assetID: assetID,
+                    maxLongEdge: UInt32(refinedPreviewLongEdge),
                     generateIfMissing: true
                 )
                 return try loadDownsampledImage(
                     at: preview.path,
-                    maxPixelSize: 4096,
+                    maxPixelSize: refinedPreviewLongEdge,
                     preferEmbeddedPreview: false
                 )
             }
         }.value
-        guard !Task.isCancelled, model.viewerAssetID == asset.id else { return }
+        guard !Task.isCancelled, model.viewerAssetID == assetID else { return }
         refining = false
+        rawRefinementAvailable = false
+        refinementRequestAssetID = nil
         if case .success(let refinedImage) = refinedResult {
             image = refinedImage
         }
@@ -305,6 +360,7 @@ private final class ViewportTrackingScrollView: NSScrollView {
 private struct ZoomableImageCanvas: NSViewRepresentable {
     let image: NSImage
     let command: CanvasCommand
+    let onResolutionDemand: (ImageResolutionDemand) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -328,6 +384,7 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
+        coordinator.onResolutionDemand = onResolutionDemand
         if coordinator.image !== image {
             coordinator.replaceImage(image, pixelSize: imagePixelSize(image))
         }
@@ -364,28 +421,40 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var image: NSImage?
         var lastCommandID: UUID?
+        var onResolutionDemand: ((ImageResolutionDemand) -> Void)?
         private var isFitMode = true
-        private var liveMagnifyObserver: NSObjectProtocol?
+        private var liveMagnifyObservers: [NSObjectProtocol] = []
 
         deinit {
-            if let liveMagnifyObserver {
-                NotificationCenter.default.removeObserver(liveMagnifyObserver)
+            for observer in liveMagnifyObservers {
+                NotificationCenter.default.removeObserver(observer)
             }
         }
 
         func connect(to scrollView: ViewportTrackingScrollView) {
             self.scrollView = scrollView
             scrollView.onViewportSizeChange = { [weak self] in
-                guard self?.isFitMode == true else { return }
-                self?.fit()
+                guard let self else { return }
+                if self.isFitMode {
+                    self.fit()
+                } else {
+                    self.reportResolutionDemand()
+                }
             }
-            liveMagnifyObserver = NotificationCenter.default.addObserver(
+            liveMagnifyObservers.append(NotificationCenter.default.addObserver(
                 forName: NSScrollView.willStartLiveMagnifyNotification,
                 object: scrollView,
                 queue: .main
             ) { [weak self] _ in
                 self?.isFitMode = false
-            }
+            })
+            liveMagnifyObservers.append(NotificationCenter.default.addObserver(
+                forName: NSScrollView.didEndLiveMagnifyNotification,
+                object: scrollView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reportResolutionDemand()
+            })
         }
 
         func replaceImage(_ newImage: NSImage, pixelSize: NSSize) {
@@ -401,34 +470,44 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
             )
 
             image = newImage
-            imageView.image = newImage
-            imageView.frame = NSRect(origin: .zero, size: pixelSize)
-            imageView.needsDisplay = true
+            guard hadImage else {
+                imageView.image = newImage
+                imageView.frame = NSRect(origin: .zero, size: pixelSize)
+                imageView.needsDisplay = true
+                DispatchQueue.main.async { [weak self] in self?.fit() }
+                return
+            }
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let scrollView = self.scrollView else { return }
-                if !preserveViewport {
-                    self.fit()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                imageView.image = newImage
+                imageView.frame = NSRect(origin: .zero, size: pixelSize)
+                imageView.needsDisplay = true
+                guard preserveViewport else {
+                    fit(reportDemand: false)
                     return
                 }
                 let plan = self.magnificationPlan()
                 scrollView.minMagnification = CGFloat(plan.minimum)
                 scrollView.maxMagnification = CGFloat(plan.maximum)
-                let equivalentMagnification = oldMagnification * oldSize.width / max(1, pixelSize.width)
-                let magnification = max(
-                    scrollView.minMagnification,
-                    min(scrollView.maxMagnification, equivalentMagnification)
+                let magnification = ImageViewportGeometry.replacementMagnification(
+                    oldMagnification: Double(oldMagnification),
+                    oldImageWidth: Double(oldSize.width),
+                    newImageWidth: Double(pixelSize.width),
+                    minimumMagnification: plan.minimum,
+                    maximumMagnification: plan.maximum
                 )
                 let center = NSPoint(
                     x: normalizedCenter.x * pixelSize.width,
                     y: normalizedCenter.y * pixelSize.height
                 )
-                scrollView.setMagnification(magnification, centeredAt: center)
-                self.isFitMode = false
+                scrollView.setMagnification(CGFloat(magnification), centeredAt: center)
+                isFitMode = false
             }
         }
 
-        func fit() {
+        func fit(reportDemand: Bool = true) {
             guard let scrollView, imageView.frame.width > 0, imageView.frame.height > 0 else { return }
             // The clip view's bounds are expressed in magnified document coordinates.
             // Its frame remains the physical viewport size needed for a stable fit calculation.
@@ -440,6 +519,7 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
             isFitMode = true
             let center = NSPoint(x: imageView.frame.midX, y: imageView.frame.midY)
             scrollView.setMagnification(CGFloat(plan.fit), centeredAt: center)
+            if reportDemand { reportResolutionDemand() }
         }
 
         private func magnificationPlan() -> ImageMagnificationPlan {
@@ -467,6 +547,22 @@ private struct ZoomableImageCanvas: NSViewRepresentable {
                 next,
                 centeredAt: NSPoint(x: visible.midX, y: visible.midY)
             )
+            reportResolutionDemand()
+        }
+
+        private func reportResolutionDemand() {
+            guard let scrollView,
+                  imageView.frame.width > 0,
+                  imageView.frame.height > 0
+            else { return }
+            let backingScale = scrollView.window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 1
+            onResolutionDemand?(ImageResolutionDemand(
+                availablePixelSize: imageView.frame.size,
+                magnification: scrollView.magnification,
+                backingScale: backingScale
+            ))
         }
     }
 }

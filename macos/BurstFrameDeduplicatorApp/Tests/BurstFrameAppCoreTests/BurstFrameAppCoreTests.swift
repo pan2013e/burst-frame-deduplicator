@@ -84,3 +84,52 @@ func imageMagnificationDoesNotUpscaleSmallImages() {
     )
     #expect(plan.fit == 1)
 }
+
+@Test
+func embeddedPreviewSkipsRefinementWhenItCoversRetinaViewport() {
+    let needsRefinement = ImageViewportGeometry.previewNeedsRefinement(
+        availableWidth: 1_920,
+        availableHeight: 1_440,
+        magnification: 0.46,
+        backingScale: 2,
+        targetLongEdge: 4_096
+    )
+    #expect(!needsRefinement)
+}
+
+@Test
+func embeddedPreviewRefinesWhenZoomExceedsItsDeviceResolution() {
+    let needsRefinement = ImageViewportGeometry.previewNeedsRefinement(
+        availableWidth: 1_920,
+        availableHeight: 1_440,
+        magnification: 0.60,
+        backingScale: 2,
+        targetLongEdge: 4_096
+    )
+    #expect(needsRefinement)
+}
+
+@Test
+func nearTargetEmbeddedPreviewDoesNotRenderForMarginalGain() {
+    let needsRefinement = ImageViewportGeometry.previewNeedsRefinement(
+        availableWidth: 3_840,
+        availableHeight: 2_560,
+        magnification: 1,
+        backingScale: 2,
+        targetLongEdge: 4_096
+    )
+    #expect(!needsRefinement)
+}
+
+@Test
+func refinedPreviewSwapPreservesDisplayedScale() {
+    let magnification = ImageViewportGeometry.replacementMagnification(
+        oldMagnification: 0.60,
+        oldImageWidth: 1_920,
+        newImageWidth: 4_096,
+        minimumMagnification: 0.01,
+        maximumMagnification: 8
+    )
+    #expect(abs(magnification - 0.28125) < 0.000_001)
+    #expect(abs(1_920 * 0.60 - 4_096 * magnification) < 0.000_001)
+}
