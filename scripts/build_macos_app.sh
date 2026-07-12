@@ -45,6 +45,20 @@ cp "$PACKAGE/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 cp "$ROOT/locales/en.json" "$ROOT/locales/zh-CN.json" "$RESOURCES/locales/"
 cp -R "$PACKAGE/Resources/en.lproj" "$PACKAGE/Resources/zh-Hans.lproj" "$RESOURCES/"
 
+# SwiftPM needs this path when running its unbundled test executables, but a packaged app must
+# resolve the Rust library only from Contents/Frameworks and must not expose the checkout path.
+install_name_tool -delete_rpath "$ROOT/target/release" "$MACOS/BurstFrameDeduplicator"
+if otool -l "$MACOS/BurstFrameDeduplicator" | tail -n +2 | grep -F "$ROOT" >/dev/null; then
+  printf 'Packaged executable still contains the workspace path in its load commands.\n' >&2
+  exit 1
+fi
+for binary in "$MACOS/BurstFrameDeduplicator" "$FRAMEWORKS/libburst_frame_deduplicator.dylib"; do
+  if strings -a "$binary" | grep -F "$ROOT" >/dev/null; then
+    printf 'Packaged binary still contains the workspace path: %s\n' "$binary" >&2
+    exit 1
+  fi
+done
+
 GIT_COMMIT="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
 if [[ -n "$(git -C "$ROOT" status --short 2>/dev/null || true)" ]]; then
   GIT_COMMIT="${GIT_COMMIT}-dirty"

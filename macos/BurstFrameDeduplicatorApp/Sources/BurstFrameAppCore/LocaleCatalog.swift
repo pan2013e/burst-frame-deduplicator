@@ -61,10 +61,11 @@ public final class LocaleCatalog: ObservableObject {
     }
 
     private static func localeDirectory() throws -> URL {
-        let sourceDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let repositoryDirectory = sourceDirectory
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        let workingDirectory = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        )
+        let repositoryFromPackageDirectory = workingDirectory
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let configured = ProcessInfo.processInfo.environment["BURST_DEDUP_LOCALES_DIR"].map {
@@ -73,8 +74,8 @@ public final class LocaleCatalog: ObservableObject {
         let candidates = [
             configured,
             Bundle.main.resourceURL?.appendingPathComponent("locales", isDirectory: true),
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("locales", isDirectory: true),
-            repositoryDirectory.appendingPathComponent("locales", isDirectory: true),
+            workingDirectory.appendingPathComponent("locales", isDirectory: true),
+            repositoryFromPackageDirectory.appendingPathComponent("locales", isDirectory: true),
         ].compactMap { $0 }
         if let directory = candidates.first(where: { candidate in
             supportedCodes.allSatisfy {
