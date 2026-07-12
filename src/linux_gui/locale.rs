@@ -43,7 +43,7 @@ mod tests {
     fn both_linux_catalogs_have_native_and_shared_strings() {
         for code in ["en", "zh-CN"] {
             let catalog = LocaleCatalog::load(code).unwrap();
-            assert_ne!(catalog.text("neonOption"), "neonOption");
+            assert_ne!(catalog.text("mlOption"), "mlOption");
             assert_ne!(catalog.text("appTitle"), "appTitle");
         }
     }

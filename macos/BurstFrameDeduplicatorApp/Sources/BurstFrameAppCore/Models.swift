@@ -157,6 +157,9 @@ public struct RunManifest: Decodable {
 public struct BackendReport: Decodable {
     public let requested: String
     public let selected: String
+    public let focusBackend: String?
+    public let parallelismBackend: String?
+    public let parallelismWorkers: Int?
     public let capabilities: [String]
     public let notes: [String]
 }

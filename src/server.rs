@@ -87,6 +87,9 @@ struct DiagnosticsResponse {
     logical_cpus: usize,
     memory_bytes: Option<u64>,
     acceleration: String,
+    focus_backend: String,
+    parallelism_backend: String,
+    parallelism_workers: usize,
     detector: String,
     raw_decoder: String,
 }
@@ -202,6 +205,20 @@ async fn api_manifest(State(state): State<AppState>) -> Result<Json<ManifestResp
 
 async fn api_diagnostics(State(state): State<AppState>) -> Json<DiagnosticsResponse> {
     let manifest = state.inner.manifest.lock();
+    let focus_backend = if manifest.acceleration.focus_backend.is_empty() {
+        manifest.acceleration.selected.clone()
+    } else {
+        manifest.acceleration.focus_backend.clone()
+    };
+    let parallelism_backend = if manifest.acceleration.parallelism_backend.is_empty() {
+        "rayon".to_string()
+    } else {
+        manifest.acceleration.parallelism_backend.clone()
+    };
+    let parallelism_workers = manifest
+        .acceleration
+        .parallelism_workers
+        .max(manifest.options.workers.unwrap_or(1));
     Json(DiagnosticsResponse {
         mode: "local_cli",
         app_version: env!("CARGO_PKG_VERSION"),
@@ -214,7 +231,13 @@ async fn api_diagnostics(State(state): State<AppState>) -> Json<DiagnosticsRespo
         runtime_arch: std::env::consts::ARCH,
         logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
         memory_bytes: physical_memory_bytes(),
-        acceleration: manifest.acceleration.selected.clone(),
+        acceleration: format!(
+            "{} + {} ({})",
+            focus_backend, parallelism_backend, parallelism_workers
+        ),
+        focus_backend,
+        parallelism_backend,
+        parallelism_workers,
         detector: manifest.detector.selected.clone(),
         raw_decoder: manifest.decoders.raw_strategy.clone(),
     })

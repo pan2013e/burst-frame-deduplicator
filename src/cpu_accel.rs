@@ -1,4 +1,6 @@
-use burst_core::{FocusMetrics, FocusResult, cpu_focus_metrics};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use burst_core::cpu_focus_metrics;
+use burst_core::{FocusMetrics, FocusResult};
 
 pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
     let Some(expected_len) = width.checked_mul(height) else {
@@ -8,10 +10,7 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
         return invalid_buffer_result("grayscale buffer does not match its dimensions");
     }
 
-    #[cfg(all(
-        feature = "avx2-accel",
-        any(target_arch = "x86", target_arch = "x86_64")
-    ))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let metrics = if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection above guarantees AVX2 support, and the
         // buffer length and dimensions were validated before entering the kernel.
@@ -20,22 +19,12 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
         cpu_focus_metrics(gray, width, height)
     };
 
-    #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
-    let metrics = if std::arch::is_aarch64_feature_detected!("neon") {
-        // SAFETY: Runtime feature detection above guarantees NEON support, and the
-        // buffer length and dimensions were validated before entering the kernel.
-        unsafe { aarch64::focus_metrics_neon(gray, width, height) }
-    } else {
-        cpu_focus_metrics(gray, width, height)
-    };
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is part of the supported AArch64 target baseline, and the
+    // buffer length and dimensions were validated before entering the kernel.
+    let metrics = unsafe { aarch64::focus_metrics_neon(gray, width, height) };
 
-    #[cfg(not(any(
-        all(
-            feature = "avx2-accel",
-            any(target_arch = "x86", target_arch = "x86_64")
-        ),
-        all(feature = "neon-accel", target_arch = "aarch64")
-    )))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     let metrics = cpu_focus_metrics(gray, width, height);
 
     FocusResult {
@@ -46,20 +35,18 @@ pub fn focus_metrics(gray: &[u8], width: usize, height: usize) -> FocusResult {
 }
 
 pub fn backend_name() -> &'static str {
-    #[cfg(all(
-        feature = "avx2-accel",
-        any(target_arch = "x86", target_arch = "x86_64")
-    ))]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     if std::arch::is_x86_feature_detected!("avx2") {
         return "cpu_avx2";
     }
 
-    #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
-    if std::arch::is_aarch64_feature_detected!("neon") {
+    #[cfg(target_arch = "aarch64")]
+    {
         return "cpu_neon";
     }
 
-    "cpu_scalar"
+    #[allow(unreachable_code)]
+    "cpu_portable"
 }
 
 fn invalid_buffer_result(note: &str) -> FocusResult {
@@ -73,10 +60,7 @@ fn invalid_buffer_result(note: &str) -> FocusResult {
     }
 }
 
-#[cfg(all(
-    feature = "avx2-accel",
-    any(target_arch = "x86", target_arch = "x86_64")
-))]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod x86 {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
@@ -279,13 +263,12 @@ mod x86 {
     }
 }
 
-#[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 mod aarch64 {
     use std::arch::aarch64::*;
 
     use burst_core::FocusMetrics;
 
-    #[target_feature(enable = "neon")]
     pub(super) unsafe fn focus_metrics_neon(
         gray: &[u8],
         width: usize,
@@ -315,7 +298,6 @@ mod aarch64 {
         }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn laplacian_sums(gray: &[u8], width: usize, height: usize) -> (i64, u64, usize) {
         if width < 3 || height < 3 {
             return (0, 0, 0);
@@ -356,7 +338,6 @@ mod aarch64 {
         }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn horizontal_gradient_sum(gray: &[u8], width: usize, height: usize) -> (u64, usize) {
         if width < 2 {
             return (0, 0);
@@ -383,7 +364,6 @@ mod aarch64 {
         }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn vertical_gradient_sum(gray: &[u8], width: usize, height: usize) -> (u64, usize) {
         if height < 2 {
             return (0, 0);
@@ -411,7 +391,6 @@ mod aarch64 {
         }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn load_u8x16_as_i16(pointer: *const u8) -> (int16x8_t, int16x8_t) {
         unsafe {
             let bytes = vld1q_u8(pointer);
@@ -422,7 +401,6 @@ mod aarch64 {
         }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn laplacian(
         center: int16x8_t,
         left: int16x8_t,
@@ -430,18 +408,21 @@ mod aarch64 {
         up: int16x8_t,
         down: int16x8_t,
     ) -> int16x8_t {
-        let horizontal = vaddq_s16(left, right);
-        let vertical = vaddq_s16(up, down);
-        let twice_center = vaddq_s16(center, center);
-        let four_center = vaddq_s16(twice_center, twice_center);
-        vsubq_s16(vaddq_s16(horizontal, vertical), four_center)
+        unsafe {
+            let horizontal = vaddq_s16(left, right);
+            let vertical = vaddq_s16(up, down);
+            let twice_center = vaddq_s16(center, center);
+            let four_center = vaddq_s16(twice_center, twice_center);
+            vsubq_s16(vaddq_s16(horizontal, vertical), four_center)
+        }
     }
 
-    #[target_feature(enable = "neon")]
     unsafe fn sum_squares_i16(values: int16x8_t) -> u64 {
-        let low = vmull_s16(vget_low_s16(values), vget_low_s16(values));
-        let high = vmull_high_s16(values, values);
-        vaddlvq_u32(vreinterpretq_u32_s32(low)) + vaddlvq_u32(vreinterpretq_u32_s32(high))
+        unsafe {
+            let low = vmull_s16(vget_low_s16(values), vget_low_s16(values));
+            let high = vmull_high_s16(values, values);
+            vaddlvq_u32(vreinterpretq_u32_s32(low)) + vaddlvq_u32(vreinterpretq_u32_s32(high))
+        }
     }
 }
 
@@ -555,29 +536,16 @@ mod tests {
 
     #[test]
     fn reports_the_runtime_selected_backend() {
-        #[cfg(all(
-            feature = "avx2-accel",
-            any(target_arch = "x86", target_arch = "x86_64")
-        ))]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let expected = if std::arch::is_x86_feature_detected!("avx2") {
             "cpu_avx2"
         } else {
-            "cpu_scalar"
+            "cpu_portable"
         };
-        #[cfg(all(feature = "neon-accel", target_arch = "aarch64"))]
-        let expected = if std::arch::is_aarch64_feature_detected!("neon") {
-            "cpu_neon"
-        } else {
-            "cpu_scalar"
-        };
-        #[cfg(not(any(
-            all(
-                feature = "avx2-accel",
-                any(target_arch = "x86", target_arch = "x86_64")
-            ),
-            all(feature = "neon-accel", target_arch = "aarch64")
-        )))]
-        let expected = "cpu_scalar";
+        #[cfg(target_arch = "aarch64")]
+        let expected = "cpu_neon";
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+        let expected = "cpu_portable";
 
         assert_eq!(backend_name(), expected);
         assert_eq!(focus_metrics(&[0], 1, 1).backend, expected);

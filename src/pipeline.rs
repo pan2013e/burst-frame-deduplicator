@@ -10,6 +10,7 @@ use image::{DynamicImage, ImageFormat};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 
+use crate::acceleration::AccelerationPlan;
 use crate::artifacts::{ensure_review_state, export_reviewed_artifacts, write_manifest};
 use crate::assets::{AssetInput, discover_assets_with_progress};
 use crate::decode::{decoder_report, load_preview, resize_rgb};
@@ -21,9 +22,8 @@ use crate::features::{
 use crate::metadata::read_photo_metadata;
 use crate::progress::{ProgressReporter, ProgressStage};
 use crate::types::{
-    AccelerationPreference, AccelerationReport, AssetRecord, AssetTimings, BenchmarkReport,
-    BurstCluster, BurstSequence, QualityMetrics, RunManifest, ScanOptions, SimilarityMetrics,
-    SuggestedAction, Suggestion, Summary,
+    AssetRecord, AssetTimings, BenchmarkReport, BurstCluster, BurstSequence, QualityMetrics,
+    RunManifest, ScanOptions, SimilarityMetrics, SuggestedAction, Suggestion, Summary,
 };
 
 pub async fn run_scan(
@@ -89,6 +89,7 @@ pub async fn run_scan(
         .build()
         .context("creating scoring worker pool")?;
     let worker_count = pool.current_num_threads();
+    let acceleration_plan = AccelerationPlan::resolve(options.acceleration);
     let detector_initialization_start = Instant::now();
     let detector_engine = DetectorEngine::initialize(&options, worker_count);
     let detector_initialization_ms = elapsed_ms(detector_initialization_start);
@@ -102,7 +103,13 @@ pub async fn run_scan(
         inputs
             .par_iter()
             .map(|input| {
-                let result = score_asset(input, &options, &detector_engine, thumb_root.as_deref());
+                let result = score_asset(
+                    input,
+                    &options,
+                    acceleration_plan,
+                    &detector_engine,
+                    thumb_root.as_deref(),
+                );
                 let done = scored.fetch_add(1, Ordering::Relaxed) + 1;
                 scoring_progress.emit(
                     ProgressStage::Analyzing,
@@ -139,8 +146,14 @@ pub async fn run_scan(
         )),
     );
     let refinement_start = Instant::now();
-    let refined_count =
-        refine_cluster_candidates(&mut assets, &index_clusters, &options, &pool, &progress);
+    let refined_count = refine_cluster_candidates(
+        &mut assets,
+        &index_clusters,
+        &options,
+        acceleration_plan,
+        &pool,
+        &progress,
+    );
     let refinement_ms = elapsed_ms(refinement_start);
     let ranking_start = Instant::now();
     progress.emit(ProgressStage::Ranking, 0, Some(1), None);
@@ -233,7 +246,7 @@ pub async fn run_scan(
         benchmark("clustering_and_ranking", clustering_ms, Some(assets.len())),
     ];
 
-    let acceleration = acceleration_report(options.acceleration, worker_count, &assets);
+    let acceleration = acceleration_plan.report(worker_count, &assets);
     let mut detector = detector_engine.report();
     let mut detector_usage = BTreeMap::new();
     let mut detector_not_run = 0usize;
@@ -358,6 +371,7 @@ struct RefineResult {
 fn score_asset(
     input: &AssetInput,
     options: &ScanOptions,
+    acceleration: AccelerationPlan,
     detector_engine: &DetectorEngine,
     thumbs_dir: Option<&Path>,
 ) -> ScoreResult {
@@ -414,7 +428,7 @@ fn score_asset(
             record.height = decoded.height;
             record.decoder = decoded.decoder;
             let feature_start = Instant::now();
-            let feature = score_image(&decoded.image, options.acceleration);
+            let feature = score_image(&decoded.image, acceleration);
             timings.feature_ms = elapsed_ms(feature_start);
             record.feature_backend = feature.backend;
             record.metrics = feature.metrics;
@@ -489,6 +503,7 @@ fn refine_cluster_candidates(
     assets: &mut [AssetRecord],
     index_clusters: &[IndexGroup],
     options: &ScanOptions,
+    acceleration: AccelerationPlan,
     pool: &rayon::ThreadPool,
     progress: &ProgressReporter,
 ) -> usize {
@@ -520,7 +535,7 @@ fn refine_cluster_candidates(
             batch
                 .par_iter()
                 .map(|idx| {
-                    let result = refine_asset(*idx, &assets[*idx], options);
+                    let result = refine_asset(*idx, &assets[*idx], options, acceleration);
                     let done = refined.fetch_add(1, Ordering::Relaxed) + 1;
                     refinement_progress.emit(
                         ProgressStage::Refining,
@@ -586,7 +601,12 @@ fn refinement_candidates(
     selected.into_iter().collect()
 }
 
-fn refine_asset(idx: usize, asset: &AssetRecord, options: &ScanOptions) -> Option<RefineResult> {
+fn refine_asset(
+    idx: usize,
+    asset: &AssetRecord,
+    options: &ScanOptions,
+    acceleration: AccelerationPlan,
+) -> Option<RefineResult> {
     let decode_start = Instant::now();
     let decoded = match load_preview(
         &asset.representative.path,
@@ -604,7 +624,7 @@ fn refine_asset(idx: usize, asset: &AssetRecord, options: &ScanOptions) -> Optio
     };
     let decode_ms = elapsed_ms(decode_start);
     let feature_start = Instant::now();
-    let feature = score_image(&decoded.image, options.acceleration);
+    let feature = score_image(&decoded.image, acceleration);
     let mut metrics = feature.metrics;
     if let Some(detector) = &asset.detector {
         let heuristic_metrics = metrics.clone();
@@ -1133,206 +1153,6 @@ fn default_workers() -> usize {
         .map(|n| n.get())
         .unwrap_or(4)
         .clamp(1, 8)
-}
-
-fn acceleration_report(
-    requested: AccelerationPreference,
-    worker_count: usize,
-    assets: &[AssetRecord],
-) -> AccelerationReport {
-    let mut capabilities = vec![
-        format!("rayon_cpu_workers:{worker_count}"),
-        "cpu_scalar_focus_scoring".to_string(),
-    ];
-    let mut notes = vec![
-        "Portable scalar focus scoring and Rayon asset workers remain available on every platform."
-            .to_string(),
-    ];
-    #[cfg(all(
-        target_os = "linux",
-        feature = "avx2-accel",
-        any(target_arch = "x86", target_arch = "x86_64")
-    ))]
-    {
-        capabilities.push("avx2_focus_scoring_compiled".to_string());
-        if auto_cpu_backend() == "cpu_avx2" {
-            capabilities.push("avx2_focus_scoring".to_string());
-        } else {
-            notes.push(
-                "The AVX2 scorer is compiled in, but this CPU does not advertise AVX2; scalar scoring will be used."
-                    .to_string(),
-            );
-        }
-    }
-    #[cfg(all(target_os = "linux", feature = "neon-accel", target_arch = "aarch64"))]
-    {
-        capabilities.push("neon_focus_scoring_compiled".to_string());
-        if auto_cpu_backend() == "cpu_neon" {
-            capabilities.push("neon_focus_scoring".to_string());
-        } else {
-            notes.push(
-                "The NEON scorer is compiled in, but this CPU does not advertise NEON; scalar scoring will be used."
-                    .to_string(),
-            );
-        }
-    }
-    #[cfg(all(target_os = "macos", feature = "metal-accel"))]
-    let metal_available = crate::metal_accel::is_available();
-    #[cfg(not(all(target_os = "macos", feature = "metal-accel")))]
-    let metal_available = false;
-    if cfg!(target_os = "macos") {
-        capabilities.push("macos_platform_detected".to_string());
-        notes.push(
-            "RAW/HEIC decoding can use ImageMagick or macOS sips when available.".to_string(),
-        );
-    }
-    if metal_available {
-        capabilities.push("metal_focus_scoring".to_string());
-        notes.push(
-            "Metal acceleration is available for Laplacian sharpness and gradient scoring."
-                .to_string(),
-        );
-    } else if cfg!(all(target_os = "macos", feature = "metal-accel")) {
-        notes.push("Metal acceleration is compiled in but no usable Metal scorer initialized; CPU/Rayon will be used.".to_string());
-    }
-
-    #[cfg(all(target_os = "linux", feature = "cuda-accel"))]
-    {
-        capabilities.push("cuda_focus_scoring_compiled".to_string());
-        if requested == AccelerationPreference::Cuda {
-            let status = crate::cuda_accel::status();
-            if status.available {
-                capabilities.push("cuda_focus_scoring".to_string());
-                if let Some(device_name) = status.device_name {
-                    capabilities.push(format!("cuda_device:{device_name}"));
-                }
-            }
-            if let Some(note) = status.note {
-                notes.push(note);
-            }
-        } else if requested == AccelerationPreference::Auto {
-            notes.push(
-                "CUDA is opt-in while runtime parity and throughput validation is pending; pass --acceleration cuda to request it."
-                    .to_string(),
-            );
-        }
-    }
-
-    #[cfg(not(all(target_os = "linux", feature = "cuda-accel")))]
-    if requested == AccelerationPreference::Cuda {
-        notes.push(
-            "CUDA was requested, but this binary was built without Linux CUDA support; CPU fallback was used."
-                .to_string(),
-        );
-    }
-
-    if requested == AccelerationPreference::Metal && !metal_available {
-        if cfg!(all(target_os = "macos", feature = "metal-accel")) {
-            notes.push("Metal was requested but no usable Metal scorer initialized at runtime; falling back to native CPU scoring.".to_string());
-        } else {
-            notes.push("Metal was requested but this build cannot compile the Metal scorer on the current platform; native CPU fallback was used.".to_string());
-        }
-    }
-    if requested == AccelerationPreference::OpenCl {
-        notes.push(
-            "OpenCL was requested, but no OpenCL adapter is bundled; native CPU fallback was used."
-                .to_string(),
-        );
-    }
-    if requested == AccelerationPreference::Avx2 && auto_cpu_backend() != "cpu_avx2" {
-        notes.push(format!(
-            "AVX2 was requested but is unavailable at runtime; {} was used.",
-            auto_cpu_backend()
-        ));
-    }
-    if requested == AccelerationPreference::Neon && auto_cpu_backend() != "cpu_neon" {
-        notes.push(format!(
-            "NEON was requested but is unavailable at runtime; {} was used.",
-            auto_cpu_backend()
-        ));
-    }
-
-    let mut usage = BTreeMap::new();
-    for asset in assets {
-        let backend = asset
-            .feature_backend
-            .split("+refined_")
-            .next()
-            .unwrap_or_default();
-        if !backend.is_empty() {
-            *usage.entry(backend.to_string()).or_insert(0usize) += 1;
-        }
-    }
-    notes.push(format!(
-        "Final per-asset focus backend usage: {}.",
-        if usage.is_empty() {
-            "none".to_string()
-        } else {
-            usage
-                .iter()
-                .map(|(backend, count)| format!("{backend}={count}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    ));
-
-    let cuda_count = usage.get("cuda").copied().unwrap_or(0);
-    let metal_count = usage.get("metal").copied().unwrap_or(0);
-    let cpu_count = usage
-        .iter()
-        .filter(|(backend, _)| backend.starts_with("cpu_"))
-        .map(|(_, count)| *count)
-        .sum::<usize>();
-    let selected = if cuda_count > 0 {
-        if cpu_count > 0 {
-            "cuda_focus_with_cpu_fallback"
-        } else {
-            "cuda_focus_cpu_rest"
-        }
-    } else if metal_count > 0 {
-        if cpu_count > 0 {
-            "metal_focus_with_cpu_fallback"
-        } else {
-            "metal_focus_cpu_rest"
-        }
-    } else if usage.contains_key("cpu_avx2") {
-        "cpu_avx2_rayon"
-    } else if usage.contains_key("cpu_neon") {
-        "cpu_neon_rayon"
-    } else if usage.contains_key("cpu_scalar") || usage.contains_key("cpu_small_image") {
-        "cpu_scalar_rayon"
-    } else {
-        match requested {
-            AccelerationPreference::Cpu => "cpu_scalar_rayon",
-            _ if auto_cpu_backend() == "cpu_avx2" => "cpu_avx2_rayon",
-            _ if auto_cpu_backend() == "cpu_neon" => "cpu_neon_rayon",
-            _ => "cpu_scalar_rayon",
-        }
-    };
-    AccelerationReport {
-        requested,
-        selected: selected.to_string(),
-        capabilities,
-        notes,
-    }
-}
-
-fn auto_cpu_backend() -> &'static str {
-    #[cfg(all(
-        target_os = "linux",
-        any(feature = "avx2-accel", feature = "neon-accel")
-    ))]
-    {
-        crate::cpu_accel::backend_name()
-    }
-
-    #[cfg(not(all(
-        target_os = "linux",
-        any(feature = "avx2-accel", feature = "neon-accel")
-    )))]
-    {
-        "cpu_scalar"
-    }
 }
 
 fn elapsed_ms(start: Instant) -> f64 {

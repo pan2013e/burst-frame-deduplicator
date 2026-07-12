@@ -11,7 +11,8 @@ use burst_frame_deduplicator::progress::terminal_progress_reporter;
 use burst_frame_deduplicator::run_storage;
 use burst_frame_deduplicator::server;
 use burst_frame_deduplicator::types::{
-    AccelerationPreference, DetectorDevicePreference, DetectorPreference, ScanOptions,
+    AccelerationPreference, DetectorDevicePreference, DetectorModelPreference, DetectorPreference,
+    ScanOptions,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
@@ -162,13 +163,16 @@ struct ScanArgs {
     /// Worker count for parallel scoring. Defaults to available logical CPUs, capped at 8.
     #[arg(long)]
     workers: Option<usize>,
-    /// Hardware acceleration preference. CPU is scalar; AVX2 and NEON are runtime-checked.
+    /// Processing preference. CPU uses the best compatible SIMD implementation.
     #[arg(long, value_enum, default_value_t = AccelArg::Auto)]
     acceleration: AccelArg,
     /// Local subject detector used to improve completeness/out-of-frame scoring.
     #[arg(long, value_enum, default_value_t = DetectorArg::Auto)]
     detector: DetectorArg,
-    /// Execution device for local ML detection. CUDA falls back to CPU, then heuristics.
+    /// Local ML model size. macOS Vision ignores this option.
+    #[arg(long, value_enum, default_value_t = DetectorModelArg::Fast)]
+    detector_model: DetectorModelArg,
+    /// Execution device for local ML detection. GPU currently means CUDA on Linux.
     #[arg(long, value_enum, default_value_t = DetectorDeviceArg::Auto)]
     detector_device: DetectorDeviceArg,
     /// ONNX Runtime threads used by a serialized local ML detector session.
@@ -186,10 +190,17 @@ struct ScanArgs {
 enum AccelArg {
     Auto,
     Cpu,
+    Gpu,
+    Portable,
+    #[value(hide = true)]
     Avx2,
+    #[value(hide = true)]
     Neon,
+    #[value(hide = true)]
     Metal,
+    #[value(hide = true)]
     Cuda,
+    #[value(hide = true)]
     Opencl,
 }
 
@@ -198,15 +209,27 @@ enum DetectorArg {
     Auto,
     Off,
     Heuristic,
+    Ml,
+    #[value(hide = true)]
     Vision,
+    #[value(hide = true)]
     MlLight,
+    #[value(hide = true)]
     MlHeavy,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DetectorModelArg {
+    Fast,
+    Accurate,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum DetectorDeviceArg {
     Auto,
     Cpu,
+    Gpu,
+    #[value(hide = true)]
     Cuda,
 }
 
@@ -215,11 +238,11 @@ impl From<AccelArg> for AccelerationPreference {
         match value {
             AccelArg::Auto => Self::Auto,
             AccelArg::Cpu => Self::Cpu,
-            AccelArg::Avx2 => Self::Avx2,
-            AccelArg::Neon => Self::Neon,
-            AccelArg::Metal => Self::Metal,
-            AccelArg::Cuda => Self::Cuda,
-            AccelArg::Opencl => Self::OpenCl,
+            AccelArg::Gpu => Self::Gpu,
+            AccelArg::Portable => Self::Portable,
+            AccelArg::Avx2 | AccelArg::Neon => Self::Cpu,
+            AccelArg::Metal | AccelArg::Cuda => Self::Gpu,
+            AccelArg::Opencl => Self::Portable,
         }
     }
 }
@@ -230,9 +253,18 @@ impl From<DetectorArg> for DetectorPreference {
             DetectorArg::Auto => Self::Auto,
             DetectorArg::Off => Self::Off,
             DetectorArg::Heuristic => Self::Heuristic,
-            DetectorArg::Vision => Self::Vision,
-            DetectorArg::MlLight => Self::MlLight,
-            DetectorArg::MlHeavy => Self::MlHeavy,
+            DetectorArg::Ml | DetectorArg::Vision | DetectorArg::MlLight | DetectorArg::MlHeavy => {
+                Self::Ml
+            }
+        }
+    }
+}
+
+impl From<DetectorModelArg> for DetectorModelPreference {
+    fn from(value: DetectorModelArg) -> Self {
+        match value {
+            DetectorModelArg::Fast => Self::Fast,
+            DetectorModelArg::Accurate => Self::Accurate,
         }
     }
 }
@@ -242,13 +274,18 @@ impl From<DetectorDeviceArg> for DetectorDevicePreference {
         match value {
             DetectorDeviceArg::Auto => Self::Auto,
             DetectorDeviceArg::Cpu => Self::Cpu,
-            DetectorDeviceArg::Cuda => Self::Cuda,
+            DetectorDeviceArg::Gpu | DetectorDeviceArg::Cuda => Self::Gpu,
         }
     }
 }
 
 impl From<ScanArgs> for ScanOptions {
     fn from(value: ScanArgs) -> Self {
+        let detector_model = match value.detector {
+            DetectorArg::MlHeavy => DetectorModelPreference::Accurate,
+            DetectorArg::MlLight => DetectorModelPreference::Fast,
+            _ => value.detector_model.into(),
+        };
         Self {
             preview_size: value.preview_size,
             refine_size: value.refine_size,
@@ -266,6 +303,7 @@ impl From<ScanArgs> for ScanOptions {
             workers: value.workers,
             acceleration: value.acceleration.into(),
             detector: value.detector.into(),
+            detector_model,
             detector_device: value.detector_device.into(),
             detector_threads: value.detector_threads,
             detector_model_pack: value.detector_model_pack,

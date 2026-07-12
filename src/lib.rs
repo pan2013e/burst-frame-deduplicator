@@ -1,12 +1,13 @@
 #![allow(unexpected_cfgs)]
 
+pub mod acceleration;
 pub mod app_backend;
 pub mod artifacts;
 pub mod assets;
 pub mod counterpart;
 #[cfg(all(
-    target_os = "linux",
-    any(feature = "avx2-accel", feature = "neon-accel")
+    feature = "cpu-simd",
+    any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub mod cpu_accel;
 #[cfg(all(target_os = "linux", feature = "cuda-accel"))]

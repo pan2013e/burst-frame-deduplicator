@@ -22,6 +22,7 @@ pub struct ScanOptions {
     pub workers: Option<usize>,
     pub acceleration: AccelerationPreference,
     pub detector: DetectorPreference,
+    pub detector_model: DetectorModelPreference,
     pub detector_device: DetectorDevicePreference,
     pub detector_threads: Option<usize>,
     #[serde(skip)]
@@ -48,6 +49,7 @@ impl Default for ScanOptions {
             workers: None,
             acceleration: AccelerationPreference::Auto,
             detector: DetectorPreference::Auto,
+            detector_model: DetectorModelPreference::Fast,
             detector_device: DetectorDevicePreference::Auto,
             detector_threads: None,
             detector_model_pack: None,
@@ -61,11 +63,29 @@ impl Default for ScanOptions {
 pub enum AccelerationPreference {
     Auto,
     Cpu,
+    Gpu,
+    Portable,
+    #[doc(hidden)]
     Avx2,
+    #[doc(hidden)]
     Neon,
+    #[doc(hidden)]
     Metal,
+    #[doc(hidden)]
     Cuda,
+    #[doc(hidden)]
     OpenCl,
+}
+
+impl AccelerationPreference {
+    pub fn canonical(self) -> Self {
+        match self {
+            Self::Avx2 | Self::Neon => Self::Cpu,
+            Self::Metal | Self::Cuda => Self::Gpu,
+            Self::OpenCl => Self::Portable,
+            canonical => canonical,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,9 +94,37 @@ pub enum DetectorPreference {
     Auto,
     Off,
     Heuristic,
+    Ml,
+    #[doc(hidden)]
     Vision,
+    #[doc(hidden)]
     MlLight,
+    #[doc(hidden)]
     MlHeavy,
+}
+
+impl DetectorPreference {
+    pub fn canonical(self) -> Self {
+        match self {
+            Self::Vision | Self::MlLight | Self::MlHeavy => Self::Ml,
+            canonical => canonical,
+        }
+    }
+
+    pub fn legacy_model(self) -> Option<DetectorModelPreference> {
+        match self {
+            Self::MlLight => Some(DetectorModelPreference::Fast),
+            Self::MlHeavy => Some(DetectorModelPreference::Accurate),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectorModelPreference {
+    Fast,
+    Accurate,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,13 +132,31 @@ pub enum DetectorPreference {
 pub enum DetectorDevicePreference {
     Auto,
     Cpu,
+    Gpu,
+    #[doc(hidden)]
     Cuda,
+}
+
+impl DetectorDevicePreference {
+    pub fn canonical(self) -> Self {
+        match self {
+            Self::Cuda => Self::Gpu,
+            canonical => canonical,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccelerationReport {
     pub requested: AccelerationPreference,
+    /// Combined v0.5-compatible summary. Prefer the orthogonal fields below.
     pub selected: String,
+    #[serde(default)]
+    pub focus_backend: String,
+    #[serde(default)]
+    pub parallelism_backend: String,
+    #[serde(default)]
+    pub parallelism_workers: usize,
     pub capabilities: Vec<String>,
     pub notes: Vec<String>,
 }

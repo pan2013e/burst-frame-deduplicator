@@ -238,13 +238,13 @@ EOF
 echo "Installed local ML model pack at: $destination"
 case "$runtime" in
   cuda)
-    echo "Use: --detector ml-light|ml-heavy --detector-device cuda --detector-model-pack '$destination'"
+    echo "Use: --detector ml --detector-model fast|accurate --detector-device gpu --detector-model-pack '$destination'"
     ;;
   both)
-    echo "Automatic device selection stays on CPU; pass --detector-device cuda explicitly to initialize a GPU."
-    echo "Use: --detector ml-light|ml-heavy --detector-model-pack '$destination'"
+    echo "Automatic device selection stays on CPU; pass --detector-device gpu explicitly to initialize a GPU."
+    echo "Use: --detector ml --detector-model fast|accurate --detector-model-pack '$destination'"
     ;;
   cpu)
-    echo "Use: --detector ml-light|ml-heavy --detector-device cpu --detector-model-pack '$destination'"
+    echo "Use: --detector ml --detector-model fast|accurate --detector-device cpu --detector-model-pack '$destination'"
     ;;
 esac

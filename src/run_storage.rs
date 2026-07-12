@@ -450,6 +450,9 @@ mod tests {
             acceleration: AccelerationReport {
                 requested: AccelerationPreference::Auto,
                 selected: "cpu".to_string(),
+                focus_backend: "cpu_portable".to_string(),
+                parallelism_backend: "rayon".to_string(),
+                parallelism_workers: 1,
                 capabilities: Vec::new(),
                 notes: Vec::new(),
             },

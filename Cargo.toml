@@ -11,21 +11,25 @@ members = [".", "crates/burst-core", "web/wasm"]
 resolver = "3"
 
 [features]
-default = ["macos-native", "linux-native"]
-linux-native = ["avx2-accel", "neon-accel", "onnx-detector"]
-avx2-accel = []
-neon-accel = []
-cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
+default = ["native"]
+native = ["cpu-simd", "onnx-detector", "metal-accel", "macos-vision"]
+cpu-simd = []
+# Compatibility aliases for build commands published before v0.6.0.
+linux-native = ["cpu-simd", "onnx-detector"]
+macos-native = ["cpu-simd", "metal-accel", "macos-vision"]
+avx2-accel = ["cpu-simd"]
+neon-accel = ["cpu-simd"]
+cuda-accel = ["dep:cudarc", "dep:libloading"]
 onnx-detector = ["dep:ort"]
 libraw-preview = ["dep:libloading"]
 linux-gui = [
-    "linux-native",
+    "cpu-simd",
+    "onnx-detector",
     "libraw-preview",
     "dep:adw",
     "dep:gdk-pixbuf",
     "dep:gtk",
 ]
-macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
 

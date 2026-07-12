@@ -38,7 +38,7 @@ private enum BenchmarkError: LocalizedError {
     case usage
 
     var errorDescription: String? {
-        "Usage: BurstFrameFFIBenchmark --source <folder> --out <run> [--acceleration auto|cpu|metal] [--detector heuristic|vision|off] [--max-time-gap-ms N] [--max-cluster-span-ms N] [--workers N]"
+        "Usage: BurstFrameFFIBenchmark --source <folder> --out <run> [--acceleration auto|cpu|gpu|portable] [--detector heuristic|ml|off] [--max-time-gap-ms N] [--max-cluster-span-ms N] [--workers N]"
     }
 }
 
@@ -48,6 +48,9 @@ private struct BenchmarkOutput: Encodable {
     let assets: Int
     let assetsPerSecond: Double
     let acceleration: String
+    let focusBackend: String
+    let parallelismBackend: String
+    let parallelismWorkers: Int
     let detector: String
     let stages: [StageOutput]
 }
@@ -89,6 +92,10 @@ do {
         assets: assets,
         assetsPerSecond: elapsedMs > 0 ? Double(assets) * 1_000 / elapsedMs : 0,
         acceleration: payload.manifest.acceleration.selected,
+        focusBackend: payload.manifest.acceleration.focusBackend
+            ?? payload.manifest.acceleration.selected,
+        parallelismBackend: payload.manifest.acceleration.parallelismBackend ?? "rayon",
+        parallelismWorkers: payload.manifest.acceleration.parallelismWorkers ?? options.workers ?? 1,
         detector: payload.manifest.detector.selected,
         stages: payload.manifest.benchmarks.map {
             StageOutput(stage: $0.stage, elapsedMs: $0.elapsedMs, itemsPerSecond: $0.itemsPerSec)

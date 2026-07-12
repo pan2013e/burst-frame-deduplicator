@@ -135,7 +135,17 @@ final class AppModel: ObservableObject {
         if let stored = UserDefaults.standard.data(forKey: "scanOptions"),
            let decoded = try? JSONDecoder().decode(ScanOptions.self, from: stored)
         {
-            options = decoded
+            var migrated = decoded
+            switch migrated.acceleration {
+            case "avx2", "neon": migrated.acceleration = "cpu"
+            case "metal", "cuda": migrated.acceleration = "gpu"
+            case "opencl", "open_cl", "scalar": migrated.acceleration = "portable"
+            default: break
+            }
+            if ["vision", "ml_light", "ml_heavy"].contains(migrated.detector) {
+                migrated.detector = "ml"
+            }
+            options = migrated
         } else if let defaults = try? bridge.defaultOptions() {
             options = defaults
         }

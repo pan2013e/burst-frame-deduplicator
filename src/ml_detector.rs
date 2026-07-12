@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, anyhow};
+use burst_core::detection_from_probability_mask;
 use image::{RgbImage, imageops::FilterType};
 use ort::ep::cuda::ConvAlgorithmSearch;
 use ort::session::{OutputSelector, RunOptions, Session};
@@ -14,9 +15,7 @@ use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::detector::DetectorTimingSnapshot;
-use crate::types::{
-    DetectorDevicePreference, DetectorModelReport, DetectorOutput, DetectorPreference, ScanOptions,
-};
+use crate::types::{DetectorDevicePreference, DetectorModelReport, DetectorOutput, ScanOptions};
 
 const RUNTIME_VERSION: &str = "onnxruntime-1.24.2";
 static LOADED_RUNTIME: OnceLock<Result<PathBuf, String>> = OnceLock::new();
@@ -83,10 +82,13 @@ impl MlDetector {
         options: &ScanOptions,
         worker_count: usize,
     ) -> Result<(Self, Vec<String>), String> {
-        let spec = match options.detector {
-            DetectorPreference::MlLight => LIGHT,
-            DetectorPreference::MlHeavy => HEAVY,
-            _ => return Err("Internal local ML model selection error.".to_string()),
+        let model = options
+            .detector
+            .legacy_model()
+            .unwrap_or(options.detector_model);
+        let spec = match model {
+            crate::types::DetectorModelPreference::Fast => LIGHT,
+            crate::types::DetectorModelPreference::Accurate => HEAVY,
         };
         let pack = options
             .detector_model_pack
@@ -120,7 +122,8 @@ impl MlDetector {
             .join("lib")
             .join("libonnxruntime.so");
         let mut notes = Vec::new();
-        let (runtime_path, attempt_cuda, runtime_label) = match options.detector_device {
+        let detector_device = options.detector_device.canonical();
+        let (runtime_path, attempt_cuda, runtime_label) = match detector_device {
             DetectorDevicePreference::Cpu if cpu_runtime.is_file() => {
                 (cpu_runtime.clone(), false, format!("{RUNTIME_VERSION}-cpu"))
             }
@@ -138,10 +141,10 @@ impl MlDetector {
             DetectorDevicePreference::Cpu => {
                 (cpu_runtime.clone(), false, format!("{RUNTIME_VERSION}-cpu"))
             }
-            DetectorDevicePreference::Cuda if cuda_runtime.is_file() => {
+            DetectorDevicePreference::Gpu if cuda_runtime.is_file() => {
                 (cuda_runtime, true, format!("{RUNTIME_VERSION}-cuda12"))
             }
-            DetectorDevicePreference::Cuda => {
+            DetectorDevicePreference::Gpu => {
                 notes.push(
                     "CUDA was requested for local ML detection, but the CUDA runtime pack is absent; trying the CPU provider."
                         .to_string(),
@@ -153,13 +156,16 @@ impl MlDetector {
             }
             DetectorDevicePreference::Auto if cuda_runtime.is_file() => {
                 notes.push(
-                    "The CPU-only runtime pack is absent; automatic selection is using the CUDA runtime's CPU provider. Pass --detector-device cuda to initialize a GPU."
+                    "The CPU-only runtime pack is absent; automatic selection is using the CUDA runtime's CPU provider. Pass --detector-device gpu to initialize a GPU."
                         .to_string(),
                 );
                 (cuda_runtime, false, format!("{RUNTIME_VERSION}-cuda12"))
             }
             DetectorDevicePreference::Auto => {
                 (cpu_runtime, false, format!("{RUNTIME_VERSION}-cpu"))
+            }
+            DetectorDevicePreference::Cuda => {
+                unreachable!("legacy detector devices canonicalize above")
             }
         };
         if !runtime_path.is_file() {
@@ -440,130 +446,28 @@ fn preprocess(image: &RgbImage, spec: ModelSpec) -> Vec<f32> {
     output
 }
 
-#[derive(Debug)]
-struct Component {
-    area: usize,
-    min_x: usize,
-    min_y: usize,
-    max_x: usize,
-    max_y: usize,
-    edge_pixels: usize,
-    probability_sum: f64,
-    peak_probability: f64,
-}
-
 fn mask_to_output(
     probabilities: &[f32],
     width: usize,
     height: usize,
     backend: &str,
 ) -> Option<DetectorOutput> {
-    let minimum_area = (width * height / 20_000).max(4);
-    let edge_x = (width / 50).max(1);
-    let edge_y = (height / 50).max(1);
-    let mut visited = vec![false; probabilities.len()];
-    let mut components = Vec::new();
-    let mut stack = Vec::new();
-    for start in 0..probabilities.len() {
-        if visited[start] || !probabilities[start].is_finite() || probabilities[start] < 0.5 {
-            continue;
-        }
-        visited[start] = true;
-        stack.push(start);
-        let mut component = Component {
-            area: 0,
-            min_x: width,
-            min_y: height,
-            max_x: 0,
-            max_y: 0,
-            edge_pixels: 0,
-            probability_sum: 0.0,
-            peak_probability: 0.0,
-        };
-        while let Some(index) = stack.pop() {
-            let x = index % width;
-            let y = index / width;
-            let probability = f64::from(probabilities[index].clamp(0.0, 1.0));
-            component.area += 1;
-            component.min_x = component.min_x.min(x);
-            component.min_y = component.min_y.min(y);
-            component.max_x = component.max_x.max(x);
-            component.max_y = component.max_y.max(y);
-            component.probability_sum += probability;
-            component.peak_probability = component.peak_probability.max(probability);
-            if x < edge_x || y < edge_y || x + edge_x >= width || y + edge_y >= height {
-                component.edge_pixels += 1;
-            }
-            if x > 0 {
-                visit_neighbor(index - 1, probabilities, &mut visited, &mut stack);
-            }
-            if x + 1 < width {
-                visit_neighbor(index + 1, probabilities, &mut visited, &mut stack);
-            }
-            if y > 0 {
-                visit_neighbor(index - width, probabilities, &mut visited, &mut stack);
-            }
-            if y + 1 < height {
-                visit_neighbor(index + width, probabilities, &mut visited, &mut stack);
-            }
-        }
-        if component.area >= minimum_area {
-            components.push(component);
-        }
-    }
-    if components.is_empty() {
-        return None;
-    }
-    components.sort_by_key(|component| std::cmp::Reverse(component.area));
-    let largest_area = components[0].area;
-    let relevant: Vec<&Component> = components
-        .iter()
-        .filter(|component| component.area * 20 >= largest_area)
-        .collect();
-    let min_x = relevant.iter().map(|component| component.min_x).min()?;
-    let min_y = relevant.iter().map(|component| component.min_y).min()?;
-    let max_x = relevant.iter().map(|component| component.max_x).max()?;
-    let max_y = relevant.iter().map(|component| component.max_y).max()?;
-    let selected_area: usize = relevant.iter().map(|component| component.area).sum();
-    let edge_pixels: usize = relevant.iter().map(|component| component.edge_pixels).sum();
-    let primary = &components[0];
-    let mean_probability = primary.probability_sum / primary.area as f64;
-    let confidence = (0.75 * mean_probability + 0.25 * primary.peak_probability).clamp(0.0, 1.0);
-    let x1 = min_x as f64 / width as f64;
-    let y1 = min_y as f64 / height as f64;
-    let x2 = (max_x + 1) as f64 / width as f64;
-    let y2 = (max_y + 1) as f64 / height as f64;
-    let margin = x1.min(y1).min(1.0 - x2).min(1.0 - y2).max(0.0);
-    let proximity_risk = 1.0 - (margin / 0.04).clamp(0.0, 1.0);
-    let contact_risk = (edge_pixels as f64 / selected_area as f64 * 4.0).clamp(0.0, 1.0);
-    let truncation_risk = (0.70 * proximity_risk + 0.30 * contact_risk).clamp(0.0, 1.0);
+    let detection = detection_from_probability_mask(probabilities, width, height)?;
     Some(DetectorOutput {
         backend: backend.to_string(),
-        confidence,
-        subject_count: components.len(),
-        truncation_risk,
-        bbox_x1: x1,
-        bbox_y1: y1,
-        bbox_x2: x2,
-        bbox_y2: y2,
-        explanation: if truncation_risk > 0.65 {
+        confidence: detection.confidence,
+        subject_count: detection.subject_count,
+        truncation_risk: detection.truncation_risk,
+        bbox_x1: detection.bbox_x1,
+        bbox_y1: detection.bbox_y1,
+        bbox_x2: detection.bbox_x2,
+        bbox_y2: detection.bbox_y2,
+        explanation: if detection.truncation_risk > 0.65 {
             "Likely subject detail is close to the frame edge.".to_string()
         } else {
             "Subject-like detail appears inside the frame.".to_string()
         },
     })
-}
-
-fn visit_neighbor(
-    index: usize,
-    probabilities: &[f32],
-    visited: &mut [bool],
-    stack: &mut Vec<usize>,
-) {
-    if !visited[index] && probabilities[index].is_finite() && probabilities[index] >= 0.5 {
-        visited[index] = true;
-        stack.push(index);
-    }
 }
 
 fn elapsed_ms(start: Instant) -> f64 {

@@ -52,12 +52,16 @@ struct SystemCapability: Sendable {
             : pow(Double(options.refineSize) / 2048.0, 2)
                 * Double(options.refineCandidatesPerCluster) / 2.0
         let detectorCost: Double = switch options.detector {
-        case "vision": 0.55
+        case "ml": 0.55
         case "auto": 0.42
         case "heuristic": 0.14
         default: 0.0
         }
-        let accelerationBenefit = options.acceleration == "cpu" ? 1.0 : 0.82
+        let accelerationBenefit: Double = switch options.acceleration {
+        case "portable": 1.08
+        case "cpu": 0.92
+        default: 0.82
+        }
         let workload = (previewPixels * 0.48 + refinementPixels * 0.38 + detectorCost) * accelerationBenefit
         let capacity = 0.55 + capabilityScore * 0.95
         return (workload / capacity / 1.6).clamped(to: 0...1)

@@ -35,6 +35,29 @@ pub struct QualityMetrics {
     pub dhash: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubjectDetection {
+    pub confidence: f64,
+    pub subject_count: usize,
+    pub truncation_risk: f64,
+    pub bbox_x1: f64,
+    pub bbox_y1: f64,
+    pub bbox_x2: f64,
+    pub bbox_y2: f64,
+}
+
+#[derive(Debug)]
+struct MaskComponent {
+    area: usize,
+    min_x: usize,
+    min_y: usize,
+    max_x: usize,
+    max_y: usize,
+    edge_pixels: usize,
+    probability_sum: f64,
+    peak_probability: f64,
+}
+
 impl Default for QualityMetrics {
     fn default() -> Self {
         Self {
@@ -170,6 +193,129 @@ pub fn update_subject_focus(image: &RgbImage, metrics: &mut QualityMetrics) {
     let focus = focus_in_bbox(&gray, &bbox);
     metrics.subject_sharpness = focus.sharpness;
     metrics.subject_tenengrad = focus.tenengrad;
+}
+
+pub fn merge_subject_detection(metrics: &mut QualityMetrics, detection: &SubjectDetection) {
+    if detection.confidence <= 0.0 || detection.subject_count == 0 {
+        return;
+    }
+    let detector_completeness = (1.0 - detection.truncation_risk).clamp(0.0, 1.0);
+    metrics.object_confidence = metrics.object_confidence.max(detection.confidence);
+    metrics.completeness =
+        (0.62 * metrics.completeness + 0.38 * detector_completeness).clamp(0.0, 1.0);
+    metrics.bbox_x1 = detection.bbox_x1;
+    metrics.bbox_y1 = detection.bbox_y1;
+    metrics.bbox_x2 = detection.bbox_x2;
+    metrics.bbox_y2 = detection.bbox_y2;
+}
+
+pub fn detection_from_probability_mask(
+    probabilities: &[f32],
+    width: usize,
+    height: usize,
+) -> Option<SubjectDetection> {
+    if width == 0 || height == 0 || probabilities.len() != width.checked_mul(height)? {
+        return None;
+    }
+    let minimum_area = (width * height / 20_000).max(4);
+    let edge_x = (width / 50).max(1);
+    let edge_y = (height / 50).max(1);
+    let mut visited = vec![false; probabilities.len()];
+    let mut components = Vec::new();
+    let mut stack = Vec::new();
+    for start in 0..probabilities.len() {
+        if visited[start] || !probabilities[start].is_finite() || probabilities[start] < 0.5 {
+            continue;
+        }
+        visited[start] = true;
+        stack.push(start);
+        let mut component = MaskComponent {
+            area: 0,
+            min_x: width,
+            min_y: height,
+            max_x: 0,
+            max_y: 0,
+            edge_pixels: 0,
+            probability_sum: 0.0,
+            peak_probability: 0.0,
+        };
+        while let Some(index) = stack.pop() {
+            let x = index % width;
+            let y = index / width;
+            let probability = f64::from(probabilities[index].clamp(0.0, 1.0));
+            component.area += 1;
+            component.min_x = component.min_x.min(x);
+            component.min_y = component.min_y.min(y);
+            component.max_x = component.max_x.max(x);
+            component.max_y = component.max_y.max(y);
+            component.probability_sum += probability;
+            component.peak_probability = component.peak_probability.max(probability);
+            if x < edge_x || y < edge_y || x + edge_x >= width || y + edge_y >= height {
+                component.edge_pixels += 1;
+            }
+            if x > 0 {
+                visit_probability_neighbor(index - 1, probabilities, &mut visited, &mut stack);
+            }
+            if x + 1 < width {
+                visit_probability_neighbor(index + 1, probabilities, &mut visited, &mut stack);
+            }
+            if y > 0 {
+                visit_probability_neighbor(index - width, probabilities, &mut visited, &mut stack);
+            }
+            if y + 1 < height {
+                visit_probability_neighbor(index + width, probabilities, &mut visited, &mut stack);
+            }
+        }
+        if component.area >= minimum_area {
+            components.push(component);
+        }
+    }
+    if components.is_empty() {
+        return None;
+    }
+    components.sort_by_key(|component| std::cmp::Reverse(component.area));
+    let largest_area = components[0].area;
+    let relevant: Vec<&MaskComponent> = components
+        .iter()
+        .filter(|component| component.area * 20 >= largest_area)
+        .collect();
+    let min_x = relevant.iter().map(|component| component.min_x).min()?;
+    let min_y = relevant.iter().map(|component| component.min_y).min()?;
+    let max_x = relevant.iter().map(|component| component.max_x).max()?;
+    let max_y = relevant.iter().map(|component| component.max_y).max()?;
+    let selected_area: usize = relevant.iter().map(|component| component.area).sum();
+    let edge_pixels: usize = relevant.iter().map(|component| component.edge_pixels).sum();
+    let primary = &components[0];
+    let mean_probability = primary.probability_sum / primary.area as f64;
+    let confidence = (0.75 * mean_probability + 0.25 * primary.peak_probability).clamp(0.0, 1.0);
+    let x1 = min_x as f64 / width as f64;
+    let y1 = min_y as f64 / height as f64;
+    let x2 = (max_x + 1) as f64 / width as f64;
+    let y2 = (max_y + 1) as f64 / height as f64;
+    let margin = x1.min(y1).min(1.0 - x2).min(1.0 - y2).max(0.0);
+    let proximity_risk = 1.0 - (margin / 0.04).clamp(0.0, 1.0);
+    let contact_risk = (edge_pixels as f64 / selected_area as f64 * 4.0).clamp(0.0, 1.0);
+    Some(SubjectDetection {
+        confidence,
+        subject_count: components.len(),
+        truncation_risk: (0.70 * proximity_risk + 0.30 * contact_risk).clamp(0.0, 1.0),
+        bbox_x1: x1,
+        bbox_y1: y1,
+        bbox_x2: x2,
+        bbox_y2: y2,
+    })
+}
+
+fn visit_probability_neighbor(
+    index: usize,
+    probabilities: &[f32],
+    visited: &mut [bool],
+    stack: &mut Vec<usize>,
+) {
+    if !visited[index] && probabilities[index].is_finite() && probabilities[index] >= 0.5 {
+        visited[index] = true;
+        stack.push(index);
+    }
 }
 
 pub fn similarity_features(image: &RgbImage, metrics: &QualityMetrics) -> SimilarityFeatures {
@@ -816,7 +962,10 @@ fn mask_distance(left: &[u8], right: &[u8]) -> (f64, f64) {
 mod tests {
     use image::{Rgb, RgbImage};
 
-    use super::{compare_similarity, score_image, similarity_features};
+    use super::{
+        QualityMetrics, compare_similarity, detection_from_probability_mask,
+        merge_subject_detection, score_image, similarity_features,
+    };
 
     fn synthetic_frame(x: u32, vertical: bool) -> RgbImage {
         let mut image = RgbImage::from_pixel(320, 240, Rgb([165, 190, 210]));
@@ -860,5 +1009,26 @@ mod tests {
         let features = features(&synthetic_frame(160, false));
         let comparison = compare_similarity(&features, &features);
         assert!(comparison.distance < 1e-9, "{comparison:?}");
+    }
+
+    #[test]
+    fn probability_mask_produces_shared_subject_geometry() {
+        let mut mask = vec![0.0; 20 * 20];
+        for y in 6..12 {
+            for x in 4..14 {
+                mask[y * 20 + x] = 0.9;
+            }
+        }
+        let detection = detection_from_probability_mask(&mask, 20, 20).unwrap();
+        assert_eq!(detection.subject_count, 1);
+        assert!((detection.bbox_x1 - 0.2).abs() < 1e-9);
+        assert!((detection.bbox_y1 - 0.3).abs() < 1e-9);
+        assert!((detection.bbox_x2 - 0.7).abs() < 1e-9);
+        assert!((detection.bbox_y2 - 0.6).abs() < 1e-9);
+
+        let mut metrics = QualityMetrics::default();
+        merge_subject_detection(&mut metrics, &detection);
+        assert_eq!(metrics.bbox_x1, detection.bbox_x1);
+        assert!(metrics.object_confidence > 0.85);
     }
 }

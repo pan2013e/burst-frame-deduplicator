@@ -168,12 +168,13 @@ struct SettingsView: View {
                 Picker(locale.text("acceleration"), selection: $model.options.acceleration) {
                     Text(locale.text("automaticOption")).tag("auto")
                     Text(locale.text("cpuOption")).tag("cpu")
-                    Text(locale.text("metalOption")).tag("metal")
+                    Text(locale.text("gpuOption")).tag("gpu")
+                    Text(locale.text("portableCpuOption")).tag("portable")
                 }
                 Picker(locale.text("detector"), selection: $model.options.detector) {
                     Text(locale.text("automaticOption")).tag("auto")
                     Text(locale.text("heuristicOption")).tag("heuristic")
-                    Text(locale.text("visionOption")).tag("vision")
+                    Text(locale.text("mlOption")).tag("ml")
                     Text(locale.text("offOption")).tag("off")
                 }
             }
@@ -365,7 +366,7 @@ struct SettingsView: View {
            options.refineCandidatesPerCluster == 4,
            options.maxDuplicateDistance == 0.18,
            options.minDuplicateConfidence == 0.60,
-           options.detector == "vision",
+           options.detector == "ml",
            !options.disableRefinement
         { return .best }
         if options.previewSize == 1280, options.refineSize == 2048,
@@ -385,7 +386,7 @@ struct SettingsView: View {
             model.options.refineCandidatesPerCluster = 4
             model.options.maxDuplicateDistance = 0.18
             model.options.minDuplicateConfidence = 0.60
-            model.options.detector = "vision"
+            model.options.detector = "ml"
             model.options.disableRefinement = false
         case .balanced:
             model.options.previewSize = 1280

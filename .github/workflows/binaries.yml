@@ -48,7 +48,7 @@ jobs:
       - name: Test portable scalar workspace
         run: cargo test --workspace --no-default-features
 
-      - name: Test Linux defaults and AVX2 dispatch
+      - name: Test Linux defaults and native CPU dispatch
         run: cargo test --workspace
 
       - name: Test optional CUDA adapter without a GPU
@@ -60,7 +60,7 @@ jobs:
       - name: Build standalone CLI
         env:
           BFD_BUILD_COMMIT: ${{ github.sha }}
-        run: cargo build --release --no-default-features --features cuda-accel --bin burst-frame-deduplicator
+        run: cargo build --release --no-default-features --features cpu-simd,onnx-detector,cuda-accel --bin burst-frame-deduplicator
 
       - name: Build and exercise native Linux application
         env:
@@ -85,17 +85,18 @@ jobs:
             --runtime cpu
           (
             cd "$smoke"
-            ./bfd scan photos --out run --no-refine --detector off --acceleration cpu --workers 1
+            ./bfd scan photos --out run --no-refine --detector off --acceleration portable --workers 1
             grep -q '"selected": "cpu_scalar_rayon"' run/manifest.json
+            grep -q '"focus_backend": "cpu_portable"' run/manifest.json
             grep -q '"rayon_cpu_workers:1"' run/manifest.json
-            ./bfd scan photos --out run-cuda-fallback --no-refine --detector off --acceleration cuda --workers 1
-            grep -q '"requested": "cuda"' run-cuda-fallback/manifest.json
-            grep -q '"selected": "cpu_' run-cuda-fallback/manifest.json
-            ./bfd scan photos --out run-ml-fallback --no-refine --detector ml-light --detector-device cpu --workers 1
-            grep -q '"requested": "ml_light"' run-ml-fallback/manifest.json
+            ./bfd scan photos --out run-cuda-fallback --no-refine --detector off --acceleration gpu --workers 1
+            grep -q '"requested": "gpu"' run-cuda-fallback/manifest.json
+            grep -q '"focus_backend": "cpu_' run-cuda-fallback/manifest.json
+            ./bfd scan photos --out run-ml-fallback --no-refine --detector ml --detector-model fast --detector-device cpu --workers 1
+            grep -q '"requested": "ml"' run-ml-fallback/manifest.json
             grep -q '"selected": "heuristic_saliency"' run-ml-fallback/manifest.json
             grep -q 'offline model pack' run-ml-fallback/manifest.json
-            ./bfd scan photos --out run-ml-light --no-refine --detector ml-light --detector-device cpu --detector-model-pack model-pack --workers 1
+            ./bfd scan photos --out run-ml-light --no-refine --detector ml --detector-model fast --detector-device cpu --detector-model-pack model-pack --workers 1
             jq -e '.detector.selected == "onnx_u2netp-sod-v1_cpu"' run-ml-light/manifest.json
             jq -e '.detector.model.sha256 == "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"' run-ml-light/manifest.json
             jq -e '.benchmarks[] | select(.stage == "detector_inference_worker_sum") | .items == 1' run-ml-light/manifest.json
@@ -196,8 +197,9 @@ jobs:
             --no-refine \
             --no-thumbs \
             --workers 1 \
-            --acceleration neon \
-            --detector ml-light \
+            --acceleration cpu \
+            --detector ml \
+            --detector-model fast \
             --detector-device cpu \
             --detector-model-pack "$smoke/model-pack"
           jq -e '.acceleration.selected == "cpu_neon_rayon"' "$smoke/run/manifest.json"

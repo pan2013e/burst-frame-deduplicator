@@ -1,6 +1,7 @@
 use crate::types::{
     DetectorOutput, DetectorPreference, DetectorReport, QualityMetrics, ScanOptions,
 };
+use burst_core::{SubjectDetection, merge_subject_detection};
 use image::RgbImage;
 
 pub struct DetectorEngine {
@@ -20,19 +21,21 @@ pub struct DetectorTimingSnapshot {
 enum DetectorBackend {
     Off,
     Heuristic,
-    Vision,
+    #[cfg(all(target_os = "macos", feature = "macos-vision"))]
+    PlatformMl,
     #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
     Ml(Box<crate::ml_detector::MlDetector>),
 }
 
 impl DetectorEngine {
     pub fn initialize(options: &ScanOptions, _worker_count: usize) -> Self {
-        let mut report = detector_report(options.detector);
-        let backend = match options.detector {
+        let requested = options.detector.canonical();
+        #[allow(unused_mut)]
+        let mut report = detector_report(options);
+        let backend = match requested {
             DetectorPreference::Off => DetectorBackend::Off,
-            DetectorPreference::Vision => DetectorBackend::Vision,
             DetectorPreference::Auto | DetectorPreference::Heuristic => DetectorBackend::Heuristic,
-            DetectorPreference::MlLight | DetectorPreference::MlHeavy => {
+            DetectorPreference::Ml => {
                 #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
                 {
                     match crate::ml_detector::MlDetector::initialize(options, _worker_count) {
@@ -49,15 +52,24 @@ impl DetectorEngine {
                     }
                 }
 
-                #[cfg(not(all(target_os = "linux", feature = "onnx-detector")))]
+                #[cfg(all(target_os = "macos", feature = "macos-vision"))]
+                {
+                    DetectorBackend::PlatformMl
+                }
+
+                #[cfg(not(any(
+                    all(target_os = "linux", feature = "onnx-detector"),
+                    all(target_os = "macos", feature = "macos-vision")
+                )))]
                 {
                     report.notes.push(
-                        "Local ML detection is unavailable in this build; heuristic saliency will be used."
+                        "Platform ML detection is unavailable in this build; heuristic saliency will be used."
                             .to_string(),
                     );
                     DetectorBackend::Heuristic
                 }
             }
+            _ => unreachable!("legacy detector preferences canonicalize above"),
         };
         Self { report, backend }
     }
@@ -77,15 +89,16 @@ impl DetectorEngine {
 
     pub fn detect(
         &self,
-        image: &RgbImage,
+        _image: &RgbImage,
         metrics: &QualityMetrics,
     ) -> (Option<DetectorOutput>, Vec<String>) {
         match &self.backend {
             DetectorBackend::Off => (None, Vec::new()),
             DetectorBackend::Heuristic => (Some(heuristic_output(metrics)), Vec::new()),
-            DetectorBackend::Vision => vision_or_heuristic(image, metrics),
+            #[cfg(all(target_os = "macos", feature = "macos-vision"))]
+            DetectorBackend::PlatformMl => platform_ml_or_heuristic(_image, metrics),
             #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
-            DetectorBackend::Ml(detector) => match detector.detect(image) {
+            DetectorBackend::Ml(detector) => match detector.detect(_image) {
                 Ok(Some(output)) => (Some(output), Vec::new()),
                 Ok(None) => (
                     Some(heuristic_output(metrics)),
@@ -118,7 +131,9 @@ impl DetectorEngine {
     }
 }
 
-pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
+pub fn detector_report(options: &ScanOptions) -> DetectorReport {
+    let original_request = options.detector;
+    let requested = original_request.canonical();
     let mut capabilities = vec!["heuristic_saliency".to_string()];
     let mut notes = vec![
         "The heuristic detector is always available and uses saliency, border contact, and object-like edge concentration.".to_string(),
@@ -126,7 +141,8 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
 
     if cfg!(all(target_os = "macos", feature = "macos-vision")) {
         capabilities.push("macos_vision_saliency".to_string());
-        notes.push("macOS Vision saliency is compiled in and runs locally through Apple system frameworks.".to_string());
+        capabilities.push("ml_gpu_inference".to_string());
+        notes.push("ML uses macOS Vision saliency and explicitly assigns its supported main compute stage to a Metal GPU.".to_string());
     } else if cfg!(target_os = "macos") {
         notes.push(
             "macOS detected, but this build was compiled without the macos-vision feature."
@@ -137,44 +153,36 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
     #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
     {
         capabilities.push("onnxruntime_local_ml".to_string());
+        capabilities.push("ml_cpu_inference".to_string());
+        capabilities.push("ml_cuda_inference_optional".to_string());
         capabilities.push("ml_light:u2netp".to_string());
         capabilities.push("ml_heavy:isnet_general_use".to_string());
     }
 
     let selected = match requested {
         DetectorPreference::Off => "off",
-        DetectorPreference::Vision if cfg!(all(target_os = "macos", feature = "macos-vision")) => {
+        DetectorPreference::Ml if cfg!(all(target_os = "macos", feature = "macos-vision")) => {
             "macos_vision_saliency"
         }
-        DetectorPreference::Vision => "heuristic_saliency",
-        DetectorPreference::Auto
-        | DetectorPreference::Heuristic
-        | DetectorPreference::MlLight
-        | DetectorPreference::MlHeavy => "heuristic_saliency",
+        DetectorPreference::Ml => "heuristic_saliency",
+        DetectorPreference::Auto | DetectorPreference::Heuristic => "heuristic_saliency",
+        _ => unreachable!("legacy detector preferences canonicalize above"),
     };
 
-    if requested == DetectorPreference::Vision && selected != "macos_vision_saliency" {
-        notes.push(
-            "Vision was requested but is unavailable; heuristic saliency will be used.".to_string(),
-        );
-    }
-    if requested == DetectorPreference::Vision {
-        notes.push(
-            "Vision contributes advisory completeness and quality metrics; the stable compact saliency track owns near-duplicate comparison."
-                .to_string(),
-        );
+    if original_request != requested {
+        notes.push(format!(
+            "Legacy detector preference {:?} was normalized to ML.",
+            original_request
+        ));
     }
     if requested == DetectorPreference::Auto
         && cfg!(all(target_os = "macos", feature = "macos-vision"))
     {
-        notes.push("Auto keeps the fast heuristic detector by default; pass --detector vision to use macOS Vision saliency.".to_string());
+        notes.push("Auto keeps the fast heuristic detector by default; select ML to use macOS Vision GPU saliency.".to_string());
     }
-    if matches!(
-        requested,
-        DetectorPreference::MlLight | DetectorPreference::MlHeavy
-    ) {
+    if requested == DetectorPreference::Ml {
         notes.push(
-            "Local ML detection is advisory; the portable saliency descriptor remains responsible for near-duplicate comparison."
+            "ML detection is advisory; the portable saliency descriptor remains responsible for near-duplicate comparison."
                 .to_string(),
         );
     }
@@ -197,53 +205,40 @@ pub fn detect_subject(
 }
 
 pub fn merge_detector_metrics(metrics: &mut QualityMetrics, detector: &DetectorOutput) {
-    if detector.confidence <= 0.0 || detector.subject_count == 0 {
-        return;
-    }
-    let detector_completeness = (1.0 - detector.truncation_risk).clamp(0.0, 1.0);
-    metrics.object_confidence = metrics.object_confidence.max(detector.confidence);
-    metrics.completeness =
-        (0.62 * metrics.completeness + 0.38 * detector_completeness).clamp(0.0, 1.0);
-    metrics.bbox_x1 = detector.bbox_x1;
-    metrics.bbox_y1 = detector.bbox_y1;
-    metrics.bbox_x2 = detector.bbox_x2;
-    metrics.bbox_y2 = detector.bbox_y2;
+    merge_subject_detection(
+        metrics,
+        &SubjectDetection {
+            confidence: detector.confidence,
+            subject_count: detector.subject_count,
+            truncation_risk: detector.truncation_risk,
+            bbox_x1: detector.bbox_x1,
+            bbox_y1: detector.bbox_y1,
+            bbox_x2: detector.bbox_x2,
+            bbox_y2: detector.bbox_y2,
+        },
+    );
 }
 
-fn vision_or_heuristic(
+#[cfg(all(target_os = "macos", feature = "macos-vision"))]
+fn platform_ml_or_heuristic(
     image: &RgbImage,
     metrics: &QualityMetrics,
 ) -> (Option<DetectorOutput>, Vec<String>) {
-    #[cfg(all(target_os = "macos", feature = "macos-vision"))]
-    {
-        match macos_vision::detect(image) {
-            Ok(Some(output)) => (Some(output), Vec::new()),
-            Ok(None) => (
-                Some(heuristic_output(metrics)),
-                vec![
-                    "macOS Vision found no salient object; used heuristic detector fallback."
-                        .to_string(),
-                ],
-            ),
-            Err(err) => (
-                Some(heuristic_output(metrics)),
-                vec![format!(
-                    "macOS Vision detector failed; used heuristic fallback: {err}"
-                )],
-            ),
-        }
-    }
-
-    #[cfg(not(all(target_os = "macos", feature = "macos-vision")))]
-    {
-        let _ = image;
-        (
+    match macos_vision::detect(image) {
+        Ok(Some(output)) => (Some(output), Vec::new()),
+        Ok(None) => (
             Some(heuristic_output(metrics)),
             vec![
-                "macOS Vision detector is unavailable in this build; used heuristic fallback."
+                "macOS Vision found no salient object; used heuristic detector fallback."
                     .to_string(),
             ],
-        )
+        ),
+        Err(err) => (
+            Some(heuristic_output(metrics)),
+            vec![format!(
+                "macOS Vision detector failed; used heuristic fallback: {err}"
+            )],
+        ),
     }
 }
 
@@ -277,6 +272,11 @@ mod macos_vision {
     use objc::{msg_send, sel, sel_impl};
 
     use crate::types::DetectorOutput;
+
+    #[link(name = "Vision", kind = "framework")]
+    unsafe extern "C" {
+        static VNComputeStageMain: *mut Object;
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
@@ -317,6 +317,10 @@ mod macos_vision {
 
             let request_cls = class("VNGenerateObjectnessBasedSaliencyImageRequest")?;
             let request: *mut Object = msg_send![request_cls, new];
+            if let Err(error) = configure_main_stage_gpu(request) {
+                let _: () = msg_send![request, release];
+                return Err(error);
+            }
             let handler_alloc: *mut Object = msg_send![class("VNImageRequestHandler")?, alloc];
             let handler: *mut Object =
                 msg_send![handler_alloc, initWithData: data options: options];
@@ -400,6 +404,50 @@ mod macos_vision {
         Class::get(name).ok_or_else(|| anyhow!("Objective-C class {name} is unavailable"))
     }
 
+    unsafe fn configure_main_stage_gpu(request: *mut Object) -> anyhow::Result<()> {
+        let mut error: *mut Object = ptr::null_mut();
+        let supported: *mut Object =
+            unsafe { msg_send![request, supportedComputeStageDevicesAndReturnError: &mut error] };
+        if supported.is_null() {
+            return Err(anyhow!(
+                "Vision could not enumerate supported compute devices: {}",
+                unsafe { ns_error_message(error) }
+                    .unwrap_or_else(|| "unknown framework error".to_string())
+            ));
+        }
+
+        let main_stage = unsafe { VNComputeStageMain };
+        let devices: *mut Object = unsafe { msg_send![supported, objectForKey: main_stage] };
+        if devices.is_null() {
+            return Err(anyhow!(
+                "Vision did not expose a compute device for its main stage"
+            ));
+        }
+
+        let gpu_class = unsafe { class("MLGPUComputeDevice")? };
+        let count: usize = unsafe { msg_send![devices, count] };
+        for index in 0..count {
+            let device: *mut Object = unsafe { msg_send![devices, objectAtIndex: index] };
+            let is_gpu: bool = unsafe { msg_send![device, isKindOfClass: gpu_class] };
+            if is_gpu {
+                let _: () = unsafe {
+                    msg_send![request, setComputeDevice: device forComputeStage: main_stage]
+                };
+                let selected: *mut Object =
+                    unsafe { msg_send![request, computeDeviceForComputeStage: main_stage] };
+                let selected_is_gpu: bool =
+                    !selected.is_null() && unsafe { msg_send![selected, isKindOfClass: gpu_class] };
+                if selected_is_gpu {
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Vision ML requires a supported Metal GPU for its main compute stage"
+        ))
+    }
+
     unsafe fn ns_error_message(error: *mut Object) -> Option<String> {
         if error.is_null() {
             return None;
@@ -431,12 +479,12 @@ mod tests {
     fn missing_ml_pack_falls_back_without_exposing_its_path() {
         let secret = "/private/test-only/missing-model-pack";
         let options = ScanOptions {
-            detector: DetectorPreference::MlLight,
+            detector: DetectorPreference::Ml,
             detector_model_pack: Some(PathBuf::from(secret)),
             ..ScanOptions::default()
         };
         let report = DetectorEngine::initialize(&options, 4).report();
-        assert_eq!(report.requested, DetectorPreference::MlLight);
+        assert_eq!(report.requested, DetectorPreference::Ml);
         assert_eq!(report.selected, "heuristic_saliency");
         assert!(report.model.is_none());
         assert!(report.notes.iter().any(|note| note.contains("model")));

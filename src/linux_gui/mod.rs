@@ -27,7 +27,8 @@ use crate::pipeline::run_scan;
 use crate::progress::{ProgressReporter, ProgressUpdate};
 use crate::run_storage::{RelocationProgress, RelocationResult, relocate_run};
 use crate::types::{
-    AccelerationPreference, AssetRecord, DetectorPreference, SuggestedAction, UserDecision,
+    AccelerationPreference, AssetRecord, DetectorDevicePreference, DetectorModelPreference,
+    DetectorPreference, SuggestedAction, UserDecision,
 };
 
 use self::config::{Appearance, GuiConfig, TutorialOutcome, cache_bytes};
@@ -1673,7 +1674,7 @@ impl Controller {
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
         );
-        let current_acceleration = self.state.borrow().config.options.acceleration;
+        let current_acceleration = self.state.borrow().config.options.acceleration.canonical();
         let acceleration = adw::ComboRow::builder()
             .title(locale.text("acceleration"))
             .model(&acceleration_model)
@@ -1709,8 +1710,7 @@ impl Controller {
                 locale.text("heuristicOption"),
                 DetectorPreference::Heuristic,
             ),
-            (locale.text("mlLightOption"), DetectorPreference::MlLight),
-            (locale.text("mlHeavyOption"), DetectorPreference::MlHeavy),
+            (locale.text("mlOption"), DetectorPreference::Ml),
             (locale.text("offOption"), DetectorPreference::Off),
         ];
         let detector_model = gtk::StringList::new(
@@ -1719,7 +1719,7 @@ impl Controller {
                 .map(|(label, _)| label.as_str())
                 .collect::<Vec<_>>(),
         );
-        let current_detector = self.state.borrow().config.options.detector;
+        let current_detector = self.state.borrow().config.options.detector.canonical();
         let detector = adw::ComboRow::builder()
             .title(locale.text("detector"))
             .model(&detector_model)
@@ -1730,15 +1730,85 @@ impl Controller {
                     .unwrap_or_default() as u32,
             )
             .build();
+
+        let detector_model_choices = [
+            (
+                locale.text("fastModelOption"),
+                DetectorModelPreference::Fast,
+            ),
+            (
+                locale.text("accurateModelOption"),
+                DetectorModelPreference::Accurate,
+            ),
+        ];
+        let detector_model_list = gtk::StringList::new(
+            &detector_model_choices
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+        );
+        let current_model = self.state.borrow().config.options.detector_model;
+        let detector_model = adw::ComboRow::builder()
+            .title(locale.text("detectorModel"))
+            .model(&detector_model_list)
+            .selected(
+                detector_model_choices
+                    .iter()
+                    .position(|(_, value)| *value == current_model)
+                    .unwrap_or_default() as u32,
+            )
+            .visible(current_detector == DetectorPreference::Ml)
+            .build();
+
+        let mut detector_device_choices = vec![
+            (
+                locale.text("automaticOption"),
+                DetectorDevicePreference::Auto,
+            ),
+            (locale.text("cpuOption"), DetectorDevicePreference::Cpu),
+        ];
+        if cfg!(feature = "cuda-accel") {
+            detector_device_choices.push((locale.text("gpuOption"), DetectorDevicePreference::Gpu));
+        }
+        let detector_device_list = gtk::StringList::new(
+            &detector_device_choices
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+        );
+        let current_device = self
+            .state
+            .borrow()
+            .config
+            .options
+            .detector_device
+            .canonical();
+        let detector_device = adw::ComboRow::builder()
+            .title(locale.text("inferenceDevice"))
+            .model(&detector_device_list)
+            .selected(
+                detector_device_choices
+                    .iter()
+                    .position(|(_, value)| *value == current_device)
+                    .unwrap_or_default() as u32,
+            )
+            .visible(current_detector == DetectorPreference::Ml)
+            .build();
+
         let choices = Rc::new(detector_choices);
         let weak = Rc::downgrade(self);
         let workload_for_detector = workload_bar.clone();
         let workload_row_for_detector = workload_row.clone();
+        let model_for_detector = detector_model.clone();
+        let device_for_detector = detector_device.clone();
         detector.connect_selected_notify(move |row| {
             if let Some(controller) = weak.upgrade()
                 && let Some((_, value)) = choices.get(row.selected() as usize)
             {
                 controller.state.borrow_mut().config.options.detector = *value;
+                let show_ml = *value == DetectorPreference::Ml;
+                model_for_detector.set_visible(show_ml);
+                device_for_detector.set_visible(show_ml);
                 let _ = controller.state.borrow().config.save();
                 refresh_workload(
                     &controller,
@@ -1747,7 +1817,34 @@ impl Controller {
                 );
             }
         });
+
+        let model_choices = Rc::new(detector_model_choices);
+        let weak = Rc::downgrade(self);
+        let workload_for_model = workload_bar.clone();
+        let workload_row_for_model = workload_row.clone();
+        detector_model.connect_selected_notify(move |row| {
+            if let Some(controller) = weak.upgrade()
+                && let Some((_, value)) = model_choices.get(row.selected() as usize)
+            {
+                controller.state.borrow_mut().config.options.detector_model = *value;
+                let _ = controller.state.borrow().config.save();
+                refresh_workload(&controller, &workload_for_model, &workload_row_for_model);
+            }
+        });
+
+        let device_choices = Rc::new(detector_device_choices);
+        let weak = Rc::downgrade(self);
+        detector_device.connect_selected_notify(move |row| {
+            if let Some(controller) = weak.upgrade()
+                && let Some((_, value)) = device_choices.get(row.selected() as usize)
+            {
+                controller.state.borrow_mut().config.options.detector_device = *value;
+                let _ = controller.state.borrow().config.save();
+            }
+        });
         processing_group.add(&detector);
+        processing_group.add(&detector_model);
+        processing_group.add(&detector_device);
 
         let model_pack = adw::ActionRow::builder()
             .title(locale.text("modelPack"))
@@ -2305,15 +2402,13 @@ fn acceleration_choices(locale: &LocaleCatalog) -> Vec<(String, AccelerationPref
     let mut choices = vec![
         (locale.text("automaticOption"), AccelerationPreference::Auto),
         (locale.text("cpuOption"), AccelerationPreference::Cpu),
+        (
+            locale.text("portableCpuOption"),
+            AccelerationPreference::Portable,
+        ),
     ];
-    if cfg!(target_arch = "aarch64") {
-        choices.push((locale.text("neonOption"), AccelerationPreference::Neon));
-    }
-    if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-        choices.push(("AVX2".to_string(), AccelerationPreference::Avx2));
-    }
     if cfg!(feature = "cuda-accel") {
-        choices.push(("NVIDIA CUDA".to_string(), AccelerationPreference::Cuda));
+        choices.insert(2, (locale.text("gpuOption"), AccelerationPreference::Gpu));
     }
     choices
 }
@@ -2410,9 +2505,11 @@ fn estimated_workload(options: &crate::types::ScanOptions) -> (f64, String) {
             * options.refine_candidates_per_cluster as f64
             / 2.0
     };
-    let detector = match options.detector {
-        DetectorPreference::MlHeavy => 1.8,
-        DetectorPreference::MlLight => 1.1,
+    let detector = match options.detector.canonical() {
+        DetectorPreference::Ml if options.detector_model == DetectorModelPreference::Accurate => {
+            1.8
+        }
+        DetectorPreference::Ml => 1.1,
         DetectorPreference::Heuristic | DetectorPreference::Auto => 0.45,
         _ => 0.1,
     };
