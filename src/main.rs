@@ -10,7 +10,9 @@ use burst_frame_deduplicator::pipeline::run_scan;
 use burst_frame_deduplicator::progress::terminal_progress_reporter;
 use burst_frame_deduplicator::run_storage;
 use burst_frame_deduplicator::server;
-use burst_frame_deduplicator::types::{AccelerationPreference, DetectorPreference, ScanOptions};
+use burst_frame_deduplicator::types::{
+    AccelerationPreference, DetectorDevicePreference, DetectorPreference, ScanOptions,
+};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -166,6 +168,15 @@ struct ScanArgs {
     /// Local subject detector used to improve completeness/out-of-frame scoring.
     #[arg(long, value_enum, default_value_t = DetectorArg::Auto)]
     detector: DetectorArg,
+    /// Execution device for local ML detection. CUDA falls back to CPU, then heuristics.
+    #[arg(long, value_enum, default_value_t = DetectorDeviceArg::Auto)]
+    detector_device: DetectorDeviceArg,
+    /// ONNX Runtime threads used by a serialized local ML detector session.
+    #[arg(long)]
+    detector_threads: Option<usize>,
+    /// Offline model-pack directory created by scripts/install_linux_ml_models.sh.
+    #[arg(long, value_name = "DIR", env = "BFD_ML_MODEL_PACK")]
+    detector_model_pack: Option<PathBuf>,
     /// Skip thumbnail generation.
     #[arg(long)]
     no_thumbs: bool,
@@ -187,6 +198,15 @@ enum DetectorArg {
     Off,
     Heuristic,
     Vision,
+    MlLight,
+    MlHeavy,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DetectorDeviceArg {
+    Auto,
+    Cpu,
+    Cuda,
 }
 
 impl From<AccelArg> for AccelerationPreference {
@@ -209,6 +229,18 @@ impl From<DetectorArg> for DetectorPreference {
             DetectorArg::Off => Self::Off,
             DetectorArg::Heuristic => Self::Heuristic,
             DetectorArg::Vision => Self::Vision,
+            DetectorArg::MlLight => Self::MlLight,
+            DetectorArg::MlHeavy => Self::MlHeavy,
+        }
+    }
+}
+
+impl From<DetectorDeviceArg> for DetectorDevicePreference {
+    fn from(value: DetectorDeviceArg) -> Self {
+        match value {
+            DetectorDeviceArg::Auto => Self::Auto,
+            DetectorDeviceArg::Cpu => Self::Cpu,
+            DetectorDeviceArg::Cuda => Self::Cuda,
         }
     }
 }
@@ -232,6 +264,9 @@ impl From<ScanArgs> for ScanOptions {
             workers: value.workers,
             acceleration: value.acceleration.into(),
             detector: value.detector.into(),
+            detector_device: value.detector_device.into(),
+            detector_threads: value.detector_threads,
+            detector_model_pack: value.detector_model_pack,
             generate_thumbnails: !value.no_thumbs,
         }
     }

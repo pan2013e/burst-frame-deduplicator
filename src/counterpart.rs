@@ -685,6 +685,7 @@ mod tests {
                 selected: "off".to_string(),
                 capabilities: Vec::new(),
                 notes: Vec::new(),
+                model: None,
             },
             decoders: DecoderReport {
                 native_compressed: true,

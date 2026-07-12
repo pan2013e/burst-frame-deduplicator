@@ -15,6 +15,8 @@ pub mod locales;
 pub mod metadata;
 #[cfg(all(target_os = "macos", feature = "metal-accel"))]
 pub mod metal_accel;
+#[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+pub(crate) mod ml_detector;
 pub mod operations;
 pub mod pipeline;
 pub mod progress;

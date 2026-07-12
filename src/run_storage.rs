@@ -458,6 +458,7 @@ mod tests {
                 selected: "heuristic".to_string(),
                 capabilities: Vec::new(),
                 notes: Vec::new(),
+                model: None,
             },
             decoders: DecoderReport {
                 native_compressed: true,

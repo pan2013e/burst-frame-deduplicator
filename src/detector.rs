@@ -1,5 +1,122 @@
-use crate::types::{DetectorOutput, DetectorPreference, DetectorReport, QualityMetrics};
+use crate::types::{
+    DetectorOutput, DetectorPreference, DetectorReport, QualityMetrics, ScanOptions,
+};
 use image::RgbImage;
+
+pub struct DetectorEngine {
+    report: DetectorReport,
+    backend: DetectorBackend,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DetectorTimingSnapshot {
+    pub runs: usize,
+    pub preprocessing_ms: f64,
+    pub queue_wait_ms: f64,
+    pub inference_ms: f64,
+    pub postprocessing_ms: f64,
+}
+
+enum DetectorBackend {
+    Off,
+    Heuristic,
+    Vision,
+    #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+    Ml(crate::ml_detector::MlDetector),
+}
+
+impl DetectorEngine {
+    pub fn initialize(options: &ScanOptions, _worker_count: usize) -> Self {
+        let mut report = detector_report(options.detector);
+        let backend = match options.detector {
+            DetectorPreference::Off => DetectorBackend::Off,
+            DetectorPreference::Vision => DetectorBackend::Vision,
+            DetectorPreference::Auto | DetectorPreference::Heuristic => DetectorBackend::Heuristic,
+            DetectorPreference::MlLight | DetectorPreference::MlHeavy => {
+                #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+                {
+                    match crate::ml_detector::MlDetector::initialize(options, _worker_count) {
+                        Ok((detector, notes)) => {
+                            report.selected = detector.backend_name().to_string();
+                            report.model = Some(detector.model_report());
+                            report.notes.extend(notes);
+                            DetectorBackend::Ml(detector)
+                        }
+                        Err(note) => {
+                            report.notes.push(note);
+                            DetectorBackend::Heuristic
+                        }
+                    }
+                }
+
+                #[cfg(not(all(target_os = "linux", feature = "onnx-detector")))]
+                {
+                    report.notes.push(
+                        "Local ML detection is unavailable in this build; heuristic saliency will be used."
+                            .to_string(),
+                    );
+                    DetectorBackend::Heuristic
+                }
+            }
+        };
+        Self { report, backend }
+    }
+
+    pub fn report(&self) -> DetectorReport {
+        #[allow(unused_mut)]
+        let mut report = self.report.clone();
+        #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+        if let DetectorBackend::Ml(detector) = &self.backend {
+            report.model = Some(detector.model_report());
+            if let Some(note) = detector.failure_note() {
+                report.notes.push(note);
+            }
+        }
+        report
+    }
+
+    pub fn detect(
+        &self,
+        image: &RgbImage,
+        metrics: &QualityMetrics,
+    ) -> (Option<DetectorOutput>, Vec<String>) {
+        match &self.backend {
+            DetectorBackend::Off => (None, Vec::new()),
+            DetectorBackend::Heuristic => (Some(heuristic_output(metrics)), Vec::new()),
+            DetectorBackend::Vision => vision_or_heuristic(image, metrics),
+            #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+            DetectorBackend::Ml(detector) => match detector.detect(image) {
+                Ok(Some(output)) => (Some(output), Vec::new()),
+                Ok(None) => (
+                    Some(heuristic_output(metrics)),
+                    vec![
+                        "The local ML model found no confident subject; used heuristic detector fallback."
+                            .to_string(),
+                    ],
+                ),
+                Err(first_failure) => (
+                    Some(heuristic_output(metrics)),
+                    first_failure
+                        .then(|| {
+                            vec![
+                                "Local ML inference failed; disabled it for this scan and used heuristic detector fallback."
+                                    .to_string(),
+                            ]
+                        })
+                        .unwrap_or_default(),
+                ),
+            },
+        }
+    }
+
+    pub fn timing_snapshot(&self) -> DetectorTimingSnapshot {
+        #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+        if let DetectorBackend::Ml(detector) = &self.backend {
+            return detector.timing_snapshot();
+        }
+        DetectorTimingSnapshot::default()
+    }
+}
 
 pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
     let mut capabilities = vec!["heuristic_saliency".to_string()];
@@ -17,13 +134,23 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
         );
     }
 
+    #[cfg(all(target_os = "linux", feature = "onnx-detector"))]
+    {
+        capabilities.push("onnxruntime_local_ml".to_string());
+        capabilities.push("ml_light:u2netp".to_string());
+        capabilities.push("ml_heavy:isnet_general_use".to_string());
+    }
+
     let selected = match requested {
         DetectorPreference::Off => "off",
         DetectorPreference::Vision if cfg!(all(target_os = "macos", feature = "macos-vision")) => {
             "macos_vision_saliency"
         }
         DetectorPreference::Vision => "heuristic_saliency",
-        DetectorPreference::Auto | DetectorPreference::Heuristic => "heuristic_saliency",
+        DetectorPreference::Auto
+        | DetectorPreference::Heuristic
+        | DetectorPreference::MlLight
+        | DetectorPreference::MlHeavy => "heuristic_saliency",
     };
 
     if requested == DetectorPreference::Vision && selected != "macos_vision_saliency" {
@@ -42,27 +169,31 @@ pub fn detector_report(requested: DetectorPreference) -> DetectorReport {
     {
         notes.push("Auto keeps the fast heuristic detector by default; pass --detector vision to use macOS Vision saliency.".to_string());
     }
+    if matches!(
+        requested,
+        DetectorPreference::MlLight | DetectorPreference::MlHeavy
+    ) {
+        notes.push(
+            "Local ML detection is advisory; the portable saliency descriptor remains responsible for near-duplicate comparison."
+                .to_string(),
+        );
+    }
 
     DetectorReport {
         requested,
         selected: selected.to_string(),
         capabilities,
         notes,
+        model: None,
     }
 }
 
 pub fn detect_subject(
     image: &RgbImage,
     metrics: &QualityMetrics,
-    preference: DetectorPreference,
+    engine: &DetectorEngine,
 ) -> (Option<DetectorOutput>, Vec<String>) {
-    match preference {
-        DetectorPreference::Off => (None, Vec::new()),
-        DetectorPreference::Vision => vision_or_heuristic(image, metrics),
-        DetectorPreference::Auto | DetectorPreference::Heuristic => {
-            (Some(heuristic_output(metrics)), Vec::new())
-        }
-    }
+    engine.detect(image, metrics)
 }
 
 pub fn merge_detector_metrics(metrics: &mut QualityMetrics, detector: &DetectorOutput) {
@@ -286,5 +417,29 @@ mod macos_vision {
                 .to_string_lossy()
                 .into_owned(),
         )
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "onnx-detector"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::DetectorEngine;
+    use crate::types::{DetectorPreference, ScanOptions};
+
+    #[test]
+    fn missing_ml_pack_falls_back_without_exposing_its_path() {
+        let secret = "/private/test-only/missing-model-pack";
+        let options = ScanOptions {
+            detector: DetectorPreference::MlLight,
+            detector_model_pack: Some(PathBuf::from(secret)),
+            ..ScanOptions::default()
+        };
+        let report = DetectorEngine::initialize(&options, 4).report();
+        assert_eq!(report.requested, DetectorPreference::MlLight);
+        assert_eq!(report.selected, "heuristic_saliency");
+        assert!(report.model.is_none());
+        assert!(report.notes.iter().any(|note| note.contains("model")));
+        assert!(!report.notes.join(" ").contains(secret));
     }
 }

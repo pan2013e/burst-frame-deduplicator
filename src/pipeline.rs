@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use crate::artifacts::{ensure_review_state, export_reviewed_artifacts, write_manifest};
 use crate::assets::{AssetInput, discover_assets_with_progress};
 use crate::decode::{decoder_report, load_preview, resize_rgb};
-use crate::detector::{detect_subject, detector_report, merge_detector_metrics};
+use crate::detector::{DetectorEngine, detect_subject, merge_detector_metrics};
 use crate::features::{
     SimilarityComparison, SimilarityFeatures, compare_similarity, hash_distance, score_image,
     similarity_features, update_subject_focus,
@@ -89,6 +89,9 @@ pub async fn run_scan(
         .build()
         .context("creating scoring worker pool")?;
     let worker_count = pool.current_num_threads();
+    let detector_initialization_start = Instant::now();
+    let detector_engine = DetectorEngine::initialize(&options, worker_count);
+    let detector_initialization_ms = elapsed_ms(detector_initialization_start);
     let thumb_root = options.generate_thumbnails.then_some(thumbs_dir.clone());
     let scoring_start = Instant::now();
     let scored = AtomicUsize::new(0);
@@ -99,7 +102,7 @@ pub async fn run_scan(
         inputs
             .par_iter()
             .map(|input| {
-                let result = score_asset(input, &options, thumb_root.as_deref());
+                let result = score_asset(input, &options, &detector_engine, thumb_root.as_deref());
                 let done = scored.fetch_add(1, Ordering::Relaxed) + 1;
                 scoring_progress.emit(
                     ProgressStage::Analyzing,
@@ -162,6 +165,8 @@ pub async fn run_scan(
         }
     }
 
+    let detector_timings = detector_engine.timing_snapshot();
+
     let mut benchmarks = vec![
         benchmark("discovery", discovery_ms, Some(inputs.len())),
         benchmark("scoring_total", scoring_ms, Some(assets.len())),
@@ -175,6 +180,7 @@ pub async fn run_scan(
             assets.iter().map(|asset| asset.timings.feature_ms).sum(),
             Some(assets.len()),
         ),
+        benchmark("detector_initialization", detector_initialization_ms, None),
         benchmark("refinement_total", refinement_ms, Some(refined_count)),
         benchmark(
             "refinement_decode_worker_sum",
@@ -198,6 +204,26 @@ pub async fn run_scan(
             Some(assets.len()),
         ),
         benchmark(
+            "detector_preprocessing_worker_sum",
+            detector_timings.preprocessing_ms,
+            Some(detector_timings.runs),
+        ),
+        benchmark(
+            "detector_session_queue_wait_worker_sum",
+            detector_timings.queue_wait_ms,
+            Some(detector_timings.runs),
+        ),
+        benchmark(
+            "detector_inference_worker_sum",
+            detector_timings.inference_ms,
+            Some(detector_timings.runs),
+        ),
+        benchmark(
+            "detector_postprocessing_worker_sum",
+            detector_timings.postprocessing_ms,
+            Some(detector_timings.runs),
+        ),
+        benchmark(
             "thumbnail_generation_worker_sum",
             assets.iter().map(|asset| asset.timings.thumbnail_ms).sum(),
             Some(assets.len()),
@@ -208,9 +234,14 @@ pub async fn run_scan(
     ];
 
     let acceleration = acceleration_report(options.acceleration, worker_count, &assets);
-    let mut detector = detector_report(options.detector);
+    let mut detector = detector_engine.report();
     let mut detector_usage = BTreeMap::new();
+    let mut detector_not_run = 0usize;
     for asset in &assets {
+        if asset.error.is_some() {
+            detector_not_run += 1;
+            continue;
+        }
         let backend = asset
             .detector
             .as_ref()
@@ -218,14 +249,33 @@ pub async fn run_scan(
             .unwrap_or("off");
         *detector_usage.entry(backend).or_insert(0usize) += 1;
     }
+    if detector_usage.len() == 1 {
+        detector.selected = detector_usage
+            .keys()
+            .next()
+            .map(|backend| (*backend).to_string())
+            .unwrap_or_else(|| detector.selected.clone());
+    } else if detector_usage.len() > 1 {
+        detector.selected = "mixed".to_string();
+    }
+    let detector_usage_note = detector_usage
+        .iter()
+        .map(|(backend, count)| format!("{backend}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     detector.notes.push(format!(
         "Per-frame backend usage: {}.",
-        detector_usage
-            .iter()
-            .map(|(backend, count)| format!("{backend}={count}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        if detector_usage_note.is_empty() {
+            "none"
+        } else {
+            &detector_usage_note
+        }
     ));
+    if detector_not_run > 0 {
+        detector.notes.push(format!(
+            "Detector did not run for {detector_not_run} asset(s) that failed before subject detection."
+        ));
+    }
     let mut manifest = RunManifest {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         root,
@@ -308,6 +358,7 @@ struct RefineResult {
 fn score_asset(
     input: &AssetInput,
     options: &ScanOptions,
+    detector_engine: &DetectorEngine,
     thumbs_dir: Option<&Path>,
 ) -> ScoreResult {
     let mut timings = AssetTimings::default();
@@ -372,7 +423,7 @@ fn score_asset(
 
             let detector_start = Instant::now();
             let (detector, detector_notes) =
-                detect_subject(&decoded.image, &record.metrics, options.detector);
+                detect_subject(&decoded.image, &record.metrics, detector_engine);
             timings.detector_ms = elapsed_ms(detector_start);
             if let Some(detector) = detector {
                 merge_detector_metrics(&mut record.metrics, &detector);

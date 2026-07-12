@@ -22,6 +22,10 @@ pub struct ScanOptions {
     pub workers: Option<usize>,
     pub acceleration: AccelerationPreference,
     pub detector: DetectorPreference,
+    pub detector_device: DetectorDevicePreference,
+    pub detector_threads: Option<usize>,
+    #[serde(skip)]
+    pub detector_model_pack: Option<PathBuf>,
     pub generate_thumbnails: bool,
 }
 
@@ -44,6 +48,9 @@ impl Default for ScanOptions {
             workers: None,
             acceleration: AccelerationPreference::Auto,
             detector: DetectorPreference::Auto,
+            detector_device: DetectorDevicePreference::Auto,
+            detector_threads: None,
+            detector_model_pack: None,
             generate_thumbnails: true,
         }
     }
@@ -67,6 +74,16 @@ pub enum DetectorPreference {
     Off,
     Heuristic,
     Vision,
+    MlLight,
+    MlHeavy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectorDevicePreference {
+    Auto,
+    Cpu,
+    Cuda,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +110,17 @@ pub struct DetectorReport {
     pub selected: String,
     pub capabilities: Vec<String>,
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<DetectorModelReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectorModelReport {
+    pub id: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub runtime: String,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,5 +355,31 @@ impl UserDecision {
             Self::Reject => "reject",
             Self::Review => "review",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{DetectorDevicePreference, ScanOptions};
+
+    #[test]
+    fn model_pack_path_is_not_serialized() {
+        let options = ScanOptions {
+            detector_model_pack: Some(PathBuf::from("/private/model-pack")),
+            ..ScanOptions::default()
+        };
+        let json = serde_json::to_value(options).unwrap();
+        assert!(json.get("detector_model_pack").is_none());
+        assert!(!json.to_string().contains("/private/model-pack"));
+    }
+
+    #[test]
+    fn old_scan_options_receive_detector_device_defaults() {
+        let options: ScanOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(options.detector_device, DetectorDevicePreference::Auto);
+        assert!(options.detector_threads.is_none());
+        assert!(options.detector_model_pack.is_none());
     }
 }
