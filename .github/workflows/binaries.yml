@@ -103,7 +103,11 @@ jobs:
           cp scripts/install_linux_ml_models.sh "dist/$package/scripts/"
           cp docs/LINUX_ML_MODELS.md "dist/$package/docs/"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
-          sha256sum "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
+          (
+            cd dist
+            sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+            sha256sum --check "$package.tar.gz.sha256"
+          )
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
@@ -151,9 +155,14 @@ jobs:
           dmgs=(target/macos/Burst-Frame-Deduplicator-*.dmg)
           test "${#dmgs[@]}" -eq 1
           cp "${dmgs[0]}" dist/Burst-Frame-Deduplicator-macos-arm64.dmg
-          shasum -a 256 "dist/$cli_package.tar.gz" > "dist/$cli_package.tar.gz.sha256"
-          shasum -a 256 dist/Burst-Frame-Deduplicator-macos-arm64.dmg \
-            > dist/Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+          (
+            cd dist
+            shasum -a 256 "$cli_package.tar.gz" > "$cli_package.tar.gz.sha256"
+            shasum -a 256 Burst-Frame-Deduplicator-macos-arm64.dmg \
+              > Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+            shasum -a 256 --check "$cli_package.tar.gz.sha256"
+            shasum -a 256 --check Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
+          )
           codesign --verify --deep --strict "target/macos/Burst Frame Deduplicator.app"
 
       - name: Upload macOS CLI artifact
