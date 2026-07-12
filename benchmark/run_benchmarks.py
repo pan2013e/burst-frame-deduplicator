@@ -21,14 +21,16 @@ FIXTURE = ROOT / "benchmark" / "work" / "original_burst_frames"
 RUNS = ROOT / "benchmark" / "runs"
 RESULTS = ROOT / "benchmark" / "results"
 ACCURACY_LABELS = ROOT / "benchmark" / "accuracy_labels.json"
-BIN = ROOT / "target" / "release" / "burst-frame-deduplicator"
 CARGO = os.environ.get("CARGO") or shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
+TARGET_DIR = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
+BIN = TARGET_DIR / "release" / "burst-frame-deduplicator"
 
 
 DARWIN_CASES = [
+    ("balanced_portable", "Balanced", ["--acceleration", "portable", "--detector", "heuristic"]),
     ("balanced_cpu", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
-    ("balanced_metal", "Balanced", ["--acceleration", "metal", "--detector", "heuristic"]),
-    ("balanced_vision", "Balanced", ["--acceleration", "metal", "--detector", "vision"]),
+    ("balanced_gpu", "Balanced", ["--acceleration", "gpu", "--detector", "heuristic"]),
+    ("balanced_ml", "Balanced", ["--acceleration", "gpu", "--detector", "ml"]),
     (
         "best_quality",
         "Best Quality",
@@ -38,8 +40,8 @@ DARWIN_CASES = [
             "--refine-candidates-per-cluster", "4",
             "--max-duplicate-distance", "0.18",
             "--min-duplicate-confidence", "0.60",
-            "--acceleration", "metal",
-            "--detector", "vision",
+            "--acceleration", "gpu",
+            "--detector", "ml",
         ],
     ),
     (
@@ -59,18 +61,17 @@ def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
-def linux_simd_backend() -> str:
+def linux_architecture() -> str:
     machine = platform.machine().lower()
-    return "neon" if machine in {"aarch64", "arm64"} else "avx2"
+    return "arm64" if machine in {"aarch64", "arm64"} else "x86_64"
 
 
 def linux_cases() -> list[tuple[str, str, list[str]]]:
-    simd = linux_simd_backend()
     return [
-        ("balanced_scalar", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
-        (f"balanced_{simd}", "Balanced", ["--acceleration", simd, "--detector", "heuristic"]),
+        ("balanced_portable", "Balanced", ["--acceleration", "portable", "--detector", "heuristic"]),
+        ("balanced_cpu", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
         (
-            f"best_quality_{simd}",
+            "best_quality_cpu",
             "Best Quality",
             [
                 "--preview-size", "2048",
@@ -78,18 +79,18 @@ def linux_cases() -> list[tuple[str, str, list[str]]]:
                 "--refine-candidates-per-cluster", "4",
                 "--max-duplicate-distance", "0.20",
                 "--min-duplicate-confidence", "0.60",
-                "--acceleration", simd,
+                "--acceleration", "cpu",
                 "--detector", "heuristic",
             ],
         ),
         (
-            f"faster_{simd}",
+            "faster_cpu",
             "Faster",
             [
                 "--preview-size", "960",
                 "--refine-size", "1536",
                 "--refine-candidates-per-cluster", "1",
-                "--acceleration", simd,
+                "--acceleration", "cpu",
                 "--detector", "heuristic",
             ],
         ),
@@ -102,7 +103,7 @@ def benchmark_cases() -> list[tuple[str, str, list[str]]]:
 
 def report_path() -> Path:
     if is_linux():
-        suffix = "-arm64" if linux_simd_backend() == "neon" else ""
+        suffix = "-arm64" if linux_architecture() == "arm64" else ""
         return RESULTS / f"latest-linux{suffix}.md"
     return RESULTS / "latest.md"
 
@@ -160,7 +161,11 @@ def main() -> None:
             {
                 "case": name,
                 "quality": quality,
-                "acceleration": manifest["acceleration"]["selected"],
+                "acceleration": "{} + {}({})".format(
+                    manifest["acceleration"].get("focus_backend") or manifest["acceleration"]["selected"],
+                    manifest["acceleration"].get("parallelism_backend", "rayon"),
+                    manifest["acceleration"].get("parallelism_workers", 0),
+                ),
                 "detector": manifest["detector"]["selected"],
                 "detector_usage": ", ".join(
                     f"{backend}={count}" for backend, count in sorted(detector_usage.items())

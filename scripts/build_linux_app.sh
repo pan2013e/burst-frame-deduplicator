@@ -74,6 +74,8 @@ fi
 
 VERSION="$($CARGO_BIN metadata --manifest-path "$ROOT/Cargo.toml" --no-deps --format-version 1 \
   | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p["name"] == "burst-frame-deduplicator"))')"
+TARGET_DIR="$($CARGO_BIN metadata --manifest-path "$ROOT/Cargo.toml" --no-deps --format-version 1 \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
   aarch64|arm64) ARCH=arm64 ;;
@@ -97,8 +99,8 @@ mkdir -p \
   "$ROOTFS/usr/share/metainfo" \
   "$OUTPUT"
 
-install -m 0755 "$ROOT/target/release/burst-frame-deduplicator" "$ROOTFS/usr/bin/"
-install -m 0755 "$ROOT/target/release/burst-frame-deduplicator-gtk" "$ROOTFS/usr/bin/"
+install -m 0755 "$TARGET_DIR/release/burst-frame-deduplicator" "$ROOTFS/usr/bin/"
+install -m 0755 "$TARGET_DIR/release/burst-frame-deduplicator-gtk" "$ROOTFS/usr/bin/"
 install -m 0755 "$ROOT/scripts/install_linux_ml_models.sh" \
   "$ROOTFS/usr/lib/burst-frame-deduplicator/"
 install -m 0644 "$ROOT/packaging/linux/org.burstframe.Deduplicator.desktop" \

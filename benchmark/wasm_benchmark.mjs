@@ -13,6 +13,8 @@ const output = argumentsMap.get("--out");
 const timeoutMs = Number(argumentsMap.get("--timeout-ms") || 10 * 60 * 1000);
 const decodeConcurrency = argumentsMap.get("--decode-concurrency");
 const decodeBackend = argumentsMap.get("--decode-backend");
+const acceleration = argumentsMap.get("--acceleration");
+const detector = argumentsMap.get("--detector");
 const chrome = argumentsMap.get("--chrome")
   || process.env.CHROME_BIN
   || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -64,6 +66,8 @@ try {
   const query = new URLSearchParams({ lang: "en" });
   if (decodeConcurrency) query.set("decode-concurrency", decodeConcurrency);
   if (decodeBackend) query.set("decode-backend", decodeBackend);
+  if (acceleration) query.set("acceleration", acceleration);
+  if (detector) query.set("detector", detector);
   await page.goto(`http://127.0.0.1:${port}/web/dist/index.html?${query}`, { waitUntil: "networkidle" });
   const isolated = await page.evaluate(() => crossOriginIsolated);
   if (!isolated) throw new Error("benchmark page is not cross-origin isolated");
@@ -117,7 +121,7 @@ async function collectFiles(directory) {
 }
 
 function usage() {
-  process.stderr.write("Usage: node benchmark/wasm_benchmark.mjs --source <folder> [--out <json>] [--chrome <executable>] [--timeout-ms N] [--decode-concurrency N] [--decode-backend image-bitmap]\n");
+  process.stderr.write("Usage: node benchmark/wasm_benchmark.mjs --source <folder> [--out <json>] [--chrome <executable>] [--timeout-ms N] [--decode-concurrency N] [--decode-backend image-bitmap] [--acceleration auto|webgpu|portable] [--detector auto|heuristic|ml|off]\n");
   process.exit(2);
 }
 

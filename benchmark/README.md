@@ -14,10 +14,10 @@ The zip is tracked with Git LFS. The extracted working directory and raw benchma
 
 The native matrix is platform-specific:
 
-- macOS covers Balanced CPU, Balanced Metal, Balanced Metal + Vision, Best Quality with Metal + Vision, and Faster CPU.
-- Linux covers Balanced portable scalar CPU plus Balanced, Best Quality, and Faster runs using the architecture's explicit SIMD backend: AVX2 on x86_64 or NEON on AArch64. The Linux Best Quality case retains the reviewed `0.20` duplicate-distance radius because `0.18` over-separates two reviewed must-link pairs in the current `2048px` descriptor path. It intentionally does not request CUDA so the persisted CPU results can run on machines without an idle NVIDIA GPU.
+- macOS covers Balanced Portable, Balanced CPU, Balanced GPU, Balanced GPU + ML, Best Quality with GPU + ML, and Faster CPU. Actual manifests should resolve GPU/ML to Metal/Vision.
+- Linux covers Balanced Portable plus Balanced, Best Quality, and Faster runs using the `cpu` policy. Manifests resolve that policy to AVX2 on supported x86_64 processors, baseline NEON on AArch64, or portable CPU. The Linux Best Quality case retains the reviewed `0.20` duplicate-distance radius because `0.18` over-separates two reviewed must-link pairs in the current `2048px` descriptor path. It intentionally does not request CUDA so the persisted CPU results can run on machines without an idle NVIDIA GPU.
 
-Best Quality uses a `2048px` preview, `4096px` refinement, four refinement candidates, and `0.60` confidence; its reviewed duplicate-distance radius is `0.18` in the persisted macOS matrix and `0.20` in the Linux matrix. Faster is intentionally included to expose the quality cost of a smaller preview. Both platforms build the normal release defaults before running their matrix. An explicit AVX2 or NEON request is runtime checked and uses the best compatible native CPU fallback, otherwise scalar; the selected backend in the manifest remains the source of truth.
+Best Quality uses a `2048px` preview, `4096px` refinement, four refinement candidates, and `0.60` confidence; its reviewed duplicate-distance radius is `0.18` in the persisted macOS matrix and `0.20` in the Linux matrix. Faster is intentionally included to expose the quality cost of a smaller preview. Both platforms build the normal release defaults before running their matrix. The manifest's orthogonal focus backend and Rayon worker fields remain the source of truth.
 
 Run:
 
@@ -34,7 +34,7 @@ npm install --prefix benchmark
 /usr/bin/python3 benchmark/run_frontend_benchmarks.py
 ```
 
-This builds all three paths, scans the same original-resolution fixture, and writes `benchmark/results/frontend-latest.md`. The WASM harness uses local headless Chrome and records browser discovery, initialization, decode, scoring, clustering, and render timings. Browser decode defaults to four bounded jobs; compare against one job with:
+This builds all three paths, scans the same original-resolution fixture, and writes `benchmark/results/frontend-latest.md`. The WASM harness compares portable focus, forced WebGPU focus, automatic focus selection, and WebGPU plus U²-Net-P ML. It records browser discovery, initialization, decode, detector preprocessing/inference, scoring, clustering, and render timings. Browser decode defaults to four bounded jobs, and browser ML inference is capped at four images per batch. Compare decode against one job with:
 
 ```bash
 node benchmark/wasm_benchmark.mjs \
@@ -43,4 +43,4 @@ node benchmark/wasm_benchmark.mjs \
   --out benchmark/results/wasm-single-worker.json
 ```
 
-On the current fixture, four jobs reduce browser decode from roughly `21.9s` to `9.8–10.9s` without changing assignments. WebCodecs use is reported by backend; headless Chrome currently selected the `image_bitmap` fallback for these JPEGs.
+On the current fixture, four jobs reduce browser decode from roughly `21.9s` to about `10–11s` without changing assignments. WebGPU focus and portable focus produce identical reviewed assignments. Four-image U²-Net-P batching preserves the detector output while reducing inference time versus single-image dispatch. WebCodecs use is reported by backend; headless Chrome currently selected the `image_bitmap` fallback for these JPEGs.
