@@ -152,7 +152,7 @@ def write_results(cli_manifest: dict, ffi: dict, wasm_results: dict[str, dict]) 
         "",
         f"Swift bridge call overhead around the Rust scan was {overhead:.2f}% ({ffi['elapsedMs']:.2f} ms wall time versus {ffi_total:.2f} ms recorded by the shared engine).",
         "",
-        "The WASM path performs browser decode, preview scoring, and clustering. WebGPU accelerates focus metrics only; descriptors and ranking remain portable WASM CPU work. The browser path does not run native high-resolution refinement, Rayon, Metal, or platform ML, so its timing is not an accuracy-equivalent replacement for the native scan.",
+        "The WASM path performs browser decode, first-pass scoring, targeted candidate refinement, and clustering. WebGPU accelerates focus metrics; descriptors and ranking remain portable WASM CPU work. The browser path does not run Rayon, Metal, platform Vision/native ONNX, or the native RAW stack, so its timing is not an accuracy-equivalent replacement for the native scan.",
         "",
         "## WASM Stages",
         "",
@@ -161,6 +161,8 @@ def write_results(cli_manifest: dict, ffi: dict, wasm_results: dict[str, dict]) 
     ])
     for mode, wasm in wasm_results.items():
         for stage, elapsed in wasm["stages"].items():
+            if not stage.endswith("_ms"):
+                continue
             label = stage.removesuffix("_ms").replace("_", " ").title()
             lines.append(f"| {mode} | {label} | {elapsed:.2f} |")
     lines.append("")
