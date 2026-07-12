@@ -439,7 +439,7 @@ shasum -a 256 -c Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
 # Linux
 sha256sum -c burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
 sha256sum -c burst-frame-deduplicator-linux-arm64.tar.gz.sha256
-sha256sum -c burst-frame-deduplicator_0.7.0_arm64.deb.sha256
+sha256sum -c burst-frame-deduplicator_0.7.1_arm64.deb.sha256
 ```
 
 The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. Linux x86_64 and ARM64 archives are built on Ubuntu 24.04 and target Ubuntu 24.04 or newer; build from source on an older glibc distribution. The x86_64 archive includes runtime-dispatched AVX2 and dynamically loaded CUDA; ARM64 uses the NEON target baseline. Neither requires an accelerator or model runtime to start. The optional ONNX detector remains a separate checksum-verified pack because the accurate model alone is about 179 MB. Optional external RAW tools are not bundled with CLI archives.
@@ -447,8 +447,8 @@ The Linux and macOS CLI archives are standalone and can be unpacked outside the 
 The Linux `.deb` installs both executables plus the launcher, icon, and desktop metadata. It declares GTK 4.14, libadwaita 1.5, LibRaw, and ImageMagick dependencies, so `apt` installs the RAW-preview runtime. Install the package with:
 
 ```bash
-sudo apt install ./burst-frame-deduplicator_0.7.0_amd64.deb
-# or: sudo apt install ./burst-frame-deduplicator_0.7.0_arm64.deb
+sudo apt install ./burst-frame-deduplicator_0.7.1_amd64.deb
+# or: sudo apt install ./burst-frame-deduplicator_0.7.1_arm64.deb
 ```
 
 The CI-built macOS app is **ad-hoc signed and not notarized**. Gatekeeper cannot establish an identified developer for it. Prefer a Developer ID signed/notarized build when one is available. If you have verified the checksum and trust the repository artifact, first attempt to open the app, then use **System Settings > Privacy & Security > Security > Open Anyway**. Apple warns that overriding this protection can expose the Mac to malicious software; see [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).

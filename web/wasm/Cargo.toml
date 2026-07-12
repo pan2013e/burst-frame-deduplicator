@@ -1,6 +1,6 @@
 [package]
 name = "burst-wasm"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "Portable browser scanner for Burst Frame Deduplicator"
 license-file = "../../LICENSE"

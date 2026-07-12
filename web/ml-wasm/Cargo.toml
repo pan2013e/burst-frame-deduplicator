@@ -1,6 +1,6 @@
 [package]
 name = "burst-ml-wasm"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "Lazy WebGPU U2-Net-P subject detector for Burst Frame Deduplicator"
 license-file = "../../LICENSE"
