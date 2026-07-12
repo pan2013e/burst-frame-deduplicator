@@ -23,29 +23,44 @@ const ML_INFERENCE_BATCH = 4;
 const QUALITY_PRESETS = {
   best: {
     previewLongEdge: 2048,
+    refineLongEdge: 4096,
+    refineCandidatesPerStack: 4,
+    refinementEnabled: true,
     acceleration: "auto",
     detector: "ml",
     maxDuplicateDistance: 0.18,
     minDuplicateConfidence: 0.60,
+    keepersPerCluster: null,
   },
   balanced: {
     previewLongEdge: 1280,
+    refineLongEdge: 2048,
+    refineCandidatesPerStack: 2,
+    refinementEnabled: true,
     acceleration: "auto",
     detector: "auto",
     maxDuplicateDistance: 0.20,
     minDuplicateConfidence: 0.52,
+    keepersPerCluster: null,
   },
   fast: {
     previewLongEdge: 960,
+    refineLongEdge: 1536,
+    refineCandidatesPerStack: 1,
+    refinementEnabled: true,
     acceleration: "auto",
     detector: "heuristic",
     maxDuplicateDistance: 0.22,
     minDuplicateConfidence: 0.50,
+    keepersPerCluster: null,
   },
 };
 const DEFAULT_SETTINGS = {
   qualityPreset: "balanced",
   previewLongEdge: 1280,
+  refineLongEdge: 2048,
+  refineCandidatesPerStack: 2,
+  refinementEnabled: true,
   acceleration: "auto",
   detector: "auto",
   decodeConcurrency: Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2))),
@@ -55,6 +70,7 @@ const DEFAULT_SETTINGS = {
   maxHashGap: 30,
   maxDuplicateDistance: 0.20,
   minDuplicateConfidence: 0.52,
+  keepersPerCluster: null,
 };
 const tutorialProgress = createTutorialProgressStore({
   legacyKeys: ["burst-tutorial-wasm-v1"],
@@ -73,7 +89,11 @@ function normalizeSettings(value = {}) {
   const settings = { ...DEFAULT_SETTINGS, ...value };
   settings.qualityPreset = ["best", "balanced", "fast", "custom"].includes(settings.qualityPreset)
     ? settings.qualityPreset : "custom";
-  settings.previewLongEdge = Math.round(clampNumber(settings.previewLongEdge, 640, 2048, 1280) / 128) * 128;
+  settings.previewLongEdge = Math.round(clampNumber(settings.previewLongEdge, 640, 4096, 1280) / 128) * 128;
+  settings.refineLongEdge = Math.round(clampNumber(settings.refineLongEdge, 1024, 8192, 2048) / 256) * 256;
+  settings.refineCandidatesPerStack = Math.round(clampNumber(settings.refineCandidatesPerStack, 1, 8, 2));
+  settings.refinementEnabled = Boolean(settings.refinementEnabled)
+    && settings.refineLongEdge > settings.previewLongEdge;
   settings.acceleration = ["auto", "webgpu", "portable"].includes(settings.acceleration)
     ? settings.acceleration : "auto";
   settings.detector = ["auto", "heuristic", "ml", "off"].includes(settings.detector)
@@ -85,6 +105,11 @@ function normalizeSettings(value = {}) {
   settings.maxHashGap = Math.round(clampNumber(settings.maxHashGap, 0, 64, 30));
   settings.maxDuplicateDistance = clampNumber(settings.maxDuplicateDistance, 0.01, 1, 0.20);
   settings.minDuplicateConfidence = clampNumber(settings.minDuplicateConfidence, 0, 1, 0.52);
+  settings.keepersPerCluster = settings.keepersPerCluster === null
+    || settings.keepersPerCluster === ""
+    || settings.keepersPerCluster === undefined
+    ? null
+    : Math.round(clampNumber(settings.keepersPerCluster, 1, 20, 1));
   return settings;
 }
 
@@ -116,9 +141,10 @@ const elements = Object.fromEntries([
   "settingsBtn", "settingsDialog", "settingsForm", "settingsTitle", "settingsSubtitle",
   "closeSettingsBtn", "cancelSettingsBtn", "resetSettingsBtn", "applySettingsBtn",
   "qualityPresetSelect", "previewSizeInput", "previewSizeOutput", "accelerationSelect",
+  "refinementInput", "refineSizeInput", "refineSizeOutput", "refineCandidatesInput",
   "detectorSelect", "mlDetectorNote", "decodeConcurrencyInput", "decodeConcurrencyOutput",
   "maxSeqGapInput", "maxTimeGapInput", "maxClusterSpanInput", "maxHashGapInput",
-  "duplicateDistanceInput", "duplicateConfidenceInput",
+  "duplicateDistanceInput", "duplicateConfidenceInput", "keepersPerClusterInput",
 ].map(id => [id, document.getElementById(id)]));
 
 const queryLocale = new URLSearchParams(location.search).get("lang");
@@ -141,6 +167,7 @@ const state = {
   mlAdapter: null,
   mlFailure: null,
   detectorBackends: {},
+  refinementCandidates: 0,
   settings: configuredSettings,
   settingsDraft: null,
   settingsTab: "quality",
@@ -287,6 +314,14 @@ function renderSettings() {
   elements.qualityPresetSelect.value = settings.qualityPreset;
   elements.previewSizeInput.value = String(settings.previewLongEdge);
   elements.previewSizeOutput.textContent = `${settings.previewLongEdge} px`;
+  elements.refinementInput.checked = settings.refinementEnabled;
+  elements.refineSizeInput.value = String(settings.refineLongEdge);
+  elements.refineSizeOutput.textContent = `${settings.refineLongEdge} px`;
+  elements.refineCandidatesInput.value = String(settings.refineCandidatesPerStack);
+  document.querySelectorAll("[data-refinement-control]").forEach(row => {
+    row.dataset.disabled = settings.refinementEnabled ? "false" : "true";
+    row.querySelectorAll("input").forEach(input => { input.disabled = !settings.refinementEnabled; });
+  });
   elements.accelerationSelect.value = settings.acceleration;
   elements.detectorSelect.value = settings.detector;
   elements.mlDetectorNote.hidden = settings.detector !== "ml";
@@ -298,6 +333,7 @@ function renderSettings() {
   elements.maxHashGapInput.value = String(settings.maxHashGap);
   elements.duplicateDistanceInput.value = settings.maxDuplicateDistance.toFixed(2);
   elements.duplicateConfidenceInput.value = settings.minDuplicateConfidence.toFixed(2);
+  elements.keepersPerClusterInput.value = settings.keepersPerCluster ?? "";
   document.querySelectorAll("[data-settings-tab]").forEach(button => {
     const selected = button.dataset.settingsTab === state.settingsTab;
     button.setAttribute("aria-selected", String(selected));
@@ -312,6 +348,9 @@ function readSettingsForm() {
   return normalizeSettings({
     qualityPreset: elements.qualityPresetSelect.value,
     previewLongEdge: elements.previewSizeInput.value,
+    refinementEnabled: elements.refinementInput.checked,
+    refineLongEdge: elements.refineSizeInput.value,
+    refineCandidatesPerStack: elements.refineCandidatesInput.value,
     acceleration: elements.accelerationSelect.value,
     detector: elements.detectorSelect.value,
     decodeConcurrency: elements.decodeConcurrencyInput.value,
@@ -321,6 +360,7 @@ function readSettingsForm() {
     maxHashGap: elements.maxHashGapInput.value,
     maxDuplicateDistance: elements.duplicateDistanceInput.value,
     minDuplicateConfidence: elements.duplicateConfidenceInput.value,
+    keepersPerCluster: elements.keepersPerClusterInput.value,
   });
 }
 
@@ -515,6 +555,18 @@ function activeSettings() {
   return state.scanSettings || state.settings;
 }
 
+function browserGroupingOptions(settings = activeSettings()) {
+  return {
+    max_seq_gap: settings.maxSeqGap,
+    max_time_gap_ms: settings.maxTimeGapMs,
+    max_cluster_span_ms: settings.maxClusterSpanMs,
+    max_hash_gap: settings.maxHashGap,
+    max_duplicate_distance: settings.maxDuplicateDistance,
+    min_duplicate_confidence: settings.minDuplicateConfidence,
+    keepers_per_cluster: settings.keepersPerCluster,
+  };
+}
+
 async function ensureWebGpu() {
   if (activeSettings().acceleration === "portable" || !navigator.gpu || state.webGpuFailure) return null;
   if (!state.webGpuReady) {
@@ -607,6 +659,8 @@ async function scanFiles(fileList) {
     detector_preprocessing_ms: 0,
     detector_inference_ms: 0,
     scoring_ms: 0,
+    refinement_decode_ms: 0,
+    refinement_scoring_ms: 0,
     clustering_ms: 0,
     render_ms: 0,
   };
@@ -661,10 +715,11 @@ async function scanFiles(fileList) {
   state.decodeBackends = {};
   state.focusBackends = {};
   state.detectorBackends = {};
+  state.refinementCandidates = 0;
   const decodeConcurrency = state.scanSettings.decodeConcurrency;
   for (let offset = 0; offset < groups.length; offset += decodeConcurrency) {
     if (token !== state.scanToken) {
-      showEmpty(t("scanCancelled"));
+      session.free();
       return;
     }
     const batch = groups.slice(offset, offset + decodeConcurrency);
@@ -680,6 +735,11 @@ async function scanFiles(fileList) {
       }
     }));
     benchmarkStages.decode_ms += performance.now() - decodeStarted;
+    if (token !== state.scanToken) {
+      disposeDecodedOutcomes(outcomes);
+      session.free();
+      return;
+    }
 
     const detectionsById = new Map();
     if (mlDetector) {
@@ -687,6 +747,11 @@ async function scanFiles(fileList) {
       if (detectorEntries.length) {
         try {
           for (let detectorOffset = 0; detectorOffset < detectorEntries.length; detectorOffset += ML_INFERENCE_BATCH) {
+            if (token !== state.scanToken) {
+              disposeDecodedOutcomes(outcomes);
+              session.free();
+              return;
+            }
             const detectorBatch = detectorEntries.slice(detectorOffset, detectorOffset + ML_INFERENCE_BATCH);
             const lastPosition = Math.min(groups.length, offset + detectorOffset + detectorBatch.length);
             setProgress(
@@ -725,17 +790,19 @@ async function scanFiles(fileList) {
         }
       }
     }
+    if (token !== state.scanToken) {
+      disposeDecodedOutcomes(outcomes);
+      session.free();
+      return;
+    }
 
-    for (const outcome of outcomes) {
+    for (let outcomeIndex = 0; outcomeIndex < outcomes.length; outcomeIndex += 1) {
+      const outcome = outcomes[outcomeIndex];
       const { group, decoded, error } = outcome;
       if (error) {
         console.error(group.relPath, error);
         failed.push(group.relPath);
         continue;
-      }
-      if (token !== state.scanToken) {
-        URL.revokeObjectURL(decoded.previewUrl);
-        return;
       }
       const input = {
         id: group.id,
@@ -759,6 +826,12 @@ async function scanFiles(fileList) {
           state.webGpuScorer = null;
           console.warn("WebGPU focus scoring failed; continuing on portable WASM CPU", error);
         }
+      }
+      if (token !== state.scanToken) {
+        URL.revokeObjectURL(decoded.previewUrl);
+        disposeDecodedOutcomes(outcomes.slice(outcomeIndex + 1));
+        session.free();
+        return;
       }
 
       const detection = detectionsById.get(group.id) || null;
@@ -802,28 +875,37 @@ async function scanFiles(fileList) {
 
   if (token !== state.scanToken) return;
   if (session.len() === 0) {
+    session.free();
     showEmpty(t("noImages"));
     return;
   }
-  setProgress("grouping", 0.91);
+  if (state.scanSettings.refinementEnabled) {
+    const refined = await refineSessionCandidates(
+      session,
+      groups,
+      webGpuScorer,
+      token,
+      benchmarkStages,
+    );
+    if (!refined) {
+      session.free();
+      return;
+    }
+  }
+  setProgress("grouping", 0.95);
   await nextPaint();
   const clusteringStarted = performance.now();
   try {
-    state.result = session.finish({
-      max_seq_gap: state.scanSettings.maxSeqGap,
-      max_time_gap_ms: state.scanSettings.maxTimeGapMs,
-      max_cluster_span_ms: state.scanSettings.maxClusterSpanMs,
-      max_hash_gap: state.scanSettings.maxHashGap,
-      max_duplicate_distance: state.scanSettings.maxDuplicateDistance,
-      min_duplicate_confidence: state.scanSettings.minDuplicateConfidence,
-    });
+    state.result = session.finish(browserGroupingOptions(state.scanSettings));
+    session.free();
   } catch (error) {
+    session.free();
     console.error(error);
     showEmpty(t("scanFailed"));
     return;
   }
   benchmarkStages.clustering_ms = performance.now() - clusteringStarted;
-  setProgress("rendering", 0.97);
+  setProgress("rendering", 0.98);
   const renderStarted = performance.now();
   initializeReviewState();
   renderReview();
@@ -840,6 +922,88 @@ async function scanFiles(fileList) {
   else if (state.settings.detector === "ml" && state.mlFailure) showToast(t("mlFallback"));
 }
 
+async function refineSessionCandidates(session, groups, webGpuScorer, token, benchmarkStages) {
+  const candidates = session.refinement_candidates(
+    browserGroupingOptions(state.scanSettings),
+    state.scanSettings.refineCandidatesPerStack,
+  );
+  state.refinementCandidates = candidates.length;
+  if (!candidates.length) return true;
+
+  const groupsById = new Map(groups.map(group => [group.id, group]));
+  const concurrency = state.scanSettings.decodeConcurrency;
+  for (let offset = 0; offset < candidates.length; offset += concurrency) {
+    if (token !== state.scanToken) return false;
+    const ids = candidates.slice(offset, offset + concurrency);
+    const batch = ids.map(id => groupsById.get(id)).filter(Boolean);
+    setProgress(
+      "refining",
+      0.88 + 0.06 * (offset / candidates.length),
+      `${offset + 1}–${Math.min(candidates.length, offset + batch.length)} / ${candidates.length}`,
+    );
+    await nextPaint();
+    const decodeStarted = performance.now();
+    const outcomes = await Promise.all(batch.map(async group => {
+      try {
+        return {
+          group,
+          decoded: await decodeGroup(group, state.scanSettings.refineLongEdge),
+        };
+      } catch (error) {
+        return { group, error };
+      }
+    }));
+    benchmarkStages.refinement_decode_ms += performance.now() - decodeStarted;
+    if (token !== state.scanToken) {
+      disposeDecodedOutcomes(outcomes);
+      return false;
+    }
+
+    for (let outcomeIndex = 0; outcomeIndex < outcomes.length; outcomeIndex += 1) {
+      const { group, decoded, error } = outcomes[outcomeIndex];
+      if (error) {
+        console.warn(`Refinement skipped for ${group.relPath}`, error);
+        continue;
+      }
+      try {
+        const scoringStarted = performance.now();
+        let focus = null;
+        if (webGpuScorer && state.webGpuScorer) {
+          try {
+            focus = await acceleratedFocus(decoded, webGpuScorer);
+          } catch (focusError) {
+            state.webGpuFailure = String(focusError?.message || focusError);
+            state.webGpuScorer = null;
+            console.warn("WebGPU refinement failed; continuing on portable WASM CPU", focusError);
+          }
+        }
+        if (!focus) focus = portable_focus_rgba(decoded.width, decoded.height, decoded.rgba);
+        session.refine_rgba_with_focus(
+          group.id,
+          decoded.width,
+          decoded.height,
+          decoded.rgba,
+          focus,
+        );
+        benchmarkStages.refinement_scoring_ms += performance.now() - scoringStarted;
+      } finally {
+        URL.revokeObjectURL(decoded.previewUrl);
+      }
+      if (token !== state.scanToken) {
+        disposeDecodedOutcomes(outcomes.slice(outcomeIndex + 1));
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function disposeDecodedOutcomes(outcomes) {
+  for (const outcome of outcomes) {
+    if (outcome.decoded?.previewUrl) URL.revokeObjectURL(outcome.decoded.previewUrl);
+  }
+}
+
 function publishBenchmark(started, stages, selectedAssets, failedAssets) {
   const totalMs = performance.now() - started;
   const completedAssets = state.result?.assets.length || 0;
@@ -854,6 +1018,7 @@ function publishBenchmark(started, stages, selectedAssets, failedAssets) {
     decode_backends: state.decodeBackends,
     focus_backends: state.focusBackends,
     detector_backends: state.detectorBackends,
+    refinement_candidates: state.refinementCandidates,
     webgpu_adapter: state.webGpuAdapter,
     webgpu_fallback: state.webGpuFailure,
     focus_calibration: state.focusCalibration,
@@ -873,28 +1038,28 @@ function publishBenchmark(started, stages, selectedAssets, failedAssets) {
   window.dispatchEvent(new CustomEvent("burst-benchmark-complete", { detail: benchmark }));
 }
 
-function decodeGroup(group) {
-  if (!group.rawOnly) return decodeBrowserImage(group.representative);
+function decodeGroup(group, longEdge = activeSettings().previewLongEdge) {
+  if (!group.rawOnly) return decodeBrowserImage(group.representative, longEdge);
   const previous = state.rawDecodeQueue || Promise.resolve();
-  const task = previous.catch(() => {}).then(() => decodeRaw(group.representative));
+  const task = previous.catch(() => {}).then(() => decodeRaw(group.representative, longEdge));
   state.rawDecodeQueue = task;
   return task;
 }
 
-async function decodeBrowserImage(file) {
+async function decodeBrowserImage(file, longEdge) {
   if (WEB_CODECS_ENABLED && typeof ImageDecoder === "function" && file.type) {
     try {
       if (await ImageDecoder.isTypeSupported(file.type)) {
-        return await decodeWithWebCodecs(file);
+        return await decodeWithWebCodecs(file, longEdge);
       }
     } catch (error) {
       console.debug("Scaled WebCodecs decode unavailable", error);
     }
   }
-  return decodeWithImageBitmap(file);
+  return decodeWithImageBitmap(file, longEdge);
 }
 
-async function decodeWithWebCodecs(file) {
+async function decodeWithWebCodecs(file, longEdge) {
   const probe = new ImageDecoder({ data: file.stream(), type: file.type, preferAnimation: false });
   await probe.tracks.ready;
   const track = probe.tracks.selectedTrack;
@@ -905,7 +1070,7 @@ async function decodeWithWebCodecs(file) {
   const sourceWidth = track.displayWidth || track.codedWidth;
   const sourceHeight = track.displayHeight || track.codedHeight;
   probe.close();
-  const scale = Math.min(1, activeSettings().previewLongEdge / Math.max(sourceWidth, sourceHeight));
+  const scale = Math.min(1, longEdge / Math.max(sourceWidth, sourceHeight));
   const desiredWidth = Math.max(1, Math.round(sourceWidth * scale));
   const desiredHeight = Math.max(1, Math.round(sourceHeight * scale));
   const decoder = new ImageDecoder({
@@ -942,7 +1107,7 @@ async function decodeWithWebCodecs(file) {
   }
 }
 
-async function decodeWithImageBitmap(file) {
+async function decodeWithImageBitmap(file, longEdge) {
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -952,7 +1117,7 @@ async function decodeWithImageBitmap(file) {
   try {
     const sourceWidth = bitmap.width;
     const sourceHeight = bitmap.height;
-    const canvas = drawScaled(bitmap, sourceWidth, sourceHeight, activeSettings().previewLongEdge);
+    const canvas = drawScaled(bitmap, sourceWidth, sourceHeight, longEdge);
     const context = canvas.getContext("2d", { willReadFrequently: true });
     const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
     return {
@@ -971,7 +1136,7 @@ async function decodeWithImageBitmap(file) {
   }
 }
 
-async function decodeRaw(file) {
+async function decodeRaw(file, longEdge) {
   if (!crossOriginIsolated) throw new Error(t("rawIsolation"));
   if (!state.rawDecoder) {
     const module = await import("./vendor/libraw-wasm/index.js");
@@ -993,7 +1158,7 @@ async function decodeRaw(file) {
   sourceCanvas.width = decoded.width;
   sourceCanvas.height = decoded.height;
   sourceCanvas.getContext("2d").putImageData(new ImageData(rgba, decoded.width, decoded.height), 0, 0);
-  const preview = drawScaled(sourceCanvas, decoded.width, decoded.height, activeSettings().previewLongEdge);
+  const preview = drawScaled(sourceCanvas, decoded.width, decoded.height, longEdge);
   const previewContext = preview.getContext("2d", { willReadFrequently: true });
   const previewRgba = previewContext.getImageData(0, 0, preview.width, preview.height).data;
   const previewUrl = URL.createObjectURL(await canvasBlob(preview));
@@ -1701,9 +1866,9 @@ function nextPaint() {
   return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
 }
 
-async function syntheticFixture() {
+async function syntheticFixture(count = 12) {
   const files = [];
-  for (let index = 0; index < 12; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     const canvas = document.createElement("canvas");
     canvas.width = 640;
     canvas.height = 480;
@@ -1889,7 +2054,10 @@ async function initialize() {
   document.documentElement.dataset.crossOriginIsolated = String(crossOriginIsolated);
   const testFixture = new URLSearchParams(location.search).get("test-fixture");
   if (testFixture === "synthetic" && ["127.0.0.1", "localhost"].includes(location.hostname)) {
-    await scanFiles(await syntheticFixture());
+    const countValue = new URLSearchParams(location.search).get("test-count");
+    const requestedCount = countValue === null ? Number.NaN : Number(countValue);
+    const count = Number.isFinite(requestedCount) ? Math.max(1, Math.min(500, Math.round(requestedCount))) : 12;
+    await scanFiles(await syntheticFixture(count));
   }
   if (!tutorialProgress.hasFinished()) openTutorial();
 }

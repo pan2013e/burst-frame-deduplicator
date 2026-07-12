@@ -1,7 +1,7 @@
 use burst_core::{
-    FocusMetrics, FocusResult, QualityMetrics, SimilarityFeatures, compare_similarity,
-    hash_distance, merge_subject_detection, score_image, score_image_with, similarity_features,
-    update_subject_focus,
+    FocusMetrics, FocusResult, QualityMetrics, SimilarityFeatures, SubjectDetection,
+    compare_similarity, hash_distance, merge_subject_detection, score_image, score_image_with,
+    similarity_features, update_subject_focus,
 };
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ struct BrowserOptions {
     max_hash_gap: u32,
     max_duplicate_distance: f64,
     min_duplicate_confidence: f64,
+    keepers_per_cluster: Option<usize>,
 }
 
 impl Default for BrowserOptions {
@@ -32,6 +33,7 @@ impl Default for BrowserOptions {
             max_hash_gap: 30,
             max_duplicate_distance: 0.20,
             min_duplicate_confidence: 0.52,
+            keepers_per_cluster: None,
         }
     }
 }
@@ -81,6 +83,14 @@ struct BrowserAnalysisInput {
     detector: BrowserDetectorInput,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct BrowserFocusInput {
+    sharpness: f64,
+    tenengrad: f64,
+    backend: String,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct BrowserSimilarity {
     subject_confidence: f64,
@@ -114,6 +124,7 @@ struct BrowserAsset {
     metadata: BrowserMetadata,
     metrics: QualityMetrics,
     detector_backend: String,
+    subject_detection: Option<SubjectDetection>,
     features: SimilarityFeatures,
     burst_id: usize,
     stack_id: usize,
@@ -172,6 +183,7 @@ struct BrowserStack {
     id: usize,
     burst_id: usize,
     asset_ids: Vec<String>,
+    keep_count: usize,
     similarity_confidence: f64,
     max_distance: f64,
 }
@@ -266,6 +278,7 @@ impl BrowserSession {
             image,
             score.metrics,
             "heuristic_saliency".to_string(),
+            None,
         );
         Ok(())
     }
@@ -295,37 +308,108 @@ impl BrowserSession {
         });
         let mut metrics = score.metrics;
         let detection = analysis.detector;
-        let detector_backend = if detection.confidence > 0.0 && detection.subject_count > 0 {
-            merge_subject_detection(
-                &mut metrics,
-                &burst_core::SubjectDetection {
-                    confidence: detection.confidence,
-                    subject_count: detection.subject_count,
-                    truncation_risk: detection.truncation_risk,
-                    bbox_x1: detection.bbox_x1,
-                    bbox_y1: detection.bbox_y1,
-                    bbox_x2: detection.bbox_x2,
-                    bbox_y2: detection.bbox_y2,
-                },
-            );
+        let detector_backend_name = detection.backend.clone();
+        let subject_detection = if detection.confidence > 0.0 && detection.subject_count > 0 {
+            Some(SubjectDetection {
+                confidence: detection.confidence,
+                subject_count: detection.subject_count,
+                truncation_risk: detection.truncation_risk,
+                bbox_x1: detection.bbox_x1,
+                bbox_y1: detection.bbox_y1,
+                bbox_x2: detection.bbox_x2,
+                bbox_y2: detection.bbox_y2,
+            })
+        } else {
+            None
+        };
+        let detector_backend = if let Some(detection) = subject_detection {
+            merge_subject_detection(&mut metrics, &detection);
             update_subject_focus(&image, &mut metrics);
-            detection.backend
+            detector_backend_name
         } else {
             "heuristic_saliency".to_string()
         };
-        self.push_scored_image(input, image, metrics, detector_backend);
+        self.push_scored_image(input, image, metrics, detector_backend, subject_detection);
+        Ok(())
+    }
+
+    pub fn refinement_candidates(
+        &mut self,
+        options: JsValue,
+        max_candidates_per_stack: usize,
+    ) -> Result<JsValue, JsValue> {
+        let options = parse_browser_options(options)?;
+        let bursts = build_bursts(&self.assets, &options);
+        let groups = build_stacks(&mut self.assets, &bursts, &options);
+        let mut candidates = Vec::new();
+        for group in groups {
+            if group.indices.len() <= 1 {
+                continue;
+            }
+            let keep_count = keep_count_for_stack(group.indices.len(), options.keepers_per_cluster);
+            let budget = max_candidates_per_stack
+                .max(keep_count)
+                .min(group.indices.len());
+            candidates.extend(
+                ranked_scores(&self.assets, &group.indices)
+                    .into_iter()
+                    .take(budget)
+                    .map(|(index, _)| self.assets[index].id.clone()),
+            );
+        }
+        serde_wasm_bindgen::to_value(&candidates)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    pub fn refine_rgba_with_focus(
+        &mut self,
+        asset_id: &str,
+        preview_width: u32,
+        preview_height: u32,
+        rgba: &[u8],
+        focus: JsValue,
+    ) -> Result<(), JsValue> {
+        let focus: BrowserFocusInput = serde_wasm_bindgen::from_value(focus)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        if !focus.sharpness.is_finite() || !focus.tenengrad.is_finite() {
+            return Err(JsValue::from_str("invalid refinement focus metrics"));
+        }
+        let index = self
+            .assets
+            .iter()
+            .position(|asset| asset.id == asset_id)
+            .ok_or_else(|| JsValue::from_str("refinement asset was not found"))?;
+        let image = rgba_image(preview_width, preview_height, rgba)?;
+        let score = score_image_with(&image, |_gray, _width, _height| FocusResult {
+            metrics: FocusMetrics {
+                sharpness: focus.sharpness,
+                tenengrad: focus.tenengrad,
+            },
+            backend: focus.backend,
+            notes: Vec::new(),
+        });
+        let mut metrics = score.metrics;
+        if let Some(detection) = self.assets[index].subject_detection {
+            merge_subject_detection(&mut metrics, &detection);
+            update_subject_focus(&image, &mut metrics);
+        }
+        self.assets[index].metrics = metrics;
         Ok(())
     }
 
     pub fn finish(&mut self, options: JsValue) -> Result<JsValue, JsValue> {
-        let options: BrowserOptions = if options.is_null() || options.is_undefined() {
-            BrowserOptions::default()
-        } else {
-            serde_wasm_bindgen::from_value(options)
-                .map_err(|error| JsValue::from_str(&error.to_string()))?
-        };
+        let options = parse_browser_options(options)?;
         let result = build_result(&mut self.assets, &options);
         serde_wasm_bindgen::to_value(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+}
+
+fn parse_browser_options(options: JsValue) -> Result<BrowserOptions, JsValue> {
+    if options.is_null() || options.is_undefined() {
+        Ok(BrowserOptions::default())
+    } else {
+        serde_wasm_bindgen::from_value(options)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 }
 
@@ -359,6 +443,7 @@ impl BrowserSession {
             image,
             score.metrics,
             "heuristic_saliency".to_string(),
+            None,
         );
     }
 
@@ -368,6 +453,7 @@ impl BrowserSession {
         image: RgbImage,
         metrics: QualityMetrics,
         detector_backend: String,
+        subject_detection: Option<SubjectDetection>,
     ) {
         let features = similarity_features(&image, &metrics);
         let (directory, stem) = split_path(&input.rel_path);
@@ -386,6 +472,7 @@ impl BrowserSession {
             metadata: input.metadata,
             metrics,
             detector_backend,
+            subject_detection,
             features,
             burst_id: 0,
             stack_id: 0,
@@ -460,6 +547,7 @@ fn build_result(assets: &mut [BrowserAsset], options: &BrowserOptions) -> Browse
     let mut stacks = Vec::with_capacity(groups.len());
     for (stack_zero, group) in groups.into_iter().enumerate() {
         let stack_id = stack_zero + 1;
+        let keep_count = keep_count_for_stack(group.indices.len(), options.keepers_per_cluster);
         stack_ids_by_burst[group.burst_id - 1].push(stack_id);
         rank_stack(assets, &group.indices, stack_id, group.burst_id, options);
         stacks.push(BrowserStack {
@@ -470,6 +558,7 @@ fn build_result(assets: &mut [BrowserAsset], options: &BrowserOptions) -> Browse
                 .iter()
                 .map(|index| assets[*index].id.clone())
                 .collect(),
+            keep_count,
             similarity_confidence: group.similarity_confidence,
             max_distance: group.max_distance,
         });
@@ -713,7 +802,11 @@ fn rank_stack(
     options: &BrowserOptions,
 ) {
     let ranked = ranked_scores(assets, indices);
-    let keep_threshold = ranked.first().map(|(_, score)| *score).unwrap_or(0.0);
+    let keep_count = keep_count_for_stack(indices.len(), options.keepers_per_cluster);
+    let keep_threshold = ranked
+        .get(keep_count.saturating_sub(1))
+        .map(|(_, score)| *score)
+        .unwrap_or(0.0);
     for (rank_zero, (index, score)) in ranked.into_iter().enumerate() {
         let asset = &mut assets[index];
         asset.burst_id = burst_id;
@@ -723,7 +816,7 @@ fn rank_stack(
         if indices.len() == 1 {
             asset.action = BrowserAction::Keep;
             asset.reason_key = "distinct_frame";
-        } else if rank_zero == 0 {
+        } else if rank_zero < keep_count {
             asset.action = BrowserAction::Keep;
             asset.reason_key = "best_quality";
         } else if asset.similarity.duplicate_confidence < options.min_duplicate_confidence {
@@ -737,6 +830,10 @@ fn rank_stack(
             asset.reason_key = "high_confidence_duplicate";
         }
     }
+}
+
+fn keep_count_for_stack(size: usize, requested: Option<usize>) -> usize {
+    requested.unwrap_or(1).max(1).min(size.max(1))
 }
 
 fn ranked_scores(assets: &[BrowserAsset], indices: &[usize]) -> Vec<(usize, f64)> {

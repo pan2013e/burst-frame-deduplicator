@@ -103,8 +103,21 @@
             </label>
             <label class="setting-row range-row">
               <span data-i18n="analysisPreviewSize"></span>
-              <input id="previewSizeInput" type="range" min="640" max="2048" step="128">
+              <input id="previewSizeInput" type="range" min="640" max="4096" step="128">
               <output id="previewSizeOutput"></output>
+            </label>
+            <label class="setting-row">
+              <span data-i18n="highResolutionRefinement"></span>
+              <input id="refinementInput" type="checkbox">
+            </label>
+            <label class="setting-row range-row" data-refinement-control>
+              <span data-i18n="refineSize"></span>
+              <input id="refineSizeInput" type="range" min="1024" max="8192" step="256">
+              <output id="refineSizeOutput"></output>
+            </label>
+            <label class="setting-row" data-refinement-control>
+              <span data-i18n="refineCandidates"></span>
+              <input id="refineCandidatesInput" type="number" min="1" max="8" step="1">
             </label>
           </section>
           <section data-settings-panel="processing" hidden>
@@ -141,6 +154,7 @@
             <label class="setting-row"><span data-i18n="maxHashGap"></span><input id="maxHashGapInput" type="number" min="0" max="64" step="1"></label>
             <label class="setting-row"><span data-i18n="duplicateDistance"></span><input id="duplicateDistanceInput" type="number" min="0.01" max="1" step="0.01"></label>
             <label class="setting-row"><span data-i18n="duplicateConfidence"></span><input id="duplicateConfidenceInput" type="number" min="0" max="1" step="0.01"></label>
+            <label class="setting-row"><span data-i18n="keepersPerStack"></span><input id="keepersPerClusterInput" type="number" min="1" max="20" step="1" data-i18n-placeholder="automaticOption"></label>
           </section>
         </div>
       </div>

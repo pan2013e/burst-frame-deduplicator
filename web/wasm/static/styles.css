@@ -267,6 +267,8 @@ pre { max-height: 260px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 .setting-row { min-height: 48px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, 210px); gap: 16px; align-items: center; border-bottom: 1px solid var(--line); }
 .setting-row > span { min-width: 0; }
 .setting-row select, .setting-row input[type="number"] { width: 100%; padding: 0 9px; text-align: right; }
+.setting-row input[type="checkbox"] { justify-self: end; width: 18px; height: 18px; accent-color: var(--primary); }
+.setting-row[data-disabled="true"] { opacity: .48; }
 .range-row { grid-template-columns: minmax(180px, 1fr) minmax(120px, 1fr) 58px; }
 .range-row input { width: 100%; }
 .range-row output { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
