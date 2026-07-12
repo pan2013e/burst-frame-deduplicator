@@ -13,9 +13,9 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Refines likely keepers and close calls at higher resolution after a fast preview pass.
 - Treats matching RAW/JPEG files and sidecars as one review asset.
 - Reapplies reviewed rejects to a second RAW/JPEG card by filename stem, even when folder and mount paths differ, with ambiguity checks and restore support.
-- Uses explicit scalar or AVX2 CPU focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
+- Uses explicit scalar, AVX2, or ARM NEON focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
 - Offers optional offline U²-Net-P and IS-Net subject detectors on Linux, with explicit CPU/CUDA provider selection and heuristic fallback.
-- Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
+- Includes native SwiftUI macOS and GTK/libadwaita Linux scan/review apps, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
 - Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
 
@@ -24,6 +24,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 | Interface | Best for | Scan engine | Review experience |
 | --- | --- | --- | --- |
 | Native macOS app | Normal interactive use | Shared Rust native backend through C FFI | Native SwiftUI grid, settings, and responsive image viewer |
+| Native Linux app | GNOME and GTK desktops | Shared Rust backend in-process | Virtualized GTK review list, settings, and zoomable image viewer |
 | Headless CLI | Automation and large cards | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Artifacts only, or serve later |
 | CLI `app` command | Terminal users who want immediate review | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Local browser UI |
 | Static WASM app | GitHub Pages and installation-free use | Portable Rust scorer in-browser | Browser UI; JSON/script export and conditional local moves |
@@ -51,6 +52,20 @@ The default build is ad-hoc signed. Public distribution requires a Developer ID 
 
 Tagged releases and ordinary CI runs also produce an Apple Silicon DMG. The CI app is intentionally ad-hoc signed, so Gatekeeper cannot verify its developer or notarization status. Follow the trusted-artifact steps in the usage guide, or build and sign it locally.
 
+## Native Linux App
+
+The Linux app uses GTK 4 and libadwaita, follows the GNOME interaction model, and shares the same Rust scan, review, move/restore, counterpart-card, locale, and run-storage backend as the CLI. Its review list is virtualized so large cards do not create every row widget at once.
+
+```bash
+sudo apt-get install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
+  libraw23t64 imagemagick
+cargo run --release --features linux-gui --bin burst-frame-deduplicator-gtk
+```
+
+![Native Linux review of the sanitized aircraft burst](docs/assets/usage-linux-review.png)
+
+Ubuntu 24.04 users can build a desktop-integrated Debian package with `scripts/build_linux_app.sh`. It contains the CLI and GUI, installs the app icon/launcher, and declares LibRaw plus ImageMagick so embedded and refined RAW previews work. The same app runs on other GTK/libadwaita desktops when compatible libraries are available.
+
 ## Command Line
 
 Scan and immediately start the local review server:
@@ -58,6 +73,9 @@ Scan and immediately start the local review server:
 ```bash
 # Linux: explicitly request runtime-checked AVX2
 cargo run --release -- app /path/to/photos --open --acceleration avx2 --detector heuristic
+
+# Linux ARM64: explicitly request runtime-checked NEON
+cargo run --release -- app /path/to/photos --open --acceleration neon --detector heuristic
 
 # macOS Apple Silicon
 cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --detector heuristic
@@ -80,7 +98,7 @@ cargo run --release -- counterpart-restore --run /path/to/run --card /Volumes/SE
 
 Matching uses only the case-insensitive filename stem: `CARD_A/DCIM/YYY.jpg` can match `CARD_B/PRIVATE/YYY.rw2`. Duplicate stems are reported and never guessed.
 
-On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests the runtime-dispatched AVX2 scorer, and `auto` chooses AVX2 when the build and CPU support it. CUDA remains explicit while device parity testing is pending:
+On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests runtime-dispatched AVX2 on x86_64, `--acceleration neon` does the same for NEON on AArch64, and `auto` chooses the available native SIMD path. CUDA remains explicit while device parity testing is pending:
 
 ```bash
 cargo run --release --features cuda-accel -- scan /path/to/photos --acceleration cuda
@@ -100,7 +118,7 @@ cargo run --release -- scan /path/to/photos \
   --detector-model-pack "$pack"
 ```
 
-`ml-light` is the 4.57 MB U²-Net-P model; `ml-heavy` is the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML CPU execution is separate from `--acceleration cpu|avx2`: `cpu` scoring is explicitly scalar, `avx2` scoring is explicitly runtime-checked AVX2, and `--detector-device cpu` selects ONNX Runtime's CPU provider. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
+`ml-light` is the 4.57 MB U²-Net-P model; `ml-heavy` is the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML CPU execution is separate from `--acceleration cpu|avx2|neon`: focus scoring and ONNX Runtime device selection remain independent. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
 
 Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
 
@@ -126,7 +144,9 @@ The **Build distributable binaries** GitHub Actions workflow tests and packages:
 
 | Artifact | Runner | Contents |
 | --- | --- | --- |
-| Linux CLI | Ubuntu 24.04 x86_64 | Standalone AVX2/CUDA-capable executable for Ubuntu 24.04 or newer, with runtime fallbacks, model-pack installer/guide, notices, and archive checksum |
+| Linux CLI | Ubuntu 24.04 x86_64 | Standalone AVX2/CUDA-capable executable, model installer/guide, notices, and checksum |
+| Linux CLI | Ubuntu 24.04 ARM64 | Standalone NEON-capable executable, model installer/guide, notices, and checksum |
+| Linux app | Ubuntu 24.04 x86_64 / ARM64 | Desktop-integrated `.deb` containing GTK app and CLI, with checksum |
 | macOS CLI | macOS 26 Apple Silicon | Standalone executable, notices, archive checksum |
 | macOS app | macOS 26 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
 
@@ -156,7 +176,7 @@ Do not reuse an existing release tag.
 | --- | --- | --- | --- |
 | Rust/Cargo | Required | Required | Required |
 | Swift 6 / Apple Command Line Tools | Required | Not required | Not required |
-| ImageMagick | Optional compatibility fallback | Recommended for RAW | Not used |
+| ImageMagick | Optional compatibility fallback | Required by Linux GUI package for refined RAW previews; otherwise recommended | Not used |
 | NVIDIA driver + NVRTC | Not used | Optional for `--acceleration cuda` on Linux | Not used |
 | ONNX Runtime model pack | Not used | Optional for `--detector ml-light` or `ml-heavy` on Linux | Not used |
 | Git LFS | Benchmark fixture only | Benchmark fixture only | Benchmark fixture only |
@@ -178,6 +198,15 @@ Install ImageMagick only when a required format is not handled by the system Cam
 brew install imagemagick
 ```
 
+Ubuntu 24.04 native app setup:
+
+```bash
+sudo apt-get update
+sudo apt-get install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
+  libraw23t64 imagemagick
+rustup toolchain install stable
+```
+
 </details>
 
 ## Platform Support
@@ -187,17 +216,19 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | Feature / backend | macOS Apple Silicon | Linux CPU | Linux NVIDIA | Windows CPU |
 | --- | :---: | :---: | :---: | :---: |
 | Headless CLI | ✅ | ✅ | ✅ | ✅ |
-| Native GUI | ✅ SwiftUI | 🧭 | 🧭 | 🧭 |
+| Native GUI | ✅ SwiftUI | ✅ GTK/libadwaita | ✅ GTK/libadwaita | 🧭 |
 | macOS 26 Liquid Glass controls | ✅ | — | — | — |
 | Static WASM scan/review | ✅ | ✅ | ✅ | ✅ |
 | JPEG/PNG/TIFF/WebP decode | ✅ | ✅ | ✅ | ✅ |
 | RAW via Apple Camera RAW / `sips` | ✅ | — | — | — |
+| RAW embedded preview via LibRaw | — | ✅ native app | ✅ native app | — |
 | RAW via ImageMagick fallback | 🟡 optional | ✅ | ✅ | ✅ |
 | Browser RAW via LibRaw-WASM | ✅ | ✅ | ✅ | ✅ |
-| Confirmed move + restore | ✅ | 🟡 browser | 🟡 browser | 🟡 browser |
-| Swapped-card RAW/JPEG counterpart move | ✅ native + CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| Confirmed move + restore | ✅ | ✅ native + CLI | ✅ native + CLI | 🟡 browser |
+| Swapped-card RAW/JPEG counterpart move | ✅ native + CLI | ✅ native + CLI | ✅ native + CLI | ✅ CLI |
 | Portable scalar + Rayon scoring | ✅ | ✅ | ✅ | ✅ |
 | Runtime-dispatched AVX2 focus scoring | — | ✅ x86_64 | ✅ x86_64 | — |
+| Runtime-dispatched NEON focus scoring | — | ✅ ARM64 | ✅ ARM64 | — |
 | Metal focus scoring | ✅ | — | — | — |
 | Heuristic subject detector | ✅ | ✅ | ✅ | ✅ |
 | macOS Vision detector | ✅ | — | — | — |
@@ -207,7 +238,7 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
 | OpenVINO | — | 🧭 | 🧭 | 🧭 |
 | English / Simplified Chinese | ✅ | ✅ | ✅ | ✅ |
-| CI release binary | ✅ CLI + app | ✅ CLI | ✅ CUDA-capable CLI | 🧭 |
+| CI release binary | ✅ CLI + app | ✅ CLI + app | ✅ CUDA-capable CLI + app | 🧭 |
 
 Requested and selected backends, capabilities, and fallback notes are recorded in every `manifest.json`.
 
@@ -236,6 +267,6 @@ npm install --prefix benchmark
 python3 benchmark/run_frontend_benchmarks.py
 ```
 
-See [macOS accuracy/backend results](benchmark/results/latest.md), [Linux scalar/AVX2 results](benchmark/results/latest-linux.md), and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
+See [macOS accuracy/backend results](benchmark/results/latest.md), [Linux x86_64 scalar/AVX2 results](benchmark/results/latest-linux.md), [Linux ARM64 scalar/NEON results](benchmark/results/latest-linux-arm64.md), and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
 
 Detailed workflows are in [docs/USAGE.md](docs/USAGE.md). Architecture, FFI, acceleration, and timing details are in [docs/TECHNICAL.md](docs/TECHNICAL.md).

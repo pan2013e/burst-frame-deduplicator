@@ -38,13 +38,14 @@ cargo run -- scan samples \
 
 `BFD_ML_MODEL_PACK` may be used instead of `--detector-model-pack`. The pack path is intentionally omitted from `manifest.json`; the manifest records only the model ID, exact SHA-256, size, runtime version, selected provider, capabilities, and fallback notes.
 
-## CPU, AVX2, and CUDA are separate choices
+## CPU, SIMD, and CUDA are separate choices
 
 The photo-scoring and ML controls are independent:
 
 - `--acceleration cpu` means the explicitly portable scalar scoring path.
-- `--acceleration avx2` means the explicitly requested, runtime-checked AVX2 scoring path, with scalar fallback on unsupported CPUs.
-- `--detector-device cpu` means the ONNX Runtime CPU execution provider. ONNX Runtime may perform its own host-specific kernel dispatch; this is not the app's explicit AVX2 scoring backend and is reported separately.
+- `--acceleration avx2` means the explicitly requested, runtime-checked x86 AVX2 scoring path, with scalar fallback on unsupported CPUs.
+- `--acceleration neon` means the corresponding AArch64 NEON scoring path.
+- `--detector-device cpu` means the ONNX Runtime CPU execution provider. ONNX Runtime may perform its own host-specific kernel dispatch; this is separate from the app's AVX2/NEON scorer and is reported independently.
 - `--detector-device auto` is CPU-safe even when the pack contains a CUDA runtime; it never initializes a GPU.
 - `--detector-device cuda` requests ONNX Runtime CUDA first. Initialization and inference failures retry on its CPU provider; if CPU also fails, the scan uses heuristic saliency.
 
@@ -57,7 +58,7 @@ scripts/install_linux_ml_models.sh \
   --runtime both
 ```
 
-The installer supports CPU packs on Linux x86_64 and aarch64; the published CLI archive is currently x86_64, so aarch64 users build the CLI from source. The pinned CUDA pack is x86_64-only and requires CUDA 12 plus cuDNN 9. The CUDA inference path is implemented but was not executed on the development server because all GPUs were occupied. Session initialization uses cuDNN's heuristic convolution selection and caps its search workspace; actual provider selection in `manifest.json` remains the source of truth.
+The installer and published CLI archives support CPU packs on Linux x86_64 and AArch64. The AArch64 pack is exercised in CI and was validated locally with all 120 benchmark frames using `onnx_u2netp-sod-v1_cpu`. The pinned CUDA pack is x86_64-only and requires CUDA 12 plus cuDNN 9. CUDA session initialization uses cuDNN's heuristic convolution selection and caps its search workspace; actual provider selection in `manifest.json` remains the source of truth.
 
 ## Provenance and licensing
 

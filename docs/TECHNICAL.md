@@ -4,6 +4,7 @@
 
 - CLI, scan pipeline, local server, and source-file operations: Rust.
 - Native macOS GUI: SwiftUI. `BurstFrameAppCore` calls the Rust dynamic library through the public C ABI in `include/burst_frame_deduplicator.h`.
+- Native Linux GUI: GTK 4/libadwaita in `src/linux_gui`; it calls the same typed Rust application backend directly and remains behind the optional `linux-gui` feature.
 - Local review UI: static HTML/CSS/JavaScript under `web/review`, embedded into the Rust server at compile time together with locale catalogs and the LibRaw-WASM worker.
 - Portable scoring core: `crates/burst-core`, compiled for both native targets and `wasm32-unknown-unknown`.
 - Static browser app: DOM UI plus the `web/wasm` Rust session, built into `web/dist` by `wasm-pack`.
@@ -16,10 +17,12 @@
 
 ```toml
 default = ["macos-native", "linux-native"]
-linux-native = ["avx2-accel", "onnx-detector"]
+linux-native = ["avx2-accel", "neon-accel", "onnx-detector"]
 avx2-accel = []
+neon-accel = []
 onnx-detector = ["dep:ort"]
 cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
+linux-gui = ["linux-native", "dep:adw", "dep:gdk-pixbuf", "dep:gtk"]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
@@ -31,14 +34,14 @@ The Apple dependencies are declared only for macOS targets, and CUDA/ONNX depend
 cargo build --release --no-default-features
 ```
 
-Build the Linux CLI with runtime-dispatched AVX2 but no CUDA adapter, or with the dynamically loaded CUDA adapter, using:
+Build the Linux CLI with runtime-dispatched AVX2/NEON but no CUDA adapter, or with the dynamically loaded CUDA adapter, using:
 
 ```bash
 cargo build --release --no-default-features --features linux-native
 cargo build --release --no-default-features --features cuda-accel
 ```
 
-The Rust package has no windowing dependency. Build the Apple Silicon macOS application separately with `scripts/build_macos_app.sh`; GUI support on other operating systems is planned. CUDA is not available on macOS, and deprecated/limited OpenCL is not an Apple Silicon backend target.
+The default Rust CLI has no windowing dependency. Build the Linux app explicitly with `cargo build --release --features linux-gui --bin burst-frame-deduplicator-gtk` or `scripts/build_linux_app.sh`. Build the Apple Silicon macOS application separately with `scripts/build_macos_app.sh`. CUDA is not available on macOS, and deprecated/limited OpenCL is not an Apple Silicon backend target.
 
 ## Native SwiftUI And FFI
 
@@ -75,15 +78,25 @@ Counterpart-card matching is a metadata-only discovery pass over the selected ca
 
 `scripts/test_macos_app.sh` builds the dylib and runs the Swift package tests. Standalone Xcode Command Line Tools installs keep `Testing.framework` outside SwiftPM's default search path, so the script adds that path conditionally; full Xcode installations use normal framework discovery.
 
+## Native GTK Application
+
+The Linux app is a non-unique `adw::Application`, allowing independent concurrent processes. Main and preview controllers are retained in per-thread registries until their windows close; signal handlers use weak references to avoid window/controller cycles. Scan, decision, export, move/restore, counterpart, relocation, and cache work run off the GTK main loop and publish typed events through a bounded UI poll.
+
+The review surface flattens expanded clusters into a `gio::ListStore` consumed by `GtkListView`. Only visible rows allocate thumbnails and controls. Cluster headers are ordered expanded-first, suggested decisions initialize tri-state checkboxes, and EXIF differences/quality/details are computed from the same manifest used by the web and macOS interfaces.
+
+The Linux image viewer decodes off the UI thread and maintains a 384 MiB process-wide LRU-style decoded cache. JPEG uses the shared scaled decoder. RAW dynamically loads LibRaw's reentrant C API and extracts its in-memory thumbnail into an atomically published JPEG or PNM cache file; the adapter validates the ABI payload and retains an ImageMagick fallback. A demand-gated 350 ms refinement uses ImageMagick at `4096px` only when display scale and zoom would upscale the embedded bitmap. Replacements preserve Fit or equivalent displayed size and viewport, while `GtkScrolledWindow`, `GestureZoom`, and `GestureDrag` provide zoom/pan. Preview windows are registered with the application so global `Ctrl+Q` remains active.
+
+Settings and tutorial state use the XDG config directory. Tutorial completion/skipping records schema, outcome, and timestamp. The `.deb` builder installs both binaries, localized desktop/AppStream metadata, the shared icon, model-pack installer, and RAW runtime dependencies. `scripts/test_linux_gui.sh` performs a real scan then uses Xvfb, AT-SPI/Dogtail, and Metacity to load review, open preview, navigate, and quit; it caught and now guards against reentrant checkbox-state borrows.
+
 ## Progress Reporting
 
 `ProgressReporter` emits serializable updates with a stable stage enum, stage item counts, optional current-file detail, stage fraction, and weighted overall fraction. The stages are preparation, discovery, preview analysis, burst/stack grouping, high-resolution refinement, ranking, manifest writing, review export, and completion.
 
-The CLI installs a throttled terminal renderer. The native GUI receives the same serialized updates through the FFI callback, so progress accounting remains in the backend rather than being reconstructed by each interface. Run relocation emits the same JSON field shape with a `relocating` stage, allowing Swift and the CLI to reuse their progress plumbing.
+The CLI installs a throttled terminal renderer. Swift receives the same serialized updates through the FFI callback, while GTK consumes the typed Rust update directly, so neither reconstructs progress accounting. Run relocation emits the same JSON field shape with a `relocating` stage, allowing native and CLI paths to reuse their progress plumbing.
 
 ## Locale Loading
 
-Locale files contain separate `macos`, `reviewWeb`, and `staticWeb` namespaces. Rust validates locale identifiers before reading files and the local server exposes only supported catalog names. The native loader searches `BURST_DEDUP_LOCALES_DIR`, app bundle resources, the working directory, and the repository development location. The static build copies the same files into `web/dist/locales`.
+Locale files contain separate `macos`, `linux`, `reviewWeb`, and `staticWeb` namespaces. Rust validates locale identifiers before reading files and the local server exposes only supported catalog names. Native loaders use embedded catalogs with controlled development overrides; the static build copies the same files into `web/dist/locales`.
 
 The CLI first honors a valid external locale directory and otherwise serves compile-time embedded catalogs. Review HTML/CSS/JavaScript and the vendored LibRaw worker/WASM are also compiled into the binary. Release smoke tests copy only the executable into a temporary directory, run a scan/server, and verify locale, diagnostics, and RAW-WASM responses there.
 
@@ -91,7 +104,7 @@ Adding a user-facing key requires updating both catalogs. Locale load failures a
 
 ## Tutorials And Diagnostics
 
-All interfaces use the same four conceptual tutorial steps but native controls and browser dialogs appropriate to each surface. Tutorial visuals are synthetic and never call scan/move APIs. Both completion and skip write a schema-versioned record containing the outcome and timestamp. The native store uses `UserDefaults` and migrates the former Boolean flag. Both browser editions share `web/shared/tutorial-progress.mjs`, migrate their former local-storage keys, and use local storage for normal persistence. The local CLI review also writes a same-host cookie because local storage is port-specific; this preserves the record when the review server moves to another port. Help/`?` always reopens the tour without clearing the record.
+All interfaces use the same four conceptual tutorial steps but native controls and browser dialogs appropriate to each surface. Tutorial visuals are synthetic and never call scan/move APIs. Both completion and skip write a schema-versioned record containing the outcome and timestamp. macOS uses `UserDefaults`; Linux uses its XDG JSON config and migrates the former Boolean flag. Both browser editions share `web/shared/tutorial-progress.mjs`, migrate former local-storage keys, and use local storage for normal persistence. The local CLI review also writes a same-host cookie because local storage is port-specific; this preserves the record when the review server moves to another port. Help/`?` always reopens the tour without clearing the record.
 
 The local review server exposes `/api/diagnostics` with compile-time commit, Rust/Cargo versions, target/profile, runtime OS/architecture, CPU/memory, and the run manifest's actual acceleration/detector/RAW selections. Browser code appends user-agent, platform, locale, logical-CPU/memory hints, and cross-origin isolation. The static build writes `build-info.json` with Rust, Cargo, `wasm-pack`, target, app version, and commit, then adds browser diagnostics at display time. Diagnostics intentionally omit source/run paths and file names.
 
@@ -123,7 +136,7 @@ EXIF extraction is scan-time work. New manifests include capture time plus compa
 
 JPEG files use scaled-DCT decoding when supported, with `image-rs` as a compatibility fallback. Feature extraction uses an 8-bit grayscale buffer and histogram quantiles rather than cloned `f64` buffers and repeated sorts.
 
-Linux exposes the CPU choice explicitly. `--acceleration cpu` runs the portable scalar reference, `--acceleration avx2` requests the runtime-checked AVX2 Laplacian/Tenengrad kernel, and `auto` selects AVX2 when both the build and x86 CPU support it. The AVX2 implementation remains in the native root crate and is parity-tested against `burst-core`; non-AVX2 CPUs use the scalar reference.
+Linux exposes the CPU choice explicitly. `--acceleration cpu` runs the portable scalar reference. `--acceleration avx2` requests the runtime-checked x86_64 AVX2 Laplacian/Tenengrad kernel, `--acceleration neon` requests the AArch64 NEON kernel, and `auto` selects the available SIMD path. Both implementations remain in the native root crate and are exact-parity tested against `burst-core`; unsupported requests use the best compatible native CPU scorer, otherwise scalar, and record the selected fallback. On the 120-frame ARM64 fixture, NEON preserved every reviewed label and improved Balanced throughput from `12.14` to `13.77` assets/sec.
 
 Metal and CUDA accelerate whole-frame focus metrics only. Both kernels reduce Laplacian and gradient sums into compact partial results; CUDA uses per-call streams, `f64` partials, a process-cached driver/CUDA 12 NVRTC module, and dynamic library loading. CUDA is selected only by explicit `--acceleration cuda` while device parity and throughput testing is pending. Missing libraries, unavailable devices, initialization failures, or per-frame failures disable CUDA for the process and fall back to the best available CPU scorer. Saliency, descriptors, subject focus, clustering, and ranking remain CPU-side.
 
@@ -131,7 +144,7 @@ The optional Linux ML detector uses a dynamically loaded, pinned ONNX Runtime pa
 
 ML metrics are advisory. `pipeline::score_asset` clones the heuristic metrics before invoking any native detector, and the stable portable snapshot remains the input to similarity descriptors. A missing runtime/model, checksum mismatch, bad tensor contract, provider failure, or inference failure is recorded once and falls back to heuristic saliency. Reports include only model ID, SHA-256, byte size, runtime, provider, and generic fallback notes; model-pack paths are never serialized.
 
-The native settings workload bar is intentionally an estimate, not telemetry. It combines preview/refinement pixel area, candidates per stack, detector cost, and acceleration choice, normalized against logical CPU count, physical memory, and Metal availability. The About window reports runtime hardware/OS diagnostics plus build-time commit, Rust, Swift, and Apple toolchain versions injected into `Info.plist` by the packaging script.
+The native settings workload bar is intentionally an estimate, not telemetry. It combines preview/refinement pixel area, candidates per stack, detector cost, and acceleration choice, normalized against logical CPU count and physical memory, plus Metal availability on macOS. About windows report runtime platform diagnostics and available build metadata without photo/run paths.
 
 Platform acceleration remains isolated behind Rust feature gates and target `cfg` checks. The final manifest derives acceleration selection from per-asset backend usage and records the actual Rayon worker count, compiled/runtime capabilities, and fallback notes. Future backends must preserve that contract and must not introduce CUDA or OpenCL claims for Apple Silicon macOS.
 
@@ -169,7 +182,7 @@ The static application performs verified copy/remove/restore only when the sourc
 
 ## Binary CI And Releases
 
-`.github/workflows/binaries.yml` builds a Linux x86_64 CLI with explicit scalar, runtime-dispatched AVX2, and dynamically loaded CUDA focus paths on Ubuntu 24.04, plus an Apple Silicon CLI/app/DMG on macOS 26. The Linux job also tests the no-default-feature portable build, compile-checks CUDA without requiring a GPU, runs the standalone-resource smoke test, and packages notices. The macOS 26 SDK is required to compile the availability-gated Liquid Glass and Metal 4 code while the application deployment target remains macOS 14. The macOS job runs Rust tests, builds the native app through the same scripts used locally, verifies its signature, and packages checksums.
+`.github/workflows/binaries.yml` builds Linux x86_64 and ARM64 CLI/app artifacts on native Ubuntu 24.04 runners. x86_64 includes scalar, AVX2, and dynamically loaded CUDA focus paths; ARM64 validates NEON and executes the AArch64 ONNX Runtime model pack. Both run the GTK accessibility smoke test and publish checksummed CLI archives plus `.deb` packages. The Apple Silicon job builds the CLI/app/DMG on macOS 26; that SDK is required for availability-gated Liquid Glass and Metal 4 code while deployment remains macOS 14.
 
 Pushes and pull requests that contain non-documentation changes, plus manual runs, upload short-lived Actions artifacts. The binary workflow ignores changes confined to `docs/**` and Markdown files. Tag pushes are deliberately not path-filtered: a `v*` tag runs both package jobs, downloads their artifacts into `publish-release`, and creates or updates a GitHub Release. The release job's `startsWith(github.ref, 'refs/tags/v')` condition means GitHub displays it as **skipped** on branch, pull-request, and branch-based manual runs; that is expected.
 
@@ -215,6 +228,6 @@ The scanner reads source files and writes run artifacts. It does not delete sour
 
 The shared native move operation asks for confirmation and works at asset-group granularity. It preflights all group members, copies and size-verifies the complete group, removes originals, and atomically persists `move_state.json`; partial failures trigger rollback. The default target is under the run directory, while explicit custom targets must be outside both temporary storage and the source root. Restore requires the original parent directories to exist and refuses occupied paths. Move and restore reports are written under the run directory and ignored by Git.
 
-The native app invokes the same shared Rust move function only after a destructive-role SwiftUI confirmation dialog. Neither review interface exposes permanent deletion.
+Native apps invoke the same shared Rust move function only after platform-native destructive confirmation dialogs. Neither native nor web review interface exposes permanent deletion.
 
 Run-folder relocation is distinct from moving source rejects and does not require the source card. Selective cache cleanup removes complete user-selected run directories only. It can therefore remove generated previews and recoverable rejects stored inside those directories, but it does not traverse source roots or external custom move destinations.

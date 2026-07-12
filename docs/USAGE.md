@@ -17,6 +17,14 @@ brew install git-lfs
 git lfs install
 ```
 
+On Ubuntu 24.04, install the native Linux app and RAW-preview prerequisites:
+
+```bash
+sudo apt-get update
+sudo apt-get install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
+  libraw23t64 imagemagick
+```
+
 Make sure Rust is available:
 
 ```bash
@@ -38,7 +46,7 @@ The native app and both browser interfaces show a four-step interactive tour on 
 
 Open the tour again from **Help > Show Tutorial** in the native app or the `?` button in either website. The native **About** window reports build commit/toolchains and local OS, memory, GPU, and Metal details. Website **About** dialogs link to the source repository and add browser diagnostics; the local CLI review also reports its selected acceleration, detector, and RAW decoder, while the static edition reports its WASM build toolchain.
 
-Completing or skipping the tour is persistent. The native app stores a structured record in its macOS application preferences. The local CLI review stores the record in browser local storage and a same-host cookie, so changing the local server port does not replay the tour. The static WASM edition uses browser local storage. The tour appears again only when opened from Help/`?`, or after the corresponding app/site data is removed; private browsing may discard the browser record when the private session ends.
+Completing or skipping the tour is persistent. The macOS app stores a structured record in its application preferences; the Linux app stores the same outcome/schema/timestamp fields under `$XDG_CONFIG_HOME/burst-frame-deduplicator/config.json` (normally `~/.config/burst-frame-deduplicator/config.json`). The local CLI review stores the record in browser local storage and a same-host cookie, so changing the local server port does not replay the tour. The static WASM edition uses browser local storage. The tour appears again only when opened from Help/`?`, or after the corresponding app/site data is removed; private browsing may discard the browser record when the private session ends.
 
 ![First-launch browser tutorial using synthetic frames](assets/usage-tutorial.jpg)
 
@@ -49,23 +57,43 @@ Launch the native desktop application when you do not want to use a terminal:
 ```bash
 ./scripts/build_macos_app.sh
 open "target/macos/Burst Frame Deduplicator.app"
+
+# Ubuntu 24.04 / compatible GTK desktop
+cargo run --release --features linux-gui --bin burst-frame-deduplicator-gtk
 ```
 
 Select **New Scan** and choose the photo folder or mounted card. The button is always available and starts the scan as soon as the folder is selected. New run folders are created under the result directory configured in **Settings > General**; the default is `~/Pictures/Burst Frame Deduplicator Runs`.
 
-The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native SwiftUI review workspace; it does not open a browser.
+The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native review workspace; it does not open a browser.
 
-Change language and system/light/dark appearance in **Settings > General**. The app supplies localized titles, messages, and buttons to its file panels instead of relying on the operating-system language. The review state remains intact. On macOS 26, native controls use the system Liquid Glass treatment; earlier supported macOS versions retain their corresponding system controls.
+Change language and system/light/dark appearance in **Settings > General**. The app supplies localized titles, messages, and buttons to its file panels instead of relying on the operating-system language. The review state remains intact. On macOS 26, native controls use the system Liquid Glass treatment. Linux uses GTK 4/libadwaita controls that adapt to GNOME appearance and accessibility settings.
 
 The Settings window sizes each tab independently and caps itself to the current screen's visible area. The complete Analysis form fits without scrolling on a normal-height display; smaller screens retain native scrolling.
 
 Use **File > New App Window** or `Command-N` to launch another independent app process. Each process can scan concurrently, and generated run names include a random suffix to avoid output collisions.
+
+On Linux, launch `burst-frame-deduplicator-gtk` again to start another independent process. The application uses non-unique GTK instances, so concurrent scans do not get redirected into the first process.
 
 For development, the Swift package can also be built directly after the Rust dynamic library exists:
 
 ```bash
 cargo build --release --lib
 swift build --package-path macos/BurstFrameDeduplicatorApp
+```
+
+### Native Linux Review
+
+The Linux review workspace provides the same preselected keep/reject/review state, expanded-first stack ordering, collapse controls, EXIF differences, quality bars, detailed metrics, confirmed move/restore, and swapped-card counterpart workflow as the macOS app. Rows are created through a virtualized `GtkListView`, keeping scrolling responsive when a run contains many frames.
+
+The full-image window supports left/right navigation, Fit, toolbar or trackpad zoom, drag panning, and a synchronized Keep checkbox. Compressed photos are downsampled off the UI thread and held in a bounded decoded-image cache. RAW photos first use the embedded LibRaw preview; a `4096px` ImageMagick refinement is requested only when zoom/display demand exceeds the embedded pixels, and the current viewport stays in place while the refined bitmap replaces it.
+
+![Native GTK review on Ubuntu 24.04 ARM64](assets/usage-linux-review.png)
+
+Build an installable `.deb` containing both CLI and GUI:
+
+```bash
+./scripts/build_linux_app.sh
+sudo apt install ./dist/burst-frame-deduplicator_*_$(dpkg --print-architecture).deb
 ```
 
 ## Command-Line Workflow
@@ -76,11 +104,14 @@ Use `app` for the smoothest workflow. It scans first, then starts the review pag
 # Linux x86_64: explicitly request runtime-checked AVX2
 cargo run --release -- app /path/to/photos --open --acceleration avx2 --detector heuristic
 
+# Linux ARM64: explicitly request runtime-checked NEON
+cargo run --release -- app /path/to/photos --open --acceleration neon --detector heuristic
+
 # macOS Apple Silicon
 cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --detector heuristic
 ```
 
-Replace the example path with the mounted SD card folder or any photo folder. On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests AVX2 with a safe scalar fallback, and `auto` uses AVX2 when the compiled feature and CPU support it.
+Replace the example path with the mounted SD card folder or any photo folder. On Linux, `--acceleration cpu` is the portable scalar reference. `--acceleration avx2` explicitly requests AVX2 on x86_64, `--acceleration neon` explicitly requests NEON on ARM64, and `auto` selects the available native SIMD backend. An unavailable explicit mode records the actual best native CPU fallback, or scalar when no compatible SIMD scorer exists.
 
 CUDA is an opt-in Linux build and runtime choice while device testing is pending:
 
@@ -88,7 +119,7 @@ CUDA is an opt-in Linux build and runtime choice while device testing is pending
 cargo run --release --features cuda-accel -- app /path/to/photos --open --acceleration cuda --detector heuristic
 ```
 
-The CUDA binary loads the NVIDIA driver and NVRTC only when CUDA is explicitly requested. Initialization or scoring failures are recorded and fall back to AVX2 or scalar CPU scoring.
+The CUDA binary loads the NVIDIA driver and NVRTC only when CUDA is explicitly requested. Initialization or scoring failures are recorded and fall back to the best available AVX2, NEON, or scalar CPU scorer.
 
 Optional Linux ML detection is a separate choice from focus acceleration. Install the offline model pack, then select the light or heavy model explicitly:
 
@@ -102,7 +133,7 @@ cargo run --release -- scan /path/to/photos \
   --detector-model-pack "$pack"
 ```
 
-`--detector-device cpu` uses ONNX Runtime's CPU provider; it does not change whether photo scoring uses scalar `--acceleration cpu` or explicit `--acceleration avx2`. Device `auto` is also CPU-safe and never initializes a GPU; only explicit `--detector-device cuda` does so. See [the Linux ML guide](LINUX_ML_MODELS.md) for the `ml-heavy` tradeoff, CUDA→CPU setup, checksums, and model provenance.
+`--detector-device cpu` uses ONNX Runtime's CPU provider; it does not change whether photo scoring uses scalar `--acceleration cpu`, x86_64 `avx2`, or ARM64 `neon`. Device `auto` is also CPU-safe and never initializes a GPU; only explicit `--detector-device cuda` does so. See [the Linux ML guide](LINUX_ML_MODELS.md) for the `ml-heavy` tradeoff, CUDA→CPU setup, checksums, and model provenance.
 
 The app writes a timestamped run directory under `runs/`. That directory contains the review manifest, thumbnails, CSV exports, and move reports.
 
@@ -193,10 +224,12 @@ npm install --prefix benchmark
 python3 benchmark/run_frontend_benchmarks.py
 ```
 
+The native option matrix writes `latest.md` on macOS, `latest-linux.md` on Linux x86_64, and `latest-linux-arm64.md` on Linux ARM64. The Swift FFI frontend comparison is macOS-only; Linux GUI scans call the same typed Rust backend directly, and `scripts/test_linux_gui.sh` exercises that path with native GTK review/preview automation.
+
 Open one of the benchmark review runs:
 
 ```bash
-cargo run --release -- serve --run benchmark/runs/metal_heuristic --open
+cargo run --release -- serve --run benchmark/runs/balanced_neon --open
 ```
 
 The benchmark output is safe to use as a practice review because the raw benchmark run directory is ignored by Git.
@@ -324,9 +357,9 @@ cargo run --release -- scan /path/to/photos \
   --detector vision
 ```
 
-For the reviewed high-quality Linux CLI configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration avx2 --detector heuristic` or explicitly use `--acceleration cuda` in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic remains the self-contained fallback. An installed model pack additionally enables explicit `--detector ml-light|ml-heavy`; macOS Vision remains an advisory Apple-only backend.
+For the reviewed high-quality Linux configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration avx2` on x86_64, `--acceleration neon` on ARM64, or explicitly use CUDA in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic remains the self-contained fallback. An installed model pack additionally enables explicit `--detector ml-light|ml-heavy`; macOS Vision remains an advisory Apple-only backend.
 
-This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. The benchmark fixture retained `100%` reviewed pair accuracy and posture coverage at `3.29` assets/sec with about `1.89 GB` peak RSS. Use Balanced when turnaround matters more than the additional small-subject margin.
+This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. It retains `100%` reviewed pair accuracy and posture coverage on the fixture. The current Apple Silicon result is `3.29` assets/sec at about `1.89 GiB` peak RSS; the Ubuntu ARM64 VM result is `2.88` assets/sec at about `2.31 GiB`. Use Balanced when turnaround matters more than the additional small-subject margin.
 
 **Settings > Analysis** also shows a quick device-capability assessment and an estimated workload for the current preset or custom settings. These colored bars are comparative planning aids based on CPU count, memory, Metal availability, pixel counts, refinement breadth, and detector choice; they are not live CPU/GPU utilization meters.
 
@@ -354,7 +387,7 @@ Common options:
 - `--max-duplicate-distance`: lower values preserve more posture/angle variation as separate stacks.
 - `--min-duplicate-confidence`: minimum evidence required for an automatic reject; lower-confidence frames remain review items.
 - `--no-refine`: skip high-resolution refinement for faster but less careful scans.
-- `--acceleration auto|cpu|avx2|metal|cuda|opencl`: choose the focus-scoring backend. `cpu` is the scalar reference; `avx2` is explicit and runtime-checked; CUDA requires a `cuda-accel` Linux build. Unsupported choices record a CPU fallback.
+- `--acceleration auto|cpu|avx2|neon|metal|cuda|opencl`: choose the focus-scoring backend. `cpu` is the scalar reference; `avx2` and `neon` are explicit and runtime-checked; CUDA requires a `cuda-accel` Linux build. Unsupported choices record a CPU fallback.
 - `--detector auto|heuristic|vision|ml-light|ml-heavy|off`: choose the local subject detector. `auto` stays heuristic; ML choices require the offline Linux model pack.
 - `--detector-device auto|cpu|cuda`: choose the ONNX Runtime provider for an ML detector. `auto` stays on CPU even when CUDA is installed; explicit CUDA falls back to the runtime's CPU provider.
 - `--detector-model-pack DIR`: select the verified offline model/runtime directory. `BFD_ML_MODEL_PACK` is the environment equivalent.
@@ -384,7 +417,7 @@ English and Simplified Chinese strings are stored in `locales/en.json` and `loca
 BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicator serve --run runs/example
 ```
 
-The packaged macOS app and static web build copy the repository catalogs into their resources.
+Packaged macOS, Linux, CLI, and static web builds embed or install synchronized copies of these catalogs.
 
 </details>
 
@@ -398,9 +431,18 @@ shasum -a 256 -c Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
 
 # Linux
 sha256sum -c burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
+sha256sum -c burst-frame-deduplicator-linux-arm64.tar.gz.sha256
+sha256sum -c burst-frame-deduplicator_0.5.0_arm64.deb.sha256
 ```
 
-The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. The Linux x86_64 archive is built on Ubuntu 24.04 and targets Ubuntu 24.04 or newer; build from source on an older glibc distribution. It includes the scalar, runtime-dispatched AVX2, and dynamically loaded CUDA focus paths, and does not require CUDA unless `--acceleration cuda` is requested. The optional ONNX detector runtime and model files remain a separate checksum-verified pack because the heavy model alone is about 179 MB. Optional external RAW compatibility tools such as ImageMagick are not bundled.
+The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. Linux x86_64 and ARM64 archives are built on Ubuntu 24.04 and target Ubuntu 24.04 or newer; build from source on an older glibc distribution. The x86_64 archive includes AVX2 and dynamically loaded CUDA; ARM64 includes NEON. Neither requires an accelerator or model runtime to start. The optional ONNX detector remains a separate checksum-verified pack because the heavy model alone is about 179 MB. Optional external RAW tools are not bundled with CLI archives.
+
+The Linux `.deb` installs both executables plus the launcher, icon, and desktop metadata. It declares GTK 4.14, libadwaita 1.5, LibRaw, and ImageMagick dependencies, so `apt` installs the RAW-preview runtime. Install the package with:
+
+```bash
+sudo apt install ./burst-frame-deduplicator_0.5.0_amd64.deb
+# or: sudo apt install ./burst-frame-deduplicator_0.5.0_arm64.deb
+```
 
 The CI-built macOS app is **ad-hoc signed and not notarized**. Gatekeeper cannot establish an identified developer for it. Prefer a Developer ID signed/notarized build when one is available. If you have verified the checksum and trust the repository artifact, first attempt to open the app, then use **System Settings > Privacy & Security > Security > Open Anyway**. Apple warns that overriding this protection can expose the Mac to malicious software; see [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
 
@@ -456,6 +498,6 @@ If the review page opens but full-resolution previews fail, confirm the original
 
 If Metal is requested but unavailable, the app falls back to CPU/Rayon scoring and records the fallback in the manifest.
 
-On Linux, inspect `manifest.json` to confirm `cpu_scalar_rayon`, `cpu_avx2_rayon`, or a CUDA selection based on actual per-asset use. An explicit AVX2 request falls back on CPUs without AVX2. CUDA requires the NVIDIA driver and a CUDA 12 NVRTC shared library; a missing library, unavailable device, or kernel failure is recorded before the CPU fallback is selected.
+On Linux, inspect `manifest.json` to confirm `cpu_scalar_rayon`, `cpu_avx2_rayon`, `cpu_neon_rayon`, or a CUDA selection based on actual per-asset use. Explicit AVX2/NEON requests fall back on unsupported architectures or CPUs. CUDA requires the NVIDIA driver and a CUDA 12 NVRTC shared library; a missing library, unavailable device, or kernel failure is recorded before the CPU fallback is selected.
 
 </details>
