@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.burstframe.Deduplicator</id>
+  <name>Burst Frame Deduplicator</name>
+  <name xml:lang="zh-CN">连拍照片筛选器</name>
+  <summary>Cull burst photos without losing control</summary>
+  <summary xml:lang="zh-CN">找出连拍中的最佳画面，同时保留每一项决定的控制权</summary>
+  <developer id="io.github.pan2013e">
+    <name>Burst Frame Deduplicator contributors</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Review locally scored burst stacks, inspect full-resolution previews, and move or restore rejected RAW and JPEG assets through recoverable operations.</p>
+    <p xml:lang="zh-CN">在本机分析连拍画面，查看全分辨率预览，并通过可恢复操作移动或还原不需要的 RAW 与 JPEG 照片。</p>
+  </description>
+  <launchable type="desktop-id">org.burstframe.Deduplicator.desktop</launchable>
+  <provides>
+    <binary>burst-frame-deduplicator-gtk</binary>
+    <binary>burst-frame-deduplicator</binary>
+  </provides>
+  <url type="homepage">https://github.com/pan2013e/burst-frame-deduplicator</url>
+  <url type="bugtracker">https://github.com/pan2013e/burst-frame-deduplicator/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="@VERSION@" date="@DATE@" />
+  </releases>
+</component>

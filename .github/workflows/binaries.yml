@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   linux-cli:
-    name: Linux CLI (x86_64)
+    name: Linux CLI and app (x86_64)
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
@@ -32,6 +32,15 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          components: clippy
+
+      - name: Install native Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream desktop-file-utils imagemagick libadwaita-1-dev \
+            libgdk-pixbuf-2.0-dev libgtk-4-dev libraw23t64 metacity \
+            python3-dogtail xdotool xvfb
 
       - name: Test shared browser preferences
         run: node --test web/shared/tutorial-progress.test.mjs
@@ -45,10 +54,20 @@ jobs:
       - name: Test optional CUDA adapter without a GPU
         run: cargo test --workspace --all-targets --no-default-features --features cuda-accel
 
+      - name: Lint native Linux application
+        run: cargo clippy --features linux-gui --all-targets -- -D warnings
+
       - name: Build standalone CLI
         env:
           BFD_BUILD_COMMIT: ${{ github.sha }}
         run: cargo build --release --no-default-features --features cuda-accel --bin burst-frame-deduplicator
+
+      - name: Build and exercise native Linux application
+        env:
+          BFD_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          cargo build --release --features linux-gui,cuda-accel --bin burst-frame-deduplicator-gtk
+          scripts/test_linux_gui.sh
 
       - name: Smoke-test embedded web resources outside the workspace
         shell: bash
@@ -59,6 +78,7 @@ jobs:
           mkdir -p "$smoke/photos"
           printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAUAAAAFACAIAAABC8jL9AAAD9UlEQVR42u3asa2jUBCGUWO5HwqgAUqmAQogvw3cAsidWw4sIdn3H58Tb8Iw3w773k6tnzcg090IQMCAgAEBg4ABAQMCBgQMAgYEDAgYBAwIGBAwIGAQMCBgQMCAgEHAgIABAYOAAQEDAgYEDAIGBAwIGBAwCBgQMCBgEDAgYEDAgIBBwICAAQGDgAEBAwIGBAwCBgQMCBgQMAgYEDAgYBAwIGBAwICAQcCAgAEBAwIGAQMCBgQMAgYEDAgYEDAIGBAwIGBAwCBgQMCAgEHAgIABAQMCBgEDAgauexhBGesyf/6Ht/0wsQKm1k9TKJ+rpAVMwWjFLGDqdKtkAVOhWyULmCLpyljAxKcrYwETn66MBUx8ujIWMPHpyngE/iulej2LC4x1d4pdYPV6OgRsvz2jT2istc9pF5i/PUpOsYDtsWdHwDbYBASM3TUHAdta00DA9tVMELBNNRkBY0fNR8C205QQsL00KwFjI01MwHYRcxMwIGBnxPQEjP0zQwHbPExSwCBgHA3zFLBtw1QFDAjYoTBbAQMCdiIwYQHbLXNGwCBgZwHTFjAgYAfBzAUMCNgpwOQFDAgYBOwrDvMXMCBgf/17CwgYBAwI2Jcb3oWAQcCAgAEB+0cX3oiAQcCAgH2t4b0IGBAwCBgQMCDgS/ykxNsRMCBgQMAgYEDAgIABAb/yWwrvSMCAgAEBg4ABAQMCBgQMAgYEDAgYBAwIGBAwIGAQMCBgQMAgYCMAARex7YcheEcCBgQMCBgEDAgYEDAg4Df8lsLbETAgYEDAIGBAwAn8pMR7ETAgYEDAvta8EQEDAgYEDAjYP7q8CwEDAgYE7MvNWxAwIGB//WP+AgYEDAL2FYfJCxgQsFNg5gIGBOwgYNoCBgTsLJizgLFbJixgQMBOhNkiYBCwQ4GpCti2YZ4CBgHjaJikgG0eZihg+2d6CBgEjDNibgK2i5iYgG2kWSFge2lKAsZ2mo+A7ajJIGCbaiYCxr6ahoBtra01BwHbXRNAwDbYswsYe+ypRzK1fprC16zLLF1cYJvtGRGw/fZ0PqHxOS1dF9gp9iy4wE6xdAWMjKUrYGpmLF0BE5mxdAVMZMbSFTB5JetWwOSVrFsBExazaAVMTNJyFTDwY/4rJQgYEDAgYBAwIGBAwICAQcCAgAEBg4ABAQMCBgQMAgYEDAgYEDAIGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDAgYEDAIGBAwIGBAwCBgQMCBgEDAgYEDAgIBBwICAAQEDAgYBAwIGBAwCBgQMCBgQMAgYEDAgYEDAIGBAwICAQcCAgAEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgYBxP5qVO6prvyuQAAAAASUVORK5CYII=' \
             | base64 --decode > "$smoke/photos/frame_0001.png"
+          cp assets/app-icon.png "$smoke/photos/frame_0001.png"
           scripts/install_linux_ml_models.sh \
             --dest "$smoke/model-pack" \
             --models light \
@@ -109,13 +129,108 @@ jobs:
             sha256sum --check "$package.tar.gz.sha256"
           )
 
+      - name: Package native Linux application
+        env:
+          BFD_LINUX_GUI_FEATURES: linux-gui,cuda-accel
+        run: scripts/build_linux_app.sh --skip-build
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: linux-cli-x86_64
+          name: linux-x86_64
           path: |
             dist/burst-frame-deduplicator-linux-x86_64.tar.gz
             dist/burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
+            dist/burst-frame-deduplicator_*_amd64.deb
+            dist/burst-frame-deduplicator_*_amd64.deb.sha256
+          retention-days: 14
+
+  linux-arm64:
+    name: Linux CLI and app (ARM64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install native Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream desktop-file-utils imagemagick libadwaita-1-dev \
+            libgdk-pixbuf-2.0-dev libgtk-4-dev libraw23t64 metacity \
+            python3-dogtail xdotool xvfb
+
+      - name: Test ARM64 defaults, NEON, and native GUI
+        run: |
+          cargo test --workspace --features linux-gui
+          cargo clippy --features linux-gui --all-targets -- -D warnings
+
+      - name: Build ARM64 CLI and application
+        env:
+          BFD_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          cargo build --release --features linux-gui \
+            --bin burst-frame-deduplicator \
+            --bin burst-frame-deduplicator-gtk
+          scripts/test_linux_gui.sh
+
+      - name: Exercise AArch64 ONNX Runtime model pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          mkdir -p "$smoke/photos"
+          cp assets/app-icon.png "$smoke/photos/frame_0001.png"
+          scripts/install_linux_ml_models.sh \
+            --dest "$smoke/model-pack" \
+            --models light \
+            --runtime cpu
+          target/release/burst-frame-deduplicator scan "$smoke/photos" \
+            --out "$smoke/run" \
+            --no-refine \
+            --no-thumbs \
+            --workers 1 \
+            --acceleration neon \
+            --detector ml-light \
+            --detector-device cpu \
+            --detector-model-pack "$smoke/model-pack"
+          jq -e '.acceleration.selected == "cpu_neon_rayon"' "$smoke/run/manifest.json"
+          jq -e '.detector.selected == "onnx_u2netp-sod-v1_cpu"' "$smoke/run/manifest.json"
+          jq -e '.benchmarks[] | select(.stage == "detector_inference_worker_sum") | .items == 1' "$smoke/run/manifest.json"
+
+      - name: Package Linux ARM64 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="burst-frame-deduplicator-linux-arm64"
+          mkdir -p "dist/$package/scripts" "dist/$package/docs"
+          cp target/release/burst-frame-deduplicator "dist/$package/"
+          cp README.md LICENSE web/vendor/libraw-wasm/NOTICE.md "dist/$package/"
+          cp scripts/install_linux_ml_models.sh "dist/$package/scripts/"
+          cp docs/LINUX_ML_MODELS.md "dist/$package/docs/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          (
+            cd dist
+            sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+            sha256sum --check "$package.tar.gz.sha256"
+          )
+          scripts/build_linux_app.sh --skip-build
+
+      - name: Upload Linux ARM64 artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-arm64
+          path: |
+            dist/burst-frame-deduplicator-linux-arm64.tar.gz
+            dist/burst-frame-deduplicator-linux-arm64.tar.gz.sha256
+            dist/burst-frame-deduplicator_*_arm64.deb
+            dist/burst-frame-deduplicator_*_arm64.deb.sha256
           retention-days: 14
 
   macos:
@@ -189,7 +304,7 @@ jobs:
   release:
     name: Publish GitHub Release assets
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-cli, macos]
+    needs: [linux-cli, linux-arm64, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

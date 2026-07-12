@@ -1,4 +1,5 @@
 /target/
+/dist/
 /runs/
 /samples/
 /benchmark/runs/

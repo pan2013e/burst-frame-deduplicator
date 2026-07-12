@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Burst Frame Deduplicator
+Name[zh_CN]=连拍照片筛选器
+GenericName=Burst Photo Culler
+GenericName[zh_CN]=连拍照片筛选工具
+Comment=Cull burst photos without losing control.
+Comment[zh_CN]=筛除连拍中的重复画面，同时保留每一项决定的控制权。
+Exec=burst-frame-deduplicator-gtk
+TryExec=burst-frame-deduplicator-gtk
+Icon=org.burstframe.Deduplicator
+Terminal=false
+Categories=Graphics;Photography;
+Keywords=photos;burst;cull;deduplicate;RAW;JPEG;
+Keywords[zh_CN]=照片;连拍;筛选;去重;RAW;JPEG;
+StartupNotify=true
+StartupWMClass=org.burstframe.Deduplicator

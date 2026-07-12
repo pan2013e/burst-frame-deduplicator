@@ -39,6 +39,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Run `cargo fmt` after Rust edits.
 - Run `cargo check` for compile validation.
 - Run `swift build --package-path macos/BurstFrameDeduplicatorApp` and `scripts/test_macos_app.sh` after native GUI or C ABI changes. The test script supplies the standalone Command Line Tools `Testing.framework` path when full Xcode is not selected.
+- Run `cargo clippy --features linux-gui --all-targets -- -D warnings`, build the optimized GTK binary, and run `scripts/test_linux_gui.sh` after Linux backend or native GUI changes. The smoke test requires GTK 4/libadwaita, Xvfb, Metacity, Dogtail/AT-SPI, and `xdotool`.
 - Run `cargo check -p burst-wasm --target wasm32-unknown-unknown` after portable browser changes.
 - Run `cargo test` even when there are no dedicated tests yet, because it builds the test profile.
 - Use `git lfs pull` before benchmark work if the fixture zip is only a pointer file.
@@ -56,7 +57,9 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Parse or lint edited GitHub Actions YAML and keep the portable and native build commands aligned with local test scripts.
 - Keep usage screenshots current, free of personal paths and metadata, and at least 1920 pixels wide or an equivalent high-density native capture.
 - Run `scripts/build_macos_app.sh` and inspect the packaged app with native UI automation after changing SwiftUI layout, navigation, locale loading, or packaging.
+- Verify packaged macOS load commands do not retain an absolute workspace `LC_RPATH`; the app must resolve the Rust dylib from `Contents/Frameworks`.
 - After DMG changes, build and mount the image, verify that the app and `/Applications` alias are present, and run `codesign --verify` on the packaged app. Never claim an ad-hoc build is Gatekeeper-ready.
+- After Linux package changes, run `scripts/build_linux_app.sh`, inspect/extract the `.deb` with `dpkg-deb`, and validate its desktop file and AppStream metadata. Test ARM-specific work on native AArch64 Linux when available; a cross-compile alone does not validate NEON dispatch or the external ONNX Runtime pack.
 - If testing against an SD card, never run generated move scripts unless explicitly asked.
 
 ## Benchmark Expectations
