@@ -842,17 +842,15 @@ impl Controller {
                 for cluster in &payload.manifest.clusters {
                     let all_kept = cluster.asset_ids.iter().all(|asset_id| {
                         assets_by_id.get(asset_id.as_str()).is_some_and(|asset| {
-                            decisions_by_id
-                                .get(asset_id.as_str())
-                                .copied()
-                                .unwrap_or_else(|| match asset.suggestion.action {
+                            decisions_by_id.get(asset_id.as_str()).copied().unwrap_or(
+                                match asset.suggestion.action {
                                     SuggestedAction::Keep => UserDecision::Keep,
                                     SuggestedAction::Reject => UserDecision::Reject,
                                     SuggestedAction::Review | SuggestedAction::Error => {
                                         UserDecision::Review
                                     }
-                                })
-                                == UserDecision::Keep
+                                },
+                            ) == UserDecision::Keep
                         })
                     });
                     if cluster.asset_ids.len() > 1 && !all_kept {
