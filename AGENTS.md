@@ -20,8 +20,10 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Keep release CLI binaries self-contained for locale catalogs, the local review frontend, and the browser RAW decoder. Development overrides may load external resources, but the normal fallback must be compile-time embedded.
 - First-launch tutorials must use synthetic data and must not invoke scan, decision, move, or restore APIs. Keep a visible skip action on every step and a persistent Help/`?` entry that reopens the tutorial.
 - Diagnostics may expose build/runtime/backend capabilities but must not include source paths, run paths, filenames, or other user-specific photo data.
-- Gate platform-specific native code with Rust features and `cfg(target_os = "...")`. macOS Metal/Vision code must compile only on supported Apple targets.
+- Gate a backend by its narrowest real requirement. Architecture-only SIMD belongs behind `cfg(target_arch = "...")`; OS APIs retain `cfg(target_os = "...")`. macOS Metal/Vision code must compile only on supported Apple targets.
 - When adding acceleration or detector backends, provide a CPU or heuristic fallback and record the selected backend plus fallback notes in `manifest.json`.
+- Keep public acceleration choices capability-oriented (`auto`, `cpu`, `gpu`, `portable`) and report focus acceleration separately from Rayon parallelism. Do not expose ISA names as normal user settings.
+- Keep browser ML in the separately loaded `web/ml-wasm` crate so ordinary static scans do not fetch its runtime or weights. Verify Git LFS model integrity at build time, preserve provenance/license files, and share mask postprocessing with native detectors through `burst-core`.
 - Keep user-facing review UI simple. Show recommendations as preselected keep/reject controls and hide low-level metrics behind expandable details.
 - Do not expose permanent delete controls in the web UI. Moving rejects must require a confirmation dialog and leave files recoverable in a local folder.
 - Treat result-folder relocation as a backend operation shared by CLI and GUI. Never overwrite an existing run; verify cross-volume copies, repair internal move-journal paths, and publish the new path only after the operation succeeds.
@@ -41,8 +43,9 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Run `swift build --package-path macos/BurstFrameDeduplicatorApp` and `scripts/test_macos_app.sh` after native GUI or C ABI changes. The test script supplies the standalone Command Line Tools `Testing.framework` path when full Xcode is not selected.
 - Run `cargo clippy --features linux-gui --all-targets -- -D warnings`, build the optimized GTK binary, and run `scripts/test_linux_gui.sh` after Linux backend or native GUI changes. The smoke test requires GTK 4/libadwaita, Xvfb, Metacity, Dogtail/AT-SPI, and `xdotool`.
 - Run `cargo check -p burst-wasm --target wasm32-unknown-unknown` after portable browser changes.
+- Run `cargo check --manifest-path web/ml-wasm/Cargo.toml --target wasm32-unknown-unknown` after browser ML changes. Keep this crate outside the root workspace so its large inference dependency graph stays lazy.
 - Run `cargo test` even when there are no dedicated tests yet, because it builds the test profile.
-- Use `git lfs pull` before benchmark work if the fixture zip is only a pointer file.
+- Use `git lfs pull` before benchmark or browser-ML work if a fixture/model asset is only a pointer file.
 - Run a local sample scan after changing scoring, clustering, export, or UI state behavior:
 
   ```bash

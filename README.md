@@ -13,8 +13,8 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Refines likely keepers and close calls at higher resolution after a fast preview pass.
 - Treats matching RAW/JPEG files and sidecars as one review asset.
 - Reapplies reviewed rejects to a second RAW/JPEG card by filename stem, even when folder and mount paths differ, with ambiguity checks and restore support.
-- Uses explicit scalar, AVX2, or ARM NEON focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
-- Offers optional offline U²-Net-P and IS-Net subject detectors on Linux, with explicit CPU/CUDA provider selection and heuristic fallback.
+- Exposes stable `auto`, `cpu`, `gpu`, and `portable` processing policies while selecting Metal, CUDA, AVX2, or ARM NEON only where that capability actually exists.
+- Exposes one optional ML detector: GPU-backed Vision on macOS, offline U²-Net-P or IS-Net through ONNX Runtime on Linux, and lazy U²-Net-P through WebGPU in the static browser app.
 - Includes native SwiftUI macOS and GTK/libadwaita Linux scan/review apps, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
 - Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
@@ -25,9 +25,9 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 | --- | --- | --- | --- |
 | Native macOS app | Normal interactive use | Shared Rust native backend through C FFI | Native SwiftUI grid, settings, and responsive image viewer |
 | Native Linux app | GNOME and GTK desktops | Shared Rust backend in-process | Virtualized GTK review list, settings, and zoomable image viewer |
-| Headless CLI | Automation and large cards | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Artifacts only, or serve later |
-| CLI `app` command | Terminal users who want immediate review | Rust, Rayon, optional AVX2/CUDA or Metal/Vision | Local browser UI |
-| Static WASM app | GitHub Pages and installation-free use | Portable Rust scorer in-browser | Browser UI; JSON/script export and conditional local moves |
+| Headless CLI | Automation and large cards | Rust, Rayon, native CPU SIMD, optional GPU/ML | Artifacts only, or serve later |
+| CLI `app` command | Terminal users who want immediate review | Same native Rust engine | Local browser UI |
+| Static WASM app | GitHub Pages and installation-free use | Rust/WASM with optional WebGPU focus and ML | Browser UI; JSON/script export and conditional local moves |
 
 ## Native macOS App
 
@@ -71,20 +71,17 @@ Ubuntu 24.04 users can build a desktop-integrated Debian package with `scripts/b
 Scan and immediately start the local review server:
 
 ```bash
-# Linux: explicitly request runtime-checked AVX2
-cargo run --release -- app /path/to/photos --open --acceleration avx2 --detector heuristic
-
-# Linux ARM64: explicitly request runtime-checked NEON
-cargo run --release -- app /path/to/photos --open --acceleration neon --detector heuristic
+# Linux: use the best compatible CPU scorer (AVX2 or NEON when available)
+cargo run --release -- app /path/to/photos --open --acceleration cpu --detector heuristic
 
 # macOS Apple Silicon
-cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --detector heuristic
+cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration gpu --detector ml
 ```
 
 Keep scan and review separate:
 
 ```bash
-cargo run --release -- scan /path/to/photos --acceleration avx2 --detector heuristic
+cargo run --release -- scan /path/to/photos --acceleration auto --detector heuristic
 cargo run --release -- serve --run runs/run_YYYYMMDD_HHMMSS --open
 ```
 
@@ -98,10 +95,10 @@ cargo run --release -- counterpart-restore --run /path/to/run --card /Volumes/SE
 
 Matching uses only the case-insensitive filename stem: `CARD_A/DCIM/YYY.jpg` can match `CARD_B/PRIVATE/YYY.rw2`. Duplicate stems are reported and never guessed.
 
-On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests runtime-dispatched AVX2 on x86_64, `--acceleration neon` does the same for NEON on AArch64, and `auto` chooses the available native SIMD path. CUDA remains explicit while device parity testing is pending:
+Acceleration choices describe intent rather than an implementation name. `auto` uses Metal on macOS and the best compatible CPU scorer elsewhere; `cpu` uses AVX2 on supported x86 processors, the AArch64 NEON baseline on ARM64, or the portable fallback; `portable` always uses the scalar reference. `gpu` explicitly requests Metal on macOS or CUDA in a CUDA-enabled Linux build:
 
 ```bash
-cargo run --release --features cuda-accel -- scan /path/to/photos --acceleration cuda
+cargo run --release --features cuda-accel -- scan /path/to/photos --acceleration gpu
 ```
 
 The CUDA feature loads the NVIDIA driver and CUDA 12 NVRTC dynamically. A CUDA-enabled binary still runs on CPU-only Linux when CUDA is not requested, and an unavailable or failed CUDA scorer falls back to the best available CPU path.
@@ -113,12 +110,13 @@ pack="$HOME/.local/share/burst-frame-deduplicator/ml-model-pack"
 scripts/install_linux_ml_models.sh --dest "$pack" --runtime cpu --models both
 
 cargo run --release -- scan /path/to/photos \
-  --detector ml-light \
+  --detector ml \
+  --detector-model fast \
   --detector-device cpu \
   --detector-model-pack "$pack"
 ```
 
-`ml-light` is the 4.57 MB U²-Net-P model; `ml-heavy` is the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML CPU execution is separate from `--acceleration cpu|avx2|neon`: focus scoring and ONNX Runtime device selection remain independent. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
+`--detector-model fast` selects the 4.57 MB U²-Net-P model; `accurate` selects the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML inference device selection, focus acceleration, and Rayon parallelism are independent. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
 
 Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
 
@@ -128,13 +126,14 @@ Release CLI archives are standalone: the local review HTML/CSS/JavaScript, Engli
 
 ```bash
 cargo install wasm-pack --version 0.15.0 --locked
+git lfs pull
 ./web/wasm/build.sh
 python3 -m http.server 4173 --directory web/dist
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. The decoder runs bounded parallel jobs, prefers scaled WebCodecs when the browser exposes it, and falls back to `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker.
+Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. Settings expose quality presets, analysis resolution, focus acceleration, detector, decode concurrency, and temporal/visual grouping thresholds. The decoder runs bounded parallel jobs, prefers scaled WebCodecs when the browser exposes it, and falls back to `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker.
 
-The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. It does not use Metal, Vision, Rayon, or native high-resolution refinement.
+WebGPU can accelerate focus metrics through Rust `wgpu`. Selecting browser ML lazily loads a separate Burn/WGPU U²-Net-P module and model, batches up to four previews per inference, and falls back to heuristic saliency if WebGPU or the model cannot initialize. The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. It does not use native high-resolution refinement or Rayon.
 
 The GitHub Pages workflow builds the same static directory.
 
@@ -177,9 +176,9 @@ Do not reuse an existing release tag.
 | Rust/Cargo | Required | Required | Required |
 | Swift 6 / Apple Command Line Tools | Required | Not required | Not required |
 | ImageMagick | Optional compatibility fallback | Required by Linux GUI package for refined RAW previews; otherwise recommended | Not used |
-| NVIDIA driver + NVRTC | Not used | Optional for `--acceleration cuda` on Linux | Not used |
-| ONNX Runtime model pack | Not used | Optional for `--detector ml-light` or `ml-heavy` on Linux | Not used |
-| Git LFS | Benchmark fixture only | Benchmark fixture only | Benchmark fixture only |
+| NVIDIA driver + NVRTC | Not used | Optional for `--acceleration gpu` on Linux | Not used |
+| ONNX Runtime model pack | Not used | Optional for `--detector ml` on Linux | Not used |
+| Git LFS | Benchmark fixture | Benchmark fixture | Benchmark fixture and U²-Net-P browser weights |
 | `wasm-pack` | Optional | Optional | Required |
 | Modern browser | Optional local review | Optional local review | Required |
 
@@ -203,7 +202,9 @@ Ubuntu 24.04 native app setup:
 ```bash
 sudo apt-get update
 sudo apt-get install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
-  libraw23t64 imagemagick
+  libraw23t64 imagemagick git-lfs
+git lfs install
+git lfs pull
 rustup toolchain install stable
 ```
 
@@ -228,11 +229,12 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | Swapped-card RAW/JPEG counterpart move | ✅ native + CLI | ✅ native + CLI | ✅ native + CLI | ✅ CLI |
 | Portable scalar + Rayon scoring | ✅ | ✅ | ✅ | ✅ |
 | Runtime-dispatched AVX2 focus scoring | — | ✅ x86_64 | ✅ x86_64 | — |
-| Runtime-dispatched NEON focus scoring | — | ✅ ARM64 | ✅ ARM64 | — |
+| AArch64-baseline NEON focus scoring | ✅ | ✅ ARM64 | ✅ ARM64 | — |
 | Metal focus scoring | ✅ | — | — | — |
 | Heuristic subject detector | ✅ | ✅ | ✅ | ✅ |
-| macOS Vision detector | ✅ | — | — | — |
-| Local ML subject detector | — | ✅ opt-in CPU | ✅ opt-in CUDA→CPU | — |
+| Unified native ML detector | ✅ Vision/Metal | ✅ ONNX/CPU | ✅ ONNX/CUDA→CPU | — |
+| Browser U²-Net-P detector | 🟡 WebGPU | 🟡 WebGPU | 🟡 WebGPU | 🟡 WebGPU |
+| Browser WebGPU focus scoring | ✅ | ✅ | ✅ | ✅ |
 | CUDA focus scoring | — | — | ✅ opt-in | — |
 | TensorRT learned detector | — | — | 🧭 | 🧭 |
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
@@ -267,6 +269,6 @@ npm install --prefix benchmark
 python3 benchmark/run_frontend_benchmarks.py
 ```
 
-See [macOS accuracy/backend results](benchmark/results/latest.md), [Linux x86_64 scalar/AVX2 results](benchmark/results/latest-linux.md), [Linux ARM64 scalar/NEON results](benchmark/results/latest-linux-arm64.md), and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
+See [macOS accuracy/backend results](benchmark/results/latest.md), [Linux x86_64 portable/native CPU results](benchmark/results/latest-linux.md), [Linux ARM64 portable/native CPU results](benchmark/results/latest-linux-arm64.md), and [CLI/SwiftUI/WASM path results](benchmark/results/frontend-latest.md).
 
 Detailed workflows are in [docs/USAGE.md](docs/USAGE.md). Architecture, FFI, acceleration, and timing details are in [docs/TECHNICAL.md](docs/TECHNICAL.md).

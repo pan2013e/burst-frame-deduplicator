@@ -2,14 +2,14 @@
 
 The Linux CLI supports two optional, fully local subject-saliency models. They improve the advisory subject box, subject-focused sharpness, and out-of-frame risk. They do not replace the portable near-duplicate descriptor, and they never make source-photo changes.
 
-| CLI choice | Model | ONNX size | Input | Intended use |
+| Model choice | Model | ONNX size | Input | Intended use |
 | --- | --- | ---: | ---: | --- |
-| `--detector ml-light` | U²-Net-P | 4.57 MB | 320×320 | Fast scans and modest machines |
-| `--detector ml-heavy` | IS-Net General Use | 178.65 MB | 1024×1024 | Higher-resolution subject analysis |
+| `--detector-model fast` | U²-Net-P | 4.57 MB | 320×320 | Fast scans and modest machines |
+| `--detector-model accurate` | IS-Net General Use | 178.65 MB | 1024×1024 | Higher-resolution subject analysis |
 
-`--detector auto` deliberately remains the built-in heuristic. A scan only loads a model when `ml-light` or `ml-heavy` is explicit.
+`--detector auto` deliberately remains the built-in heuristic. A scan only loads a model when `--detector ml` is explicit.
 
-Device `auto` is also conservative: it selects the CPU provider and never initializes a GPU. GPU inference requires an explicit `--detector-device cuda`.
+Device `auto` is also conservative: it selects the CPU provider and never initializes a GPU. GPU inference requires an explicit `--detector-device gpu`; GPU currently means CUDA on Linux.
 
 ## Install the offline model pack
 
@@ -25,13 +25,15 @@ Then run either model:
 ```bash
 cargo run -- scan samples \
   --out /tmp/bfd-ml-light \
-  --detector ml-light \
+  --detector ml \
+  --detector-model fast \
   --detector-device cpu \
   --detector-model-pack "$pack"
 
 cargo run -- scan samples \
   --out /tmp/bfd-ml-heavy \
-  --detector ml-heavy \
+  --detector ml \
+  --detector-model accurate \
   --detector-device cpu \
   --detector-model-pack "$pack"
 ```
@@ -42,12 +44,12 @@ cargo run -- scan samples \
 
 The photo-scoring and ML controls are independent:
 
-- `--acceleration cpu` means the explicitly portable scalar scoring path.
-- `--acceleration avx2` means the explicitly requested, runtime-checked x86 AVX2 scoring path, with scalar fallback on unsupported CPUs.
-- `--acceleration neon` means the corresponding AArch64 NEON scoring path.
+- `--acceleration cpu` means the best compatible native CPU scoring path: runtime-dispatched AVX2 on x86, baseline NEON on AArch64, or portable CPU fallback.
+- `--acceleration portable` means the explicit scalar reference path.
+- `--acceleration gpu` requests CUDA focus scoring in a `cuda-accel` build. This is independent of the detector device.
 - `--detector-device cpu` means the ONNX Runtime CPU execution provider. ONNX Runtime may perform its own host-specific kernel dispatch; this is separate from the app's AVX2/NEON scorer and is reported independently.
 - `--detector-device auto` is CPU-safe even when the pack contains a CUDA runtime; it never initializes a GPU.
-- `--detector-device cuda` requests ONNX Runtime CUDA first. Initialization and inference failures retry on its CPU provider; if CPU also fails, the scan uses heuristic saliency.
+- `--detector-device gpu` requests ONNX Runtime CUDA first. Initialization and inference failures retry on its CPU provider; if CPU also fails, the scan uses heuristic saliency.
 
 To prepare the CUDA path without executing it:
 

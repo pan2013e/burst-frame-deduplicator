@@ -101,39 +101,37 @@ sudo apt install ./dist/burst-frame-deduplicator_*_$(dpkg --print-architecture).
 Use `app` for the smoothest workflow. It scans first, then starts the review page:
 
 ```bash
-# Linux x86_64: explicitly request runtime-checked AVX2
-cargo run --release -- app /path/to/photos --open --acceleration avx2 --detector heuristic
-
-# Linux ARM64: explicitly request runtime-checked NEON
-cargo run --release -- app /path/to/photos --open --acceleration neon --detector heuristic
+# Linux: use the best compatible native CPU scorer
+cargo run --release -- app /path/to/photos --open --acceleration cpu --detector heuristic
 
 # macOS Apple Silicon
-cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration metal --detector heuristic
+cargo run --release -- app /Volumes/CARD/DCIM --open --acceleration gpu --detector ml
 ```
 
-Replace the example path with the mounted SD card folder or any photo folder. On Linux, `--acceleration cpu` is the portable scalar reference. `--acceleration avx2` explicitly requests AVX2 on x86_64, `--acceleration neon` explicitly requests NEON on ARM64, and `auto` selects the available native SIMD backend. An unavailable explicit mode records the actual best native CPU fallback, or scalar when no compatible SIMD scorer exists.
+Replace the example path with the mounted SD card folder or any photo folder. `--acceleration auto` selects Metal on macOS and the best compatible CPU scorer elsewhere. `cpu` selects runtime-checked AVX2 on supported x86 processors, the AArch64 NEON baseline on ARM64, or a portable fallback. `portable` forces the scalar reference. `gpu` explicitly requests Metal on macOS or CUDA in a CUDA-enabled Linux build. Every manifest records the actual focus backend and the independent Rayon worker count.
 
 CUDA is an opt-in Linux build and runtime choice while device testing is pending:
 
 ```bash
-cargo run --release --features cuda-accel -- app /path/to/photos --open --acceleration cuda --detector heuristic
+cargo run --release --features cuda-accel -- app /path/to/photos --open --acceleration gpu --detector heuristic
 ```
 
 The CUDA binary loads the NVIDIA driver and NVRTC only when CUDA is explicitly requested. Initialization or scoring failures are recorded and fall back to the best available AVX2, NEON, or scalar CPU scorer.
 
-Optional Linux ML detection is a separate choice from focus acceleration. Install the offline model pack, then select the light or heavy model explicitly:
+Optional Linux ML detection is a separate choice from focus acceleration. Install the offline model pack, then select the ML detector and model explicitly:
 
 ```bash
 pack="$HOME/.local/share/burst-frame-deduplicator/ml-model-pack"
 scripts/install_linux_ml_models.sh --dest "$pack" --models both --runtime cpu
 
 cargo run --release -- scan /path/to/photos \
-  --detector ml-light \
+  --detector ml \
+  --detector-model fast \
   --detector-device cpu \
   --detector-model-pack "$pack"
 ```
 
-`--detector-device cpu` uses ONNX Runtime's CPU provider; it does not change whether photo scoring uses scalar `--acceleration cpu`, x86_64 `avx2`, or ARM64 `neon`. Device `auto` is also CPU-safe and never initializes a GPU; only explicit `--detector-device cuda` does so. See [the Linux ML guide](LINUX_ML_MODELS.md) for the `ml-heavy` tradeoff, CUDA→CPU setup, checksums, and model provenance.
+`--detector-device cpu` uses ONNX Runtime's CPU provider and does not change focus acceleration. Device `auto` is also CPU-safe and never initializes a GPU; only explicit `--detector-device gpu` requests CUDA. See [the Linux ML guide](LINUX_ML_MODELS.md) for the `accurate` model tradeoff, CUDA→CPU setup, checksums, and model provenance. On macOS, the same `--detector ml` choice means Vision with an explicitly selected Metal GPU; model and device options are ignored there.
 
 The app writes a timestamped run directory under `runs/`. That directory contains the review manifest, thumbnails, CSV exports, and move reports.
 
@@ -169,11 +167,18 @@ Build the browser-only application:
 
 ```bash
 cargo install wasm-pack --version 0.15.0 --locked
+git lfs pull
 ./web/wasm/build.sh
 python3 -m http.server 4173 --directory web/dist
 ```
 
 Open `http://127.0.0.1:4173` and select a folder. The page reports the current stage, frame, and overall percentage while it decodes and scores previews; `Cancel` stops the run and releases partial previews. Everything runs locally in the browser. Browser formats use built-in decoding; RAW-only assets use the bundled LibRaw-WASM worker. The Rust WASM module performs subject scoring, burst grouping, posture-aware stack separation, and recommendation ranking.
+
+Open **Settings** before a scan to choose Best Quality, Balanced, Fast, or a custom configuration. The browser exposes analysis resolution, automatic/WebGPU/portable focus scoring, heuristic/U²-Net-P/off detector choice, decode concurrency, filename-counter and capture-time limits, burst span, hash guard, visual duplicate radius, and minimum reject confidence. Settings are stored locally in the browser and snapshotted when a scan starts, so edits affect the next scan only.
+
+![Static browser processing settings with local U²-Net-P selected](assets/usage-browser-settings.jpg)
+
+Automatic focus mode calibrates Rust/WGPU compute against the portable WASM scorer and falls back without changing results when WebGPU is unavailable or slower. Selecting ML lazily downloads the separate Burn/WGPU module and U²-Net-P weights, then runs inference in batches of at most four previews. The model is not downloaded for heuristic or off scans.
 
 The static edition supports English and Simplified Chinese, preselected decisions, filtering, stack collapse/expand, RAW EXIF supplied by LibRaw, full-image preview, arrow navigation, zoom/pan, review JSON export, and generated move scripts.
 
@@ -181,7 +186,7 @@ The static edition supports English and Simplified Chinese, preselected decision
 
 When a Chromium-style browser supplies read-write File System Access handles, `Save review` can copy, size-check, and move grouped files to a selected local folder, then restore them during the same browser session. A normal folder upload exposes read-only handles instead; in that case, direct move is disabled and the modal provides review JSON plus macOS/Linux and Windows scripts.
 
-Browser-only analysis is not quality-equivalent to the native pipeline. It has no native EXIF/filesystem metadata fallback, Rayon, Metal, Vision saliency, or second high-resolution refinement pass. RAW uses LibRaw-WASM's bounded preview decode, and browser decoder behavior varies by format. On the included 120-frame aircraft fixture, the current browser path reaches `95.5%` reviewed pair accuracy and `100%` posture-phase coverage, while the native balanced and best-quality paths reach `100%` on both labels. Use native **Best Quality** for distant aircraft, birds, or other small subjects.
+Browser-only analysis is not quality-equivalent to the native pipeline. It has no reliable native EXIF/filesystem metadata fallback, Rayon, platform Vision, or second high-resolution refinement pass. RAW uses LibRaw-WASM's bounded preview decode, and browser decoder behavior varies by format. On the included 120-frame aircraft fixture, heuristic WebGPU and U²-Net-P both reach `95.5%` reviewed pair accuracy and `100%` posture-phase coverage; ML creates two additional subject/posture stacks but is roughly four times slower on the measured Apple Silicon browser. Native balanced and best-quality paths reach `100%` on both labels. Use native **Best Quality** for distant aircraft, birds, or other small subjects.
 
 The repository’s Pages workflow deploys `web/dist` automatically after GitHub Pages is configured with **GitHub Actions** as its source.
 
@@ -193,7 +198,7 @@ The repository’s Pages workflow deploys `web/dist` automatically after GitHub 
 If you prefer to scan now and review later:
 
 ```bash
-cargo run --release -- scan /Volumes/CARD/DCIM --acceleration metal --detector heuristic
+cargo run --release -- scan /Volumes/CARD/DCIM --acceleration auto --detector heuristic
 ```
 
 Then serve the review UI for the run directory printed by the scan:
@@ -353,13 +358,13 @@ cargo run --release -- scan /path/to/photos \
   --refine-candidates-per-cluster 4 \
   --max-duplicate-distance 0.18 \
   --min-duplicate-confidence 0.60 \
-  --acceleration metal \
-  --detector vision
+  --acceleration gpu \
+  --detector ml
 ```
 
-For the reviewed high-quality Linux configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration avx2` on x86_64, `--acceleration neon` on ARM64, or explicitly use CUDA in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic remains the self-contained fallback. An installed model pack additionally enables explicit `--detector ml-light|ml-heavy`; macOS Vision remains an advisory Apple-only backend.
+For the reviewed high-quality Linux configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration cpu`, or explicitly use `gpu` in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic remains the self-contained fallback. An installed model pack additionally enables `--detector ml --detector-model fast|accurate`; on macOS, ML resolves to advisory Vision saliency.
 
-This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. It retains `100%` reviewed pair accuracy and posture coverage on the fixture. The current Apple Silicon result is `3.29` assets/sec at about `1.89 GiB` peak RSS; the Ubuntu ARM64 VM result is `2.88` assets/sec at about `2.31 GiB`. Use Balanced when turnaround matters more than the additional small-subject margin.
+This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. It retains `100%` reviewed pair accuracy and posture coverage on the fixture. The current Apple Silicon result is `3.29` assets/sec at about `2.14 GiB` peak RSS; the Ubuntu ARM64 VM result is `2.86` assets/sec at about `2.15 GiB`. Use Balanced when turnaround matters more than the additional small-subject margin.
 
 **Settings > Analysis** also shows a quick device-capability assessment and an estimated workload for the current preset or custom settings. These colored bars are comparative planning aids based on CPU count, memory, Metal availability, pixel counts, refinement breadth, and detector choice; they are not live CPU/GPU utilization meters.
 
@@ -375,7 +380,7 @@ cargo run --release -- scan /path/to/photos \
   --refine-candidates-per-cluster 2 \
   --max-duplicate-distance 0.20 \
   --min-duplicate-confidence 0.52 \
-  --acceleration metal \
+  --acceleration auto \
   --detector heuristic
 ```
 
@@ -387,9 +392,10 @@ Common options:
 - `--max-duplicate-distance`: lower values preserve more posture/angle variation as separate stacks.
 - `--min-duplicate-confidence`: minimum evidence required for an automatic reject; lower-confidence frames remain review items.
 - `--no-refine`: skip high-resolution refinement for faster but less careful scans.
-- `--acceleration auto|cpu|avx2|neon|metal|cuda|opencl`: choose the focus-scoring backend. `cpu` is the scalar reference; `avx2` and `neon` are explicit and runtime-checked; CUDA requires a `cuda-accel` Linux build. Unsupported choices record a CPU fallback.
-- `--detector auto|heuristic|vision|ml-light|ml-heavy|off`: choose the local subject detector. `auto` stays heuristic; ML choices require the offline Linux model pack.
-- `--detector-device auto|cpu|cuda`: choose the ONNX Runtime provider for an ML detector. `auto` stays on CPU even when CUDA is installed; explicit CUDA falls back to the runtime's CPU provider.
+- `--acceleration auto|cpu|gpu|portable`: choose a focus-scoring policy. `cpu` uses the best compatible native SIMD path, `portable` forces the scalar reference, and an unavailable GPU records a CPU fallback.
+- `--detector auto|heuristic|ml|off`: choose the local subject detector. `auto` stays heuristic; ML means Vision/Metal on macOS and requires the offline model pack on Linux.
+- `--detector-model fast|accurate`: select U²-Net-P or IS-Net for Linux ML. macOS Vision ignores this option.
+- `--detector-device auto|cpu|gpu`: choose the ONNX Runtime provider for Linux ML. `auto` stays on CPU even when CUDA is installed; explicit GPU falls back to the runtime's CPU provider.
 - `--detector-model-pack DIR`: select the verified offline model/runtime directory. `BFD_ML_MODEL_PACK` is the environment equivalent.
 - `--detector-threads N`: set the serialized ONNX Runtime session's CPU thread count; the default is the scan worker count capped at eight.
 - `--keepers-per-cluster N`: force a fixed keep count for every near-duplicate stack.
@@ -435,7 +441,7 @@ sha256sum -c burst-frame-deduplicator-linux-arm64.tar.gz.sha256
 sha256sum -c burst-frame-deduplicator_0.5.0_arm64.deb.sha256
 ```
 
-The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. Linux x86_64 and ARM64 archives are built on Ubuntu 24.04 and target Ubuntu 24.04 or newer; build from source on an older glibc distribution. The x86_64 archive includes AVX2 and dynamically loaded CUDA; ARM64 includes NEON. Neither requires an accelerator or model runtime to start. The optional ONNX detector remains a separate checksum-verified pack because the heavy model alone is about 179 MB. Optional external RAW tools are not bundled with CLI archives.
+The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. Linux x86_64 and ARM64 archives are built on Ubuntu 24.04 and target Ubuntu 24.04 or newer; build from source on an older glibc distribution. The x86_64 archive includes runtime-dispatched AVX2 and dynamically loaded CUDA; ARM64 uses the NEON target baseline. Neither requires an accelerator or model runtime to start. The optional ONNX detector remains a separate checksum-verified pack because the accurate model alone is about 179 MB. Optional external RAW tools are not bundled with CLI archives.
 
 The Linux `.deb` installs both executables plus the launcher, icon, and desktop metadata. It declares GTK 4.14, libadwaita 1.5, LibRaw, and ImageMagick dependencies, so `apt` installs the RAW-preview runtime. Install the package with:
 
@@ -498,6 +504,6 @@ If the review page opens but full-resolution previews fail, confirm the original
 
 If Metal is requested but unavailable, the app falls back to CPU/Rayon scoring and records the fallback in the manifest.
 
-On Linux, inspect `manifest.json` to confirm `cpu_scalar_rayon`, `cpu_avx2_rayon`, `cpu_neon_rayon`, or a CUDA selection based on actual per-asset use. Explicit AVX2/NEON requests fall back on unsupported architectures or CPUs. CUDA requires the NVIDIA driver and a CUDA 12 NVRTC shared library; a missing library, unavailable device, or kernel failure is recorded before the CPU fallback is selected.
+Inspect `manifest.json` to confirm `acceleration.focus_backend`, `parallelism_backend`, and `parallelism_workers` based on actual per-asset use. `cpu` may resolve to `cpu_avx2`, `cpu_neon`, or `cpu_portable`; `gpu` may resolve to Metal, CUDA, or a recorded CPU fallback. CUDA requires the NVIDIA driver and a CUDA 12 NVRTC shared library; a missing library, unavailable device, or kernel failure is recorded before the CPU fallback is selected.
 
 </details>

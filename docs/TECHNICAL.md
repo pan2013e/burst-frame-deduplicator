@@ -8,6 +8,7 @@
 - Local review UI: static HTML/CSS/JavaScript under `web/review`, embedded into the Rust server at compile time together with locale catalogs and the LibRaw-WASM worker.
 - Portable scoring core: `crates/burst-core`, compiled for both native targets and `wasm32-unknown-unknown`.
 - Static browser app: DOM UI plus the `web/wasm` Rust session, built into `web/dist` by `wasm-pack`.
+- Browser ML module: a separately built `web/ml-wasm` Burn/WGPU module and Git LFS U²-Net-P burnpack, loaded only when ML is selected.
 - Scan outputs: `manifest.json`, `review_state.json`, burst/stack/asset CSVs, thumbnails, optional move scripts.
 - Asset model: same-basename RAW/JPEG files plus sidecars are reviewed as one asset.
 - Grouping model: a temporal burst contains one or more subject-aware near-duplicate stacks. Quality ranking and culling happen inside stacks.
@@ -16,29 +17,29 @@
 ## Feature Flags
 
 ```toml
-default = ["macos-native", "linux-native"]
-linux-native = ["avx2-accel", "neon-accel", "onnx-detector"]
-avx2-accel = []
-neon-accel = []
+default = ["native"]
+native = ["cpu-simd", "onnx-detector", "metal-accel", "macos-vision"]
+cpu-simd = []
 onnx-detector = ["dep:ort"]
-cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
-linux-gui = ["linux-native", "dep:adw", "dep:gdk-pixbuf", "dep:gtk"]
-macos-native = ["metal-accel", "macos-vision"]
+cuda-accel = ["dep:cudarc", "dep:libloading"]
+linux-gui = ["cpu-simd", "onnx-detector", "libraw-preview", ...]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
 ```
 
-The Apple dependencies are declared only for macOS targets, and CUDA/ONNX dependencies only for Linux targets, so an ordinary `cargo build` does not try to link another platform's frameworks. ONNX Runtime itself is loaded dynamically only after an explicit ML detector selects an external pack. Use a portable scalar CPU build with:
+Features describe compiled capabilities; `cfg` expressions use the narrowest real runtime requirement. CPU SIMD is gated by architecture, x86 AVX2 is runtime-dispatched, and AArch64 uses NEON directly because it is part of the target baseline. Metal/Vision and CUDA/ONNX wrappers retain their OS gates because they call platform APIs. Legacy `linux-native`, `macos-native`, `avx2-accel`, and `neon-accel` feature aliases remain for old build commands but add no distinct implementation.
+
+Apple dependencies are declared only for macOS targets, and CUDA/ONNX dependencies only for Linux targets, so `native` does not link another platform's frameworks. ONNX Runtime itself is loaded dynamically only after explicit ML selection finds an external pack. Use a portable scalar CPU build with:
 
 ```bash
 cargo build --release --no-default-features
 ```
 
-Build the Linux CLI with runtime-dispatched AVX2/NEON but no CUDA adapter, or with the dynamically loaded CUDA adapter, using:
+Build the Linux CLI with native CPU SIMD but no CUDA adapter, or add the dynamically loaded CUDA adapter, using:
 
 ```bash
-cargo build --release --no-default-features --features linux-native
-cargo build --release --no-default-features --features cuda-accel
+cargo build --release --no-default-features --features cpu-simd,onnx-detector
+cargo build --release --no-default-features --features cpu-simd,onnx-detector,cuda-accel
 ```
 
 The default Rust CLI has no windowing dependency. Build the Linux app explicitly with `cargo build --release --features linux-gui --bin burst-frame-deduplicator-gtk` or `scripts/build_linux_app.sh`. Build the Apple Silicon macOS application separately with `scripts/build_macos_app.sh`. CUDA is not available on macOS, and deprecated/limited OpenCL is not an Apple Silicon backend target.
@@ -130,17 +131,19 @@ The default pipeline has two stages:
 
 Use `--preview-size`, `--refine-size`, `--refine-candidates-per-cluster`, or `--no-refine` to tune this tradeoff.
 
-The native **Best Quality** preset uses a `2048px` first pass, `4096px` refinement for up to four candidates per stack, `0.18` maximum duplicate distance, `0.60` minimum duplicate confidence, Metal, and Vision. Refinement concurrency is bounded by a `2 GiB` estimated working-set budget. On the persisted fixture this reduced peak RSS from the earlier uncapped `3.46 GB` run to `1.89 GB` while preserving all reviewed pair and posture labels.
+The native **Best Quality** preset uses a `2048px` first pass, `4096px` refinement for up to four candidates per stack, `0.18` maximum duplicate distance, `0.60` minimum duplicate confidence, GPU focus acceleration, and ML. On macOS those policy choices resolve to Metal and Vision. Refinement concurrency is bounded by a `2 GiB` estimated working-set budget. The current persisted-fixture run peaks near `2.14 GiB`, well below the earlier uncapped `3.46 GB` run, while preserving all reviewed pair and posture labels.
 
 EXIF extraction is scan-time work. New manifests include capture time plus compact per-asset metadata fields for ISO, aperture, shutter speed, focal length, and 35mm-equivalent focal length when the source file exposes them.
 
 JPEG files use scaled-DCT decoding when supported, with `image-rs` as a compatibility fallback. Feature extraction uses an 8-bit grayscale buffer and histogram quantiles rather than cloned `f64` buffers and repeated sorts.
 
-Linux exposes the CPU choice explicitly. `--acceleration cpu` runs the portable scalar reference. `--acceleration avx2` requests the runtime-checked x86_64 AVX2 Laplacian/Tenengrad kernel, `--acceleration neon` requests the AArch64 NEON kernel, and `auto` selects the available SIMD path. Both implementations remain in the native root crate and are exact-parity tested against `burst-core`; unsupported requests use the best compatible native CPU scorer, otherwise scalar, and record the selected fallback. On the 120-frame ARM64 fixture, NEON preserved every reviewed label and improved Balanced throughput from `12.14` to `13.77` assets/sec.
+Public acceleration values are policies: `auto`, `cpu`, `gpu`, and `portable`. `cpu` selects runtime-checked AVX2 on x86 when available, the NEON baseline on AArch64, and otherwise the portable scalar scorer; `portable` always selects the scalar reference. `auto` selects Metal on macOS and native CPU elsewhere. `gpu` selects Metal on macOS or CUDA in a CUDA-enabled Linux build, with native CPU fallback. SIMD implementations remain in the native root crate and are exact-parity tested against `burst-core`. Rayon asset parallelism is compatible with every focus backend and is reported independently as backend plus worker count.
 
-Metal and CUDA accelerate whole-frame focus metrics only. Both kernels reduce Laplacian and gradient sums into compact partial results; CUDA uses per-call streams, `f64` partials, a process-cached driver/CUDA 12 NVRTC module, and dynamic library loading. CUDA is selected only by explicit `--acceleration cuda` while device parity and throughput testing is pending. Missing libraries, unavailable devices, initialization failures, or per-frame failures disable CUDA for the process and fall back to the best available CPU scorer. Saliency, descriptors, subject focus, clustering, and ranking remain CPU-side.
+Metal and CUDA accelerate whole-frame focus metrics only. Both kernels reduce Laplacian and gradient sums into compact partial results; CUDA uses per-call streams, `f64` partials, a process-cached driver/CUDA 12 NVRTC module, and dynamic library loading. CUDA is selected only by explicit `--acceleration gpu`; missing libraries, unavailable devices, initialization failures, or per-frame failures disable CUDA for the process and fall back to the best available CPU scorer. Saliency, descriptors, subject focus, clustering, and ranking remain CPU-side.
 
-The optional Linux ML detector uses a dynamically loaded, pinned ONNX Runtime pack. One session is created before the Rayon scoring loop and protected by a mutex; image preprocessing and mask postprocessing stay outside the session lock. `ml-light` uses U²-Net-P at 320×320, while `ml-heavy` uses IS-Net General Use at 1024×1024. Inputs follow the projects' per-image maximum normalization, with a guarded all-zero case. Raw sigmoid outputs are thresholded without output min/max normalization. Connected components produce a subject count, confidence, union box, and border-contact risk. CUDA registration uses an ordered CUDA→CPU provider path with heuristic cuDNN convolution selection and a bounded search workspace. A post-initialization CUDA error rebuilds the session on the CPU provider and retries once; a subsequent CPU error disables ML for the scan. No-GPU CPU scans and provider fallbacks are tested; CUDA inference remains unexecuted while the available devices are occupied.
+The public detector values are `auto`, `heuristic`, `ml`, and `off`. On macOS, ML is Vision objectness saliency and explicitly assigns the request's supported main compute stage to an `MLGPUComputeDevice`; a missing GPU or per-frame Vision failure falls back to heuristics. On Linux, ML uses a dynamically loaded, pinned ONNX Runtime pack. `--detector-model fast` uses U²-Net-P at 320×320, while `accurate` uses IS-Net General Use at 1024×1024. `--detector-device cpu|gpu` controls ONNX inference independently of focus acceleration; GPU currently means CUDA.
+
+One Linux session is created before the Rayon scoring loop and protected by a mutex; image preprocessing and mask postprocessing stay outside the session lock. Inputs follow the projects' per-image maximum normalization, with a guarded all-zero case. Raw sigmoid outputs are thresholded without output min/max normalization. Connected components produce a subject count, confidence, union box, and border-contact risk. CUDA registration uses an ordered CUDA→CPU provider path with heuristic cuDNN convolution selection and a bounded search workspace. A post-initialization CUDA error rebuilds the session on the CPU provider and retries once; a subsequent CPU error disables ML for the scan.
 
 ML metrics are advisory. `pipeline::score_asset` clones the heuristic metrics before invoking any native detector, and the stable portable snapshot remains the input to similarity descriptors. A missing runtime/model, checksum mismatch, bad tensor contract, provider failure, or inference failure is recorded once and falls back to heuristic saliency. Reports include only model ID, SHA-256, byte size, runtime, provider, and generic fallback notes; model-pack paths are never serialized.
 
@@ -153,9 +156,7 @@ Platform acceleration remains isolated behind Rust feature gates and target `cfg
 | Detector | Behavior |
 | --- | --- |
 | `heuristic` | Uses the portable two-resolution local-saliency algorithm, border contact, and object-like edge concentration. This is the self-contained Linux detector and the fallback on every platform. |
-| `vision` | Uses macOS Vision objectness saliency for advisory completeness/quality metrics, with per-frame heuristic fallback. Stable compact saliency remains responsible for duplicate descriptors. |
-| `ml-light` | Uses the external 4.57 MB U²-Net-P ONNX model on Linux. Explicit CPU/CUDA provider selection and checksum validation precede one serialized session. |
-| `ml-heavy` | Uses the external 178.65 MB IS-Net General Use ONNX model at 1024×1024 on Linux, with the same provider/fallback contract. |
+| `ml` | Uses Vision with an explicitly selected Metal GPU on macOS; uses the selected U²-Net-P/IS-Net ONNX model and CPU/CUDA provider on Linux; uses lazy Burn/WGPU U²-Net-P in the static browser app. All variants have heuristic fallback. |
 | `off` | Disables detector output and keeps deterministic scoring metrics only. |
 
 ## Web RAW Preview
@@ -170,25 +171,27 @@ This makes ordinary review light: opening a JPEG/PNG/WebP/BMP/GIF streams the ex
 
 ## Static WASM Application
 
-`web/wasm` keeps decoded descriptors inside a `BrowserSession`. Browser JavaScript supplies a downscaled RGBA preview and file metadata; Rust computes the shared CPU quality metrics and descriptors, then performs temporal burst grouping, complete-link near-duplicate grouping, ranking, and confidence-gated suggestions.
+`web/wasm` keeps decoded descriptors inside a `BrowserSession`. Browser JavaScript supplies a downscaled RGBA preview and file metadata; Rust computes shared quality metrics and descriptors, then performs temporal burst grouping, complete-link near-duplicate grouping, ranking, and confidence-gated suggestions. Users can persist quality preset, analysis size, focus backend, detector, decode concurrency, filename/time/hash limits, visual radius, and reject-confidence settings; each scan snapshots the settings so changes apply coherently to the next run.
 
-Browser formats are decoded in deterministic batches with bounded parallelism (four jobs by default, configurable for benchmarks). The app prefers `ImageDecoder` scaled output where WebCodecs is available, then falls back to `createImageBitmap` and `OffscreenCanvas`. RAW-only assets are decoded serially by the stateful vendored LibRaw-WASM worker, converted to a bounded 1280px preview, and cached for repeat viewing. Same-basename files are grouped before analysis.
+Browser formats are decoded in deterministic batches with bounded parallelism (up to four jobs by default, configurable from one to eight). The app prefers `ImageDecoder` scaled output where WebCodecs is available, then falls back to `createImageBitmap` and `OffscreenCanvas`. RAW-only assets are decoded serially by the stateful vendored LibRaw-WASM worker, converted to the configured bounded preview, and cached for repeat viewing. Same-basename files are grouped before analysis.
+
+The primary WASM module uses `wgpu` compute shaders for integer-luma Laplacian and Tenengrad reductions. Automatic mode calibrates and keeps WebGPU only when it wins; any initialization or scoring failure falls back to the exact portable WASM CPU scorer. `web/ml-wasm` is deliberately separate so ordinary scans do not download a roughly 14 MB uncompressed ML runtime. Selecting ML fetches the 4.3 MB burnpack and Burn/WGPU module, verifies the model at build time, and runs U²-Net-P in batches capped at four images. Native ONNX and browser Burn outputs share the same probability-mask postprocessing in `burst-core`.
 
 The Pages build includes a same-origin isolation service worker because the current LibRaw-WASM binary uses shared WebAssembly memory. The app remains usable for browser-decodable formats when RAW support is unavailable.
 
-The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Native acceleration, reliable scan-time EXIF fallback, Rayon, Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
+The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Reliable native EXIF/filesystem fallback, Rayon, platform Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
 
 `web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions. Its path allow-list covers only static-app, shared-browser, shared-core, locale, and workflow inputs, so documentation-only commits do not start a Pages deployment.
 
 ## Binary CI And Releases
 
-`.github/workflows/binaries.yml` builds Linux x86_64 and ARM64 CLI/app artifacts on native Ubuntu 24.04 runners. x86_64 includes scalar, AVX2, and dynamically loaded CUDA focus paths; ARM64 validates NEON and executes the AArch64 ONNX Runtime model pack. Both run the GTK accessibility smoke test and publish checksummed CLI archives plus `.deb` packages. The Apple Silicon job builds the CLI/app/DMG on macOS 26; that SDK is required for availability-gated Liquid Glass and Metal 4 code while deployment remains macOS 14.
+`.github/workflows/binaries.yml` builds Linux x86_64 and ARM64 CLI/app artifacts on native Ubuntu 24.04 runners. x86_64 includes portable/native CPU and dynamically loaded CUDA focus paths; ARM64 validates native CPU selection as NEON and executes the AArch64 ONNX Runtime model pack. Both run the GTK accessibility smoke test and publish checksummed CLI archives plus `.deb` packages. The Apple Silicon job builds the CLI/app/DMG on macOS 26; that SDK is required for availability-gated Liquid Glass and Metal 4 code while deployment remains macOS 14.
 
 Pushes and pull requests that contain non-documentation changes, plus manual runs, upload short-lived Actions artifacts. The binary workflow ignores changes confined to `docs/**` and Markdown files. Tag pushes are deliberately not path-filtered: a `v*` tag runs both package jobs, downloads their artifacts into `publish-release`, and creates or updates a GitHub Release. The release job's `startsWith(github.ref, 'refs/tags/v')` condition means GitHub displays it as **skipped** on branch, pull-request, and branch-based manual runs; that is expected.
 
 CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
 
-The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM initialization, browser decode, Rust scoring, clustering, rendering, total time, and throughput. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
+The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM/WebGPU initialization, optional detector initialization/preprocessing/inference, browser decode, Rust scoring, clustering, rendering, total time, throughput, selected adapters, fallback notes, and the settings snapshot. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
 
 ## Timing Fields
 
