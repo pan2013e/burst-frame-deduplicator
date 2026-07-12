@@ -9,6 +9,7 @@ This repository implements a non-destructive burst-frame deduplication app for l
 - Keep all source-photo operations non-destructive by default. Scans may read source files and write artifacts under the selected output directory, but must not delete, rename, or move source files.
 - Any source-folder mutator must be explicit and confirmed. Move operations must copy each grouped asset into the run folder by default, or into an explicit user-selected local destination, verify every copied size, then remove the original files as one recoverable transaction. Never use `/tmp` or a destination inside the source folder/card. Persist enough state to restore moved files to their original paths.
 - Treat same-basename RAW/JPEG files as one asset. Decisions must apply to the grouped asset and its sidecars together.
+- For swapped-card RAW/JPEG counterpart operations, match by case-insensitive filename stem only; directory and mount prefixes may differ. Never guess when a stem is duplicated in the run or has multiple opposite-format matches on the selected card.
 - Keep temporal bursts and near-duplicate stacks as separate concepts. Filename/time heuristics form parent bursts; subject-aware visual comparison forms culling stacks.
 - Never suggest reject solely because a frame ranks below a fixed keeper count. Automatic reject requires duplicate confidence at or above the configured threshold; uncertain matches must remain review items.
 - Use EXIF original capture time with subseconds/offset when available, then fall back to filesystem timestamps.

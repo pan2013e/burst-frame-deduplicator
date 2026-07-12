@@ -223,7 +223,7 @@ In the viewer:
 
 The native viewer starts in Fit mode with a small margin around the complete image. Fit remains stable after zooming or panning, and the minus control can zoom below the fitted size. Resizing the preview keeps it fitted until you manually change magnification.
 
-The native app loads normal compressed formats from the original path on demand. For RAW-only assets, Rust asks Apple's Camera RAW/ImageIO stack through `/usr/bin/sips` first, writes a high-quality JPEG to `native_previews/` under the run directory, and reuses that cached file when the image is opened again. ImageMagick is an optional fallback and is not bundled in the app.
+The native app loads normal compressed formats from the original path on demand. For RAW-only assets, ImageIO first displays the camera's embedded preview, typically without rendering the full RAW. If you remain on the frame, Rust asks Apple's Camera RAW stack through `/usr/bin/sips` for a `4096px` JPEG under `native_previews/` and swaps it in without resetting the fitted or manually zoomed viewport. The decoder writes that JPEG directly into the cache, avoiding an extra full RGB decode and JPEG re-encode. Reopening the frame uses the memory or disk cache. ImageMagick is an optional fallback and is not bundled in the app.
 
 The local browser review first tries the bundled LibRaw-WASM decoder for RAW-only images. Its decoded blob cache has a bounded memory budget, and the local server can fall back to generating a JPEG preview. The static WASM edition uses the same local LibRaw worker but has no native fallback.
 
@@ -261,6 +261,29 @@ When confirmed, the app:
 4. Records original and destination paths in `move_state.json` and writes a move report.
 
 Moved cards use a distinct **Moved** status. `Restore moved` returns complete asset groups to their recorded original paths after checking that the source card/folder is connected and no same-name file now occupies a path. The app never recreates an unavailable mounted volume.
+
+## Applying Decisions To A Second RAW/JPEG Card
+
+When a camera writes RAW and JPEG to separate cards, scan and review either card first. You do not need both cards connected at once. After finishing decisions, eject the scanned card, insert the other card, and choose **Counterpart Card > Apply Decisions to Counterpart Card** in the native review toolbar.
+
+The planner compares rejected single-format assets with the currently selected card:
+
+- Identity is the case-insensitive filename stem only. `FIRST/DCIM/YYY.jpg` matches `SECOND/PRIVATE/YYY.rw2`; the directory prefix is ignored.
+- A JPEG-only run looks for RAW; a RAW-only run looks for compressed photos.
+- Once a candidate qualifies, every same-stem RAW/JPEG file and sidecar in that candidate folder remains one transaction.
+- A missing stem remains unchanged. Duplicate stems in the run or multiple opposite-format candidates on the card are shown as ambiguous and are never selected automatically.
+
+Review the plan and confirm **Move Matched Rejects**. The same verified copy, size-check, journal, and rollback rules used by the normal move operation apply. Counterpart files use a distinct **Counterpart moved** status and `moved_counterparts/` destination by default. Use **Counterpart Card > Restore Counterpart Files** after reconnecting that card. Restore uses the journaled relative folder, so the card may have a different volume name or mount root from the original operation.
+
+The equivalent headless workflow is:
+
+```bash
+cargo run --release -- counterpart-plan --run /path/to/run --card /Volumes/CARD/DCIM
+cargo run --release -- counterpart-apply --run /path/to/run --card /Volumes/CARD/DCIM --confirm
+cargo run --release -- counterpart-restore --run /path/to/run --card /Volumes/CARD/DCIM --confirm
+```
+
+`counterpart-plan` is read-only and prints JSON. The apply and restore commands refuse to mutate files unless `--confirm` is present. Choose the card's photo root carefully before restoring; occupied target paths and unavailable relative folders are reported instead of overwritten or recreated.
 
 Do not remove a run directory that still contains moved rejects or an active restore journal. **Settings > Storage** calculates each known run, preselects all removable runs, and lets you uncheck individual folders. The current open run cannot be selected. A second warning appears when the selected folders contain recoverable photos or active restore records.
 

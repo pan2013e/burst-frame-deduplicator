@@ -12,6 +12,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Preserves changes in posture, angle, or composition instead of treating an entire burst as one duplicate group.
 - Refines likely keepers and close calls at higher resolution after a fast preview pass.
 - Treats matching RAW/JPEG files and sidecars as one review asset.
+- Reapplies reviewed rejects to a second RAW/JPEG card by filename stem, even when folder and mount paths differ, with ambiguity checks and restore support.
 - Uses explicit scalar or AVX2 CPU focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
 - Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
@@ -37,7 +38,7 @@ open "target/macos/Burst Frame Deduplicator.app"
 
 The Get Started view opens a source folder directly, resumes recent runs, and keeps result storage in Settings. Scans show weighted stage progress and become a native review workspace in the same window. `Command-N` launches another app process so multiple scans can run concurrently; collision-resistant run names keep their outputs separate.
 
-RAW decoding uses Apple's Camera RAW/ImageIO support through the system `sips` tool first. ImageMagick is not bundled and is only an optional compatibility fallback for the CLI or formats the installed macOS release cannot decode.
+RAW preview opens from the camera's embedded ImageIO preview first, then prepares a reusable `4096px` JPEG through the system `sips` tool after a short dwell. The decoder writes directly into the run cache without a second Rust decode/re-encode pass. ImageMagick is not bundled and is only an optional compatibility fallback for formats the installed macOS release cannot decode.
 
 Build a drag-to-Applications disk image for local testing:
 
@@ -67,6 +68,16 @@ Keep scan and review separate:
 cargo run --release -- scan /path/to/photos --acceleration avx2 --detector heuristic
 cargo run --release -- serve --run runs/run_YYYYMMDD_HHMMSS --open
 ```
+
+Apply reviewed decisions after swapping from a JPEG card to its RAW card, or vice versa:
+
+```bash
+cargo run --release -- counterpart-plan --run /path/to/run --card /Volumes/SECOND_CARD/DCIM
+cargo run --release -- counterpart-apply --run /path/to/run --card /Volumes/SECOND_CARD/DCIM --confirm
+cargo run --release -- counterpart-restore --run /path/to/run --card /Volumes/SECOND_CARD/DCIM --confirm
+```
+
+Matching uses only the case-insensitive filename stem: `CARD_A/DCIM/YYY.jpg` can match `CARD_B/PRIVATE/YYY.rw2`. Duplicate stems are reported and never guessed.
 
 On Linux, `--acceleration cpu` is the portable scalar reference, `--acceleration avx2` explicitly requests the runtime-dispatched AVX2 scorer, and `auto` chooses AVX2 when the build and CPU support it. CUDA remains explicit while device parity testing is pending:
 
@@ -112,7 +123,7 @@ Pushes to `main` and pull requests that include non-documentation changes, plus 
 The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
 
 ```bash
-VERSION=0.2.1 # choose the next unused Semantic Versioning release
+VERSION=0.3.1 # choose the next unused Semantic Versioning release
 git tag -a "v${VERSION}" -m "v${VERSION}"
 git push origin main "v${VERSION}"
 ```
@@ -168,6 +179,7 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | RAW via ImageMagick fallback | 🟡 optional | ✅ | ✅ | ✅ |
 | Browser RAW via LibRaw-WASM | ✅ | ✅ | ✅ | ✅ |
 | Confirmed move + restore | ✅ | 🟡 browser | 🟡 browser | 🟡 browser |
+| Swapped-card RAW/JPEG counterpart move | ✅ native + CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Portable scalar + Rayon scoring | ✅ | ✅ | ✅ | ✅ |
 | Runtime-dispatched AVX2 focus scoring | — | ✅ x86_64 | ✅ x86_64 | — |
 | Metal focus scoring | ✅ | — | — | — |
@@ -193,6 +205,8 @@ BURST_DEDUP_LOCALES_DIR=/path/to/locales ./target/release/burst-frame-deduplicat
 ## Safety
 
 Scanning is read-only for source photos. A reject move is a separate confirmed action: it copies every file in a grouped asset, verifies copied sizes, and only then removes originals. The default destination is `moved_rejects/` inside the run directory; the user may choose another non-temporary local folder outside the source card. A durable move journal enables restore. The app exposes no permanent-delete control.
+
+The counterpart-card operation is separately planned and confirmed. It scans only names and file metadata on the currently mounted second card, moves safe opposite-format matches under `moved_counterparts/` by default, and records relative card paths so restore still works when the card later mounts under a different root.
 
 ## Benchmarks
 
