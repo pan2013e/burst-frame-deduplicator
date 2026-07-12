@@ -6,8 +6,10 @@ use burst_frame_deduplicator::artifacts;
 use burst_frame_deduplicator::counterpart::{
     apply_counterparts, plan_counterparts, restore_counterparts,
 };
-use burst_frame_deduplicator::pipeline::run_scan;
-use burst_frame_deduplicator::progress::terminal_progress_reporter;
+use burst_frame_deduplicator::pipeline::run_scan_controlled;
+use burst_frame_deduplicator::progress::{
+    CancellationToken, is_scan_cancelled, terminal_progress_reporter,
+};
 use burst_frame_deduplicator::run_storage;
 use burst_frame_deduplicator::server;
 use burst_frame_deduplicator::types::{
@@ -157,8 +159,8 @@ struct ScanArgs {
     /// Fixed keep count per cluster. Omit for automatic cluster-size-based counts.
     #[arg(long)]
     keepers_per_cluster: Option<usize>,
-    /// Allow singleton low-quality images to be rejected. Default keeps unique shots.
-    #[arg(long)]
+    /// Legacy compatibility flag. Unique shots remain protected from automatic rejection.
+    #[arg(long, hide = true)]
     cull_singletons: bool,
     /// Worker count for parallel scoring. Defaults to available logical CPUs, capped at 8.
     #[arg(long)]
@@ -322,8 +324,9 @@ async fn main() -> anyhow::Result<()> {
     };
     match command {
         Command::Scan { root, out, options } => {
-            let run_dir =
-                run_scan(&root, out, options.into(), terminal_progress_reporter()).await?;
+            let Some(run_dir) = run_cli_scan(root, out, options.into()).await? else {
+                return Ok(());
+            };
             println!("Wrote run artifacts to {}", run_dir.display());
         }
         Command::App {
@@ -334,8 +337,9 @@ async fn main() -> anyhow::Result<()> {
             open,
             options,
         } => {
-            let run_dir =
-                run_scan(&root, out, options.into(), terminal_progress_reporter()).await?;
+            let Some(run_dir) = run_cli_scan(root, out, options.into()).await? else {
+                return Ok(());
+            };
             serve(run_dir, host, port, open).await?;
         }
         Command::Serve {
@@ -386,6 +390,43 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn run_cli_scan(
+    root: PathBuf,
+    out: Option<PathBuf>,
+    options: ScanOptions,
+) -> anyhow::Result<Option<PathBuf>> {
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
+    let mut task = tokio::task::spawn_blocking(move || {
+        run_scan_controlled(
+            &root,
+            out,
+            options,
+            terminal_progress_reporter(),
+            worker_cancellation,
+        )
+    });
+
+    tokio::select! {
+        result = &mut task => {
+            Ok(Some(result.context("joining scan worker")??))
+        }
+        signal = tokio::signal::ctrl_c() => {
+            signal.context("installing Ctrl+C handler")?;
+            eprintln!("Cancellation requested; finishing the current photo safely...");
+            cancellation.cancel();
+            match task.await.context("joining cancelled scan worker")? {
+                Ok(run_dir) => Ok(Some(run_dir)),
+                Err(error) if is_scan_cancelled(&error) => {
+                    eprintln!("Scan cancelled cleanly.");
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
 }
 
 async fn serve(run: PathBuf, host: String, port: u16, open_browser: bool) -> anyhow::Result<()> {

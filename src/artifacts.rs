@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
@@ -24,9 +24,27 @@ pub fn write_manifest(run_dir: &Path, manifest: &RunManifest) -> anyhow::Result<
 }
 
 pub fn read_manifest(run_dir: &Path) -> anyhow::Result<RunManifest> {
+    read_manifest_with_progress(run_dir, |_, _| {})
+}
+
+pub fn read_manifest_with_progress(
+    run_dir: &Path,
+    mut on_progress: impl FnMut(u64, u64),
+) -> anyhow::Result<RunManifest> {
     let path = run_dir.join(MANIFEST);
     let file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    Ok(serde_json::from_reader(file)?)
+    let total = file.metadata()?.len();
+    on_progress(0, total);
+    let reader = ProgressReader {
+        inner: file,
+        current: 0,
+        total,
+        on_progress,
+    };
+    Ok(serde_json::from_reader(BufReader::with_capacity(
+        256 * 1024,
+        reader,
+    ))?)
 }
 
 pub fn ensure_review_state(run_dir: &Path, manifest: &RunManifest) -> anyhow::Result<ReviewState> {
@@ -50,7 +68,29 @@ pub fn ensure_review_state(run_dir: &Path, manifest: &RunManifest) -> anyhow::Re
 pub fn read_review_state(run_dir: &Path) -> anyhow::Result<ReviewState> {
     let path = run_dir.join(REVIEW_STATE);
     let file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    Ok(serde_json::from_reader(file)?)
+    Ok(serde_json::from_reader(BufReader::new(file))?)
+}
+
+struct ProgressReader<R, F> {
+    inner: R,
+    current: u64,
+    total: u64,
+    on_progress: F,
+}
+
+impl<R, F> Read for ProgressReader<R, F>
+where
+    R: Read,
+    F: FnMut(u64, u64),
+{
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        if count > 0 {
+            self.current = self.current.saturating_add(count as u64);
+            (self.on_progress)(self.current.min(self.total), self.total);
+        }
+        Ok(count)
+    }
 }
 
 pub fn write_review_state(run_dir: &Path, state: &ReviewState) -> anyhow::Result<()> {

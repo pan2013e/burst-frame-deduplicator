@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use crate::acceleration::AccelerationPlan;
 use crate::artifacts::{ensure_review_state, export_reviewed_artifacts, write_manifest};
-use crate::assets::{AssetInput, discover_assets_with_progress};
+use crate::assets::{AssetInput, discover_assets_with_control};
 use crate::decode::{decoder_report, load_preview, resize_rgb};
 use crate::detector::{DetectorEngine, detect_subject, merge_detector_metrics};
 use crate::features::{
@@ -20,7 +20,7 @@ use crate::features::{
     similarity_features, update_subject_focus,
 };
 use crate::metadata::read_photo_metadata;
-use crate::progress::{ProgressReporter, ProgressStage};
+use crate::progress::{CancellationToken, ProgressReporter, ProgressStage};
 use crate::types::{
     AssetRecord, AssetTimings, BenchmarkReport, BurstCluster, BurstSequence, QualityMetrics,
     RunManifest, ScanOptions, SimilarityMetrics, SuggestedAction, Suggestion, Summary,
@@ -32,7 +32,18 @@ pub async fn run_scan(
     options: ScanOptions,
     progress: ProgressReporter,
 ) -> anyhow::Result<PathBuf> {
+    run_scan_controlled(root, out, options, progress, CancellationToken::new())
+}
+
+pub fn run_scan_controlled(
+    root: &Path,
+    out: Option<PathBuf>,
+    options: ScanOptions,
+    progress: ProgressReporter,
+    cancellation: CancellationToken,
+) -> anyhow::Result<PathBuf> {
     let total_start = Instant::now();
+    cancellation.check()?;
     progress.emit(
         ProgressStage::Preparing,
         0,
@@ -49,7 +60,9 @@ pub async fn run_scan(
         ));
     }
 
+    cancellation.check()?;
     let run_dir = out.unwrap_or_else(default_run_dir);
+    let mut partial_run = PartialRunGuard::new(run_dir.clone());
     let thumbs_dir = run_dir.join("thumbs");
     fs::create_dir_all(&run_dir)?;
     if options.generate_thumbnails {
@@ -60,7 +73,7 @@ pub async fn run_scan(
     let discovery_start = Instant::now();
     progress.emit(ProgressStage::Discovering, 0, None, None);
     let discovery_progress = progress.clone();
-    let inputs = discover_assets_with_progress(&root, move |visited, path| {
+    let inputs = discover_assets_with_control(&root, &cancellation, move |visited, path| {
         if visited == 1 || visited.is_multiple_of(100) {
             discovery_progress.emit(
                 ProgressStage::Discovering,
@@ -72,6 +85,7 @@ pub async fn run_scan(
         }
     })
     .context("discovering image assets")?;
+    cancellation.check()?;
     let discovery_ms = elapsed_ms(discovery_start);
     let image_files = inputs.iter().map(|asset| asset.files.len()).sum();
     let sidecar_files = inputs.iter().map(|asset| asset.sidecars.len()).sum();
@@ -90,8 +104,10 @@ pub async fn run_scan(
         .context("creating scoring worker pool")?;
     let worker_count = pool.current_num_threads();
     let acceleration_plan = AccelerationPlan::resolve(options.acceleration);
+    cancellation.check()?;
     let detector_initialization_start = Instant::now();
     let detector_engine = DetectorEngine::initialize(&options, worker_count);
+    cancellation.check()?;
     let detector_initialization_ms = elapsed_ms(detector_initialization_start);
     let thumb_root = options.generate_thumbnails.then_some(thumbs_dir.clone());
     let scoring_start = Instant::now();
@@ -99,10 +115,14 @@ pub async fn run_scan(
     let total_inputs = inputs.len();
     progress.emit(ProgressStage::Analyzing, 0, Some(total_inputs), None);
     let scoring_progress = progress.clone();
-    let score_results: Vec<ScoreResult> = pool.install(|| {
+    let scoring_cancellation = cancellation.clone();
+    let score_results: Vec<Option<ScoreResult>> = pool.install(|| {
         inputs
             .par_iter()
             .map(|input| {
+                if scoring_cancellation.is_cancelled() {
+                    return None;
+                }
                 let result = score_asset(
                     input,
                     &options,
@@ -117,23 +137,26 @@ pub async fn run_scan(
                     Some(total_inputs),
                     Some(input.representative.rel_path.clone()),
                 );
-                result
+                Some(result)
             })
             .collect()
     });
+    cancellation.check()?;
     let scoring_ms = elapsed_ms(scoring_start);
     let mut assets = Vec::with_capacity(score_results.len());
     let mut similarity = Vec::with_capacity(score_results.len());
-    for result in score_results {
+    for result in score_results.into_iter().flatten() {
         assets.push(result.asset);
         similarity.push(result.similarity);
     }
 
+    cancellation.check()?;
     let grouping_start = Instant::now();
     progress.emit(ProgressStage::Grouping, 0, Some(1), None);
     let index_bursts = build_bursts(&assets, &options);
     let index_clusters =
         build_near_duplicate_groups(&mut assets, &similarity, &index_bursts, &options);
+    cancellation.check()?;
     let grouping_ms = elapsed_ms(grouping_start);
     progress.emit(
         ProgressStage::Grouping,
@@ -153,11 +176,13 @@ pub async fn run_scan(
         acceleration_plan,
         &pool,
         &progress,
-    );
+        &cancellation,
+    )?;
     let refinement_ms = elapsed_ms(refinement_start);
     let ranking_start = Instant::now();
     progress.emit(ProgressStage::Ranking, 0, Some(1), None);
     let (clusters, bursts) = rank_clusters(&mut assets, index_clusters, &index_bursts, &options);
+    cancellation.check()?;
     let ranking_ms = elapsed_ms(ranking_start);
     progress.emit(ProgressStage::Ranking, 1, Some(1), None);
     let clustering_ms = grouping_ms + ranking_ms;
@@ -304,6 +329,7 @@ pub async fn run_scan(
         assets,
     };
 
+    cancellation.check()?;
     let manifest_start = Instant::now();
     progress.emit(ProgressStage::Writing, 0, Some(1), None);
     write_manifest(&run_dir, &manifest)?;
@@ -313,6 +339,7 @@ pub async fn run_scan(
         None,
     ));
     progress.emit(ProgressStage::Writing, 1, Some(1), None);
+    cancellation.check()?;
     let export_start = Instant::now();
     progress.emit(ProgressStage::Exporting, 0, Some(1), None);
     ensure_review_state(&run_dir, &manifest)?;
@@ -324,6 +351,7 @@ pub async fn run_scan(
         Some(manifest.assets.len()),
     ));
     manifest.benchmarks = benchmarks;
+    cancellation.check()?;
     write_manifest(&run_dir, &manifest)?;
     progress.emit(
         ProgressStage::Exporting,
@@ -343,7 +371,36 @@ pub async fn run_scan(
         Some(1),
         Some(run_dir.display().to_string()),
     );
+    partial_run.commit();
     Ok(run_dir)
+}
+
+struct PartialRunGuard {
+    path: PathBuf,
+    remove_on_drop: bool,
+    committed: bool,
+}
+
+impl PartialRunGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            remove_on_drop: !path.exists(),
+            path,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PartialRunGuard {
+    fn drop(&mut self) {
+        if self.remove_on_drop && !self.committed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 struct ScoreResult {
@@ -506,18 +563,20 @@ fn refine_cluster_candidates(
     acceleration: AccelerationPlan,
     pool: &rayon::ThreadPool,
     progress: &ProgressReporter,
-) -> usize {
+    cancellation: &CancellationToken,
+) -> anyhow::Result<usize> {
     if options.disable_refinement
         || options.refine_size <= options.preview_size
         || options.refine_candidates_per_cluster == 0
     {
         progress.emit(ProgressStage::Refining, 1, Some(1), None);
-        return 0;
+        return Ok(0);
     }
+    cancellation.check()?;
     let candidates = refinement_candidates(assets, index_clusters, options);
     if candidates.is_empty() {
         progress.emit(ProgressStage::Refining, 1, Some(1), None);
-        return 0;
+        return Ok(0);
     }
     progress.emit(
         ProgressStage::Refining,
@@ -528,13 +587,18 @@ fn refine_cluster_candidates(
     let refined = AtomicUsize::new(0);
     let total = candidates.len();
     let refinement_progress = progress.clone();
+    let refinement_cancellation = cancellation.clone();
     let batch_size = refinement_batch_size(pool.current_num_threads(), options.refine_size);
     let mut results = Vec::with_capacity(candidates.len());
     for batch in candidates.chunks(batch_size) {
+        cancellation.check()?;
         results.extend(pool.install(|| {
             batch
                 .par_iter()
                 .map(|idx| {
+                    if refinement_cancellation.is_cancelled() {
+                        return None;
+                    }
                     let result = refine_asset(*idx, &assets[*idx], options, acceleration);
                     let done = refined.fetch_add(1, Ordering::Relaxed) + 1;
                     refinement_progress.emit(
@@ -548,6 +612,7 @@ fn refine_cluster_candidates(
                 .collect::<Vec<_>>()
         }));
     }
+    cancellation.check()?;
 
     let mut applied = 0usize;
     for result in results.into_iter().flatten() {
@@ -560,7 +625,7 @@ fn refine_cluster_candidates(
         asset.suggestion.explanations.extend(result.notes);
         applied += 1;
     }
-    applied
+    Ok(applied)
 }
 
 fn refinement_batch_size(worker_count: usize, long_edge: u32) -> usize {
@@ -699,7 +764,7 @@ fn rank_clusters(
                 };
                 continue;
             }
-            if cluster_len == 1 && !options.cull_singletons {
+            if cluster_len == 1 {
                 action = SuggestedAction::Keep;
                 reason = "distinct frame".to_string();
             } else if rank <= keep_count {
@@ -1179,8 +1244,14 @@ fn benchmark(stage: &str, elapsed_ms: f64, items: Option<usize>) -> BenchmarkRep
 mod tests {
     use std::collections::HashMap;
 
-    use super::{fits_complete_link, keep_count_for_cluster, refinement_batch_size};
+    use image::{Rgb, RgbImage};
+
+    use super::{
+        fits_complete_link, keep_count_for_cluster, refinement_batch_size, run_scan_controlled,
+    };
     use crate::features::SimilarityFeatures;
+    use crate::progress::{CancellationToken, ProgressReporter, ProgressStage, is_scan_cancelled};
+    use crate::types::{DetectorPreference, ScanOptions};
 
     fn features(mask_start: usize) -> SimilarityFeatures {
         let mut mask = vec![0u8; 20];
@@ -1218,5 +1289,42 @@ mod tests {
         assert_eq!(refinement_batch_size(8, 2048), 8);
         assert_eq!(refinement_batch_size(8, 4096), 4);
         assert_eq!(refinement_batch_size(8, 8192), 1);
+    }
+
+    #[test]
+    fn cancellation_removes_a_new_partial_run_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("photos");
+        std::fs::create_dir(&source).unwrap();
+        for index in 0..4 {
+            RgbImage::from_pixel(64, 48, Rgb([index * 30, 80, 120]))
+                .save(source.join(format!("frame_{index:04}.png")))
+                .unwrap();
+        }
+        let output = workspace.path().join("cancelled-run");
+        let cancellation = CancellationToken::new();
+        let reporter_cancellation = cancellation.clone();
+        let reporter = ProgressReporter::new(move |update| {
+            if update.stage == ProgressStage::Analyzing && update.current >= 1 {
+                reporter_cancellation.cancel();
+            }
+        });
+        let options = ScanOptions {
+            disable_refinement: true,
+            detector: DetectorPreference::Off,
+            workers: Some(1),
+            ..ScanOptions::default()
+        };
+
+        let error = run_scan_controlled(
+            &source,
+            Some(output.clone()),
+            options,
+            reporter,
+            cancellation,
+        )
+        .unwrap_err();
+        assert!(is_scan_cancelled(&error));
+        assert!(!output.exists());
     }
 }

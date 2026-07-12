@@ -11,10 +11,12 @@ use serde::Serialize;
 use tempfile::NamedTempFile;
 
 use crate::artifacts::{
-    ensure_review_state, export_reviewed_artifacts, read_manifest, upsert_decision,
+    ensure_review_state, export_reviewed_artifacts, read_manifest, read_manifest_with_progress,
+    upsert_decision,
 };
 use crate::decode::write_preview_jpeg;
 use crate::operations::{MoveStatus, read_move_status, resolve_available_source};
+use crate::progress::{ProgressReporter, ProgressStage};
 use crate::types::{FileKind, ReviewState, RunManifest, UserDecision};
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,10 +34,44 @@ pub struct PreviewResponse {
 }
 
 pub fn load_run(run_dir: impl Into<PathBuf>) -> anyhow::Result<ReviewPayload> {
+    load_run_with_progress(run_dir, ProgressReporter::default())
+}
+
+pub fn load_run_with_progress(
+    run_dir: impl Into<PathBuf>,
+    progress: ProgressReporter,
+) -> anyhow::Result<ReviewPayload> {
     let run_dir = run_dir.into();
-    let manifest = read_manifest(&run_dir)?;
+    progress.emit(ProgressStage::ReadingManifest, 0, Some(1), None);
+    let manifest_progress = progress.clone();
+    let manifest = read_manifest_with_progress(&run_dir, move |current, total| {
+        manifest_progress.emit(
+            ProgressStage::ReadingManifest,
+            usize::try_from(current).unwrap_or(usize::MAX),
+            Some(usize::try_from(total).unwrap_or(usize::MAX)),
+            None,
+        );
+    })?;
+    progress.emit(ProgressStage::LoadingDecisions, 0, Some(1), None);
     let review = ensure_review_state(&run_dir, &manifest)?;
+    progress.emit(
+        ProgressStage::LoadingDecisions,
+        1,
+        Some(1),
+        Some(format!("{} decisions", review.decisions.len())),
+    );
+    progress.emit(ProgressStage::LoadingMoveHistory, 0, Some(1), None);
     let move_status = read_move_status(&run_dir)?;
+    progress.emit(
+        ProgressStage::LoadingMoveHistory,
+        1,
+        Some(1),
+        Some(format!(
+            "{} moved assets",
+            move_status.active_asset_ids.len()
+        )),
+    );
+    progress.emit(ProgressStage::PreparingReview, 0, Some(1), None);
     Ok(ReviewPayload {
         run_dir,
         manifest,

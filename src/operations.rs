@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
@@ -112,8 +112,8 @@ pub fn read_move_state(run_dir: &Path) -> anyhow::Result<MoveState> {
         return Ok(MoveState::default());
     }
     let file = fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-    let state: MoveState =
-        serde_json::from_reader(file).with_context(|| format!("parsing {}", path.display()))?;
+    let state: MoveState = serde_json::from_reader(BufReader::new(file))
+        .with_context(|| format!("parsing {}", path.display()))?;
     if state.version != MOVE_STATE_VERSION {
         bail!(
             "unsupported move state version {} in {}",

@@ -1,19 +1,28 @@
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, anyhow};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::app_backend::{export_run, load_run, prepare_preview, set_decision};
+use crate::app_backend::{
+    export_run, load_run, load_run_with_progress, prepare_preview, set_decision,
+};
 use crate::counterpart::{apply_counterparts, plan_counterparts, restore_counterparts};
 use crate::operations::{move_rejects, restore_moved};
-use crate::pipeline::run_scan;
-use crate::progress::{ProgressReporter, ProgressUpdate};
+use crate::pipeline::run_scan_controlled;
+use crate::progress::{CancellationToken, ProgressReporter, ProgressUpdate};
 use crate::run_storage::{RelocationProgress, relocate_run};
 use crate::types::{ScanOptions, UserDecision};
 
 pub type BfdProgressCallback = unsafe extern "C" fn(*const c_char, *mut c_void);
+
+static NEXT_SCAN_CONTROL_ID: AtomicU64 = AtomicU64::new(1);
+static SCAN_CONTROLS: OnceLock<Mutex<HashMap<u64, CancellationToken>>> = OnceLock::new();
 
 #[derive(Deserialize)]
 struct ScanRequest {
@@ -100,7 +109,30 @@ struct Envelope<T: Serialize> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bfd_api_version() -> u32 {
-    4
+    5
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bfd_scan_control_create() -> u64 {
+    let id = NEXT_SCAN_CONTROL_ID.fetch_add(1, Ordering::Relaxed).max(1);
+    scan_controls().lock().insert(id, CancellationToken::new());
+    id
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bfd_scan_control_cancel(id: u64) -> u8 {
+    let control = scan_controls().lock().get(&id).cloned();
+    if let Some(control) = control {
+        control.cancel();
+        1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bfd_scan_control_release(id: u64) {
+    scan_controls().lock().remove(&id);
 }
 
 #[unsafe(no_mangle)]
@@ -119,19 +151,51 @@ pub unsafe extern "C" fn bfd_scan(
     callback: Option<BfdProgressCallback>,
     context: *mut c_void,
 ) -> *mut c_char {
+    scan_call(
+        request_json,
+        callback,
+        context,
+        Ok(CancellationToken::new()),
+    )
+}
+
+#[unsafe(no_mangle)]
+/// Runs a cancellable scan using a control created by `bfd_scan_control_create`.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string. The callback and
+/// context must remain valid until this function returns. `control_id` must remain registered.
+pub unsafe extern "C" fn bfd_scan_controlled(
+    request_json: *const c_char,
+    callback: Option<BfdProgressCallback>,
+    context: *mut c_void,
+    control_id: u64,
+) -> *mut c_char {
+    let cancellation = scan_controls()
+        .lock()
+        .get(&control_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("scan cancellation control is unavailable"));
+    scan_call(request_json, callback, context, cancellation)
+}
+
+fn scan_call(
+    request_json: *const c_char,
+    callback: Option<BfdProgressCallback>,
+    context: *mut c_void,
+    cancellation: anyhow::Result<CancellationToken>,
+) -> *mut c_char {
     ffi_call(|| {
+        let cancellation = cancellation?;
         let request: ScanRequest = parse_request(request_json)?;
         let reporter = progress_reporter(callback, context);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("creating scan runtime")?;
-        let run_dir = runtime.block_on(run_scan(
+        let run_dir = run_scan_controlled(
             &request.root,
             request.out,
             request.options,
             reporter,
-        ))?;
+            cancellation,
+        )?;
         Ok(ScanResponse { run_dir })
     })
 }
@@ -145,6 +209,23 @@ pub unsafe extern "C" fn bfd_load_run(request_json: *const c_char) -> *mut c_cha
     ffi_call(|| {
         let request: RunRequest = parse_request(request_json)?;
         load_run(request.run_dir)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Loads a completed run while reporting parse and preparation progress.
+///
+/// # Safety
+/// `request_json` must be null or point to a valid NUL-terminated C string. The callback and
+/// context must remain valid until this function returns.
+pub unsafe extern "C" fn bfd_load_run_with_progress(
+    request_json: *const c_char,
+    callback: Option<BfdProgressCallback>,
+    context: *mut c_void,
+) -> *mut c_char {
+    ffi_call(|| {
+        let request: RunRequest = parse_request(request_json)?;
+        load_run_with_progress(request.run_dir, progress_reporter(callback, context))
     })
 }
 
@@ -296,6 +377,10 @@ pub unsafe extern "C" fn bfd_free_string(value: *mut c_char) {
     }
 }
 
+fn scan_controls() -> &'static Mutex<HashMap<u64, CancellationToken>> {
+    SCAN_CONTROLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn progress_reporter(
     callback: Option<BfdProgressCallback>,
     context: *mut c_void,
@@ -372,7 +457,10 @@ where
 mod tests {
     use std::ffi::CStr;
 
-    use super::{bfd_default_options, bfd_free_string};
+    use super::{
+        bfd_default_options, bfd_free_string, bfd_scan_control_cancel, bfd_scan_control_create,
+        bfd_scan_control_release, scan_controls,
+    };
 
     #[test]
     fn default_options_round_trip_through_the_c_boundary() {
@@ -385,5 +473,15 @@ mod tests {
         let decoded: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded["ok"], true);
         assert_eq!(decoded["value"]["preview_size"], 1280);
+    }
+
+    #[test]
+    fn scan_controls_cancel_and_release_shared_tokens() {
+        let id = bfd_scan_control_create();
+        let token = scan_controls().lock().get(&id).cloned().unwrap();
+        assert_eq!(bfd_scan_control_cancel(id), 1);
+        assert!(token.is_cancelled());
+        bfd_scan_control_release(id);
+        assert_eq!(bfd_scan_control_cancel(id), 0);
     }
 }

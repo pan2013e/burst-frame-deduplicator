@@ -7,6 +7,7 @@ use regex::Regex;
 use sha1::{Digest, Sha1};
 use walkdir::WalkDir;
 
+use crate::progress::CancellationToken;
 use crate::types::{FileEntry, FileKind};
 
 pub const RAW_EXTS: &[&str] = &[
@@ -48,12 +49,21 @@ struct AssetBuilder {
 
 pub fn discover_assets_with_progress(
     root: &Path,
+    on_file: impl FnMut(usize, &Path),
+) -> anyhow::Result<Vec<AssetInput>> {
+    discover_assets_with_control(root, &CancellationToken::new(), on_file)
+}
+
+pub fn discover_assets_with_control(
+    root: &Path,
+    cancellation: &CancellationToken,
     mut on_file: impl FnMut(usize, &Path),
 ) -> anyhow::Result<Vec<AssetInput>> {
     let mut grouped: BTreeMap<(String, String), AssetBuilder> = BTreeMap::new();
     let mut visited_files = 0usize;
 
     for entry in WalkDir::new(root).follow_links(false) {
+        cancellation.check()?;
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
@@ -107,7 +117,10 @@ pub fn discover_assets_with_progress(
 
     let re = Regex::new(r"^(.*?)(\d+)$")?;
     let mut assets = Vec::new();
-    for ((directory, stem), mut builder) in grouped {
+    for (index, ((directory, stem), mut builder)) in grouped.into_iter().enumerate() {
+        if index.is_multiple_of(128) {
+            cancellation.check()?;
+        }
         if builder.files.is_empty() {
             continue;
         }
@@ -147,6 +160,7 @@ pub fn discover_assets_with_progress(
                 &b.stem,
             ))
     });
+    cancellation.check()?;
     Ok(assets)
 }
 

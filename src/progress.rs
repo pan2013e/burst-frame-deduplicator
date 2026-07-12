@@ -1,4 +1,7 @@
+use std::error::Error;
+use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -16,6 +19,10 @@ pub enum ProgressStage {
     Writing,
     Exporting,
     Complete,
+    ReadingManifest,
+    LoadingDecisions,
+    LoadingMoveHistory,
+    PreparingReview,
 }
 
 impl ProgressStage {
@@ -30,6 +37,10 @@ impl ProgressStage {
             Self::Writing => "writing",
             Self::Exporting => "exporting",
             Self::Complete => "complete",
+            Self::ReadingManifest => "reading_manifest",
+            Self::LoadingDecisions => "loading_decisions",
+            Self::LoadingMoveHistory => "loading_move_history",
+            Self::PreparingReview => "preparing_review",
         }
     }
 
@@ -44,6 +55,10 @@ impl ProgressStage {
             Self::Writing => "Writing run manifest",
             Self::Exporting => "Exporting review files",
             Self::Complete => "Scan complete",
+            Self::ReadingManifest => "Reading run manifest",
+            Self::LoadingDecisions => "Loading review decisions",
+            Self::LoadingMoveHistory => "Loading move history",
+            Self::PreparingReview => "Preparing review",
         }
     }
 
@@ -58,8 +73,54 @@ impl ProgressStage {
             Self::Writing => (0.93, 0.96),
             Self::Exporting => (0.96, 0.99),
             Self::Complete => (1.00, 1.00),
+            Self::ReadingManifest => (0.00, 0.50),
+            Self::LoadingDecisions => (0.50, 0.72),
+            Self::LoadingMoveHistory => (0.72, 0.88),
+            Self::PreparingReview => (0.88, 1.00),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanCancelled;
+
+impl fmt::Display for ScanCancelled {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("scan cancelled")
+    }
+}
+
+impl Error for ScanCancelled {}
+
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn check(&self) -> Result<(), ScanCancelled> {
+        if self.is_cancelled() {
+            Err(ScanCancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn is_scan_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ScanCancelled>().is_some()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +232,7 @@ pub fn terminal_progress_reporter() -> ProgressReporter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgressStage, ProgressUpdate};
+    use super::{CancellationToken, ProgressStage, ProgressUpdate};
 
     #[test]
     fn stage_progress_maps_to_monotonic_overall_progress() {
@@ -180,5 +241,14 @@ mod tests {
         let complete = ProgressUpdate::new(ProgressStage::Complete, 1, Some(1), None);
         assert!(discovery.overall_fraction < analysis.overall_fraction);
         assert_eq!(complete.overall_fraction, 1.0);
+    }
+
+    #[test]
+    fn cancellation_tokens_share_state_across_clones() {
+        let token = CancellationToken::new();
+        let worker = token.clone();
+        assert!(worker.check().is_ok());
+        token.cancel();
+        assert!(worker.check().is_err());
     }
 }
