@@ -31,6 +31,22 @@ private let bridgeProgressCallback: @convention(c) (UnsafePointer<CChar>?, Unsaf
     Unmanaged<ProgressContext>.fromOpaque(contextPointer).takeUnretainedValue().handler(progress)
 }
 
+public final class ScanCancellation: @unchecked Sendable {
+    fileprivate let id: UInt64
+
+    public init() {
+        id = bfd_scan_control_create()
+    }
+
+    public func cancel() {
+        _ = bfd_scan_control_cancel(id)
+    }
+
+    deinit {
+        bfd_scan_control_release(id)
+    }
+}
+
 public final class RustBridge: @unchecked Sendable {
     public init() {}
 
@@ -44,6 +60,7 @@ public final class RustBridge: @unchecked Sendable {
         root: String,
         output: String,
         options: ScanOptions,
+        cancellation: ScanCancellation? = nil,
         progress: @escaping (ProgressUpdate) -> Void
     ) throws -> ScanResponse {
         let request = ScanRequest(root: root, out: output, options: options)
@@ -51,13 +68,34 @@ public final class RustBridge: @unchecked Sendable {
         let context = Unmanaged.passRetained(ProgressContext(handler: progress))
         defer { context.release() }
         let response = encoded.withCString { pointer in
-            bfd_scan(pointer, bridgeProgressCallback, context.toOpaque())
+            if let cancellation {
+                bfd_scan_controlled(
+                    pointer,
+                    bridgeProgressCallback,
+                    context.toOpaque(),
+                    cancellation.id
+                )
+            } else {
+                bfd_scan(pointer, bridgeProgressCallback, context.toOpaque())
+            }
         }
         return try decodeResponse(response)
     }
 
-    public func loadRun(at runDirectory: String) throws -> ReviewPayload {
-        try invoke(RunRequest(runDir: runDirectory), function: bfd_load_run)
+    public func loadRun(
+        at runDirectory: String,
+        progress: ((ProgressUpdate) -> Void)? = nil
+    ) throws -> ReviewPayload {
+        guard let progress else {
+            return try invoke(RunRequest(runDir: runDirectory), function: bfd_load_run)
+        }
+        let encoded = try encode(RunRequest(runDir: runDirectory))
+        let context = Unmanaged.passRetained(ProgressContext(handler: progress))
+        defer { context.release() }
+        let response = encoded.withCString { pointer in
+            bfd_load_run_with_progress(pointer, bridgeProgressCallback, context.toOpaque())
+        }
+        return try decodeResponse(response)
     }
 
     public func setDecision(

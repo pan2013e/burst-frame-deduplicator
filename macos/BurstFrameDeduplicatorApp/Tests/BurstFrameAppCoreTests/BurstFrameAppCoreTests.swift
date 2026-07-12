@@ -1,14 +1,42 @@
 import BurstFrameAppCore
+import Darwin
 import Testing
 
 @Test
 func rustBridgeDefaultOptions() throws {
     let bridge = RustBridge()
-    #expect(bridge.apiVersion == 4)
+    #expect(bridge.apiVersion == 5)
     let options = try bridge.defaultOptions()
     #expect(options.previewSize == 1280)
     #expect(options.refineSize == 2048)
     #expect(options.acceleration == "auto")
+}
+
+@Test
+func rustBridgeCancellationLeavesNoPartialRun() throws {
+    var template = Array("/tmp/bfd-swift-cancellation.XXXXXX".utf8CString)
+    let workspace = template.withUnsafeMutableBufferPointer { pointer in
+        String(cString: mkdtemp(pointer.baseAddress))
+    }
+    let source = workspace
+    let output = "\(source)/run"
+    defer { _ = source.withCString { rmdir($0) } }
+
+    let bridge = RustBridge()
+    let cancellation = ScanCancellation()
+    cancellation.cancel()
+    do {
+        _ = try bridge.scan(
+            root: source,
+            output: output,
+            options: bridge.defaultOptions(),
+            cancellation: cancellation
+        ) { _ in }
+        Issue.record("A pre-cancelled scan unexpectedly completed")
+    } catch {
+        #expect(error.localizedDescription.contains("cancelled"))
+    }
+    #expect(output.withCString { access($0, F_OK) } != 0)
 }
 
 @Test @MainActor

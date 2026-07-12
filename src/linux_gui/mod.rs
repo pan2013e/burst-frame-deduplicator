@@ -15,7 +15,7 @@ use anyhow::Context;
 use gtk::gio;
 use gtk::glib;
 
-use crate::app_backend::{ReviewPayload, export_run, load_run, set_decision};
+use crate::app_backend::{ReviewPayload, export_run, load_run_with_progress, set_decision};
 use crate::counterpart::{
     CounterpartMoveResponse, CounterpartPlanResponse, apply_counterparts, plan_counterparts,
     restore_counterparts,
@@ -23,8 +23,8 @@ use crate::counterpart::{
 use crate::operations::{
     MoveRejectsResponse, RestoreResponse, final_action_for_asset, move_rejects, restore_moved,
 };
-use crate::pipeline::run_scan;
-use crate::progress::{ProgressReporter, ProgressUpdate};
+use crate::pipeline::run_scan_controlled;
+use crate::progress::{CancellationToken, ProgressReporter, ProgressUpdate};
 use crate::run_storage::{RelocationProgress, RelocationResult, relocate_run};
 use crate::types::{
     AccelerationPreference, AssetRecord, DetectorDevicePreference, DetectorModelPreference,
@@ -75,11 +75,16 @@ struct AppState {
     filter: ReviewFilter,
     source: Option<PathBuf>,
     busy: bool,
+    scan_cancellation: Option<CancellationToken>,
 }
 
 enum BackgroundEvent {
     Progress(ProgressUpdate),
-    ScanFinished(Result<PathBuf, String>),
+    ScanFinished {
+        result: Result<PathBuf, String>,
+        cancelled: bool,
+    },
+    OpenRun(PathBuf),
     RunLoaded(Result<ReviewPayload, String>),
     DecisionSaved(Result<ReviewPayload, String>),
     Exported(Result<ReviewPayload, String>),
@@ -102,9 +107,11 @@ struct Controller {
     stack: gtk::Stack,
     welcome_recent: gtk::ListBox,
     results_path_label: gtk::Label,
+    progress_heading: gtk::Label,
     progress_bar: gtk::ProgressBar,
     progress_stage: gtk::Label,
     progress_detail: gtk::Label,
+    scan_cancel_button: gtk::Button,
     review_host: gtk::Box,
     review_actions: gtk::Box,
     back_button: gtk::Button,
@@ -121,6 +128,40 @@ thread_local! {
     static CONTROLLERS: RefCell<Vec<Rc<Controller>>> = const { RefCell::new(Vec::new()) };
 }
 
+fn request_application_quit(application: &adw::Application) {
+    let waiting_for_scan = CONTROLLERS.with(|controllers| {
+        let controllers = controllers.borrow();
+        let mut waiting = false;
+        for controller in controllers.iter() {
+            if controller.state.borrow().scan_cancellation.is_some() {
+                controller.cancel_scan();
+                waiting = true;
+            }
+        }
+        waiting
+    });
+    if !waiting_for_scan {
+        application.quit();
+        return;
+    }
+
+    let application = application.clone();
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        let waiting = CONTROLLERS.with(|controllers| {
+            controllers
+                .borrow()
+                .iter()
+                .any(|controller| controller.state.borrow().scan_cancellation.is_some())
+        });
+        if waiting {
+            glib::ControlFlow::Continue
+        } else {
+            application.quit();
+            glib::ControlFlow::Break
+        }
+    });
+}
+
 fn build_and_retain_controller(application: &adw::Application) {
     let controller = Controller::build(application);
     CONTROLLERS.with(|controllers| controllers.borrow_mut().push(controller));
@@ -135,7 +176,7 @@ pub fn run() -> anyhow::Result<()> {
         .build();
     let quit = gio::SimpleAction::new("quit", None);
     let application_for_quit = application.clone();
-    quit.connect_activate(move |_, _| application_for_quit.quit());
+    quit.connect_activate(move |_, _| request_application_quit(&application_for_quit));
     application.add_action(&quit);
     application.set_accels_for_action("app.quit", &["<Primary>q"]);
     application.connect_activate(build_and_retain_controller);
@@ -219,7 +260,14 @@ impl Controller {
         let (welcome, welcome_recent, results_path_label, new_scan, open_run) =
             welcome_page(&locale, &config);
         stack.add_named(&welcome, Some("welcome"));
-        let (scanning, progress_bar, progress_stage, progress_detail) = scanning_page(&locale);
+        let (
+            scanning,
+            progress_heading,
+            progress_bar,
+            progress_stage,
+            progress_detail,
+            scan_cancel_button,
+        ) = scanning_page(&locale);
         stack.add_named(&scanning, Some("scanning"));
         let review_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
         review_host.set_hexpand(true);
@@ -238,9 +286,11 @@ impl Controller {
             stack,
             welcome_recent,
             results_path_label,
+            progress_heading,
             progress_bar,
             progress_stage,
             progress_detail,
+            scan_cancel_button,
             review_host,
             review_actions,
             back_button,
@@ -258,6 +308,7 @@ impl Controller {
                 filter: ReviewFilter::All,
                 source: None,
                 busy: false,
+                scan_cancellation: None,
             }),
         });
 
@@ -346,8 +397,32 @@ impl Controller {
             }
         });
         let weak = Rc::downgrade(self);
+        self.scan_cancel_button.connect_clicked(move |_| {
+            if let Some(controller) = weak.upgrade() {
+                controller.cancel_scan();
+            }
+        });
+        let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |window| {
             if let Some(controller) = weak.upgrade() {
+                if controller.state.borrow().scan_cancellation.is_some() {
+                    controller.cancel_scan();
+                    window.set_sensitive(false);
+                    let window = window.clone();
+                    let weak = Rc::downgrade(&controller);
+                    glib::timeout_add_local(Duration::from_millis(50), move || {
+                        let waiting = weak.upgrade().is_some_and(|controller| {
+                            controller.state.borrow().scan_cancellation.is_some()
+                        });
+                        if waiting {
+                            glib::ControlFlow::Continue
+                        } else {
+                            window.close();
+                            glib::ControlFlow::Break
+                        }
+                    });
+                    return glib::Propagation::Stop;
+                }
                 let mut state = controller.state.borrow_mut();
                 state.config.window_width = window.width();
                 state.config.window_height = window.height();
@@ -387,24 +462,51 @@ impl Controller {
 
     fn handle_event(self: &Rc<Self>, event: BackgroundEvent) {
         match event {
+            BackgroundEvent::OpenRun(path) => self.load_run_async(path),
             BackgroundEvent::Progress(update) => self.update_progress(&update),
-            BackgroundEvent::ScanFinished(result) => match result {
-                Ok(run_dir) => self.load_run_async(run_dir),
-                Err(error) => {
-                    self.set_busy(false);
-                    self.show_error(&error);
-                    self.show_welcome();
+            BackgroundEvent::ScanFinished { result, cancelled } => {
+                self.state.borrow_mut().scan_cancellation = None;
+                self.scan_cancel_button.set_sensitive(true);
+                match result {
+                    Ok(run_dir) => self.load_run_async(run_dir),
+                    Err(_) if cancelled => {
+                        self.set_busy(false);
+                        self.show_welcome();
+                    }
+                    Err(error) => {
+                        self.set_busy(false);
+                        self.show_error(&error);
+                        self.show_welcome();
+                    }
                 }
-            },
-            BackgroundEvent::RunLoaded(result)
-            | BackgroundEvent::DecisionSaved(result)
-            | BackgroundEvent::Exported(result) => match result {
+            }
+            BackgroundEvent::RunLoaded(result) => match result {
                 Ok(payload) => self.install_payload(payload),
                 Err(error) => {
+                    let had_payload = self.state.borrow().payload.is_some();
                     self.set_busy(false);
+                    if had_payload {
+                        self.stack.set_visible_child_name("review");
+                        self.review_actions.set_visible(true);
+                        self.back_button.set_visible(true);
+                    } else {
+                        self.show_welcome();
+                    }
                     self.show_error(&error);
                 }
             },
+            BackgroundEvent::DecisionSaved(result) | BackgroundEvent::Exported(result) => {
+                match result {
+                    Ok(payload) => self.install_payload(payload),
+                    Err(error) => {
+                        self.set_busy(false);
+                        self.stack.set_visible_child_name("review");
+                        self.review_actions.set_visible(true);
+                        self.back_button.set_visible(true);
+                        self.show_error(&error);
+                    }
+                }
+            }
             BackgroundEvent::MoveFinished(result) => match result {
                 Ok(response) => {
                     self.set_busy(false);
@@ -605,9 +707,11 @@ impl Controller {
         if self.state.borrow().busy {
             return;
         }
+        let cancellation = CancellationToken::new();
         let (mut options, output) = {
             let mut state = self.state.borrow_mut();
             state.source = Some(source.clone());
+            state.scan_cancellation = Some(cancellation.clone());
             let mut options = state.config.options.clone();
             options.detector_model_pack = state.config.model_pack.clone();
             let output = unique_run_directory(&state.config.results_root);
@@ -625,9 +729,13 @@ impl Controller {
                 .unwrap_or_default(),
         );
         self.progress_bar.set_fraction(0.0);
+        self.progress_heading
+            .set_text(&self.locale().text("analyzingPhotoFolder"));
         self.progress_stage
             .set_text(&self.locale().text("preparing"));
         self.progress_detail.set_text("");
+        self.scan_cancel_button.set_visible(true);
+        self.scan_cancel_button.set_sensitive(true);
         self.stack.set_visible_child_name("scanning");
         self.review_actions.set_visible(false);
         self.back_button.set_visible(false);
@@ -639,25 +747,63 @@ impl Controller {
             let reporter = ProgressReporter::new(move |update| {
                 push_event(&progress_events, BackgroundEvent::Progress(update));
             });
-            let result = (|| -> anyhow::Result<PathBuf> {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .context("creating Linux GUI scan runtime")?;
-                runtime.block_on(run_scan(&source, Some(output), options, reporter))
-            })()
+            let result = run_scan_controlled(
+                &source,
+                Some(output),
+                options,
+                reporter,
+                cancellation.clone(),
+            )
             .map_err(|error| format!("{error:#}"));
-            push_event(&events, BackgroundEvent::ScanFinished(result));
+            push_event(
+                &events,
+                BackgroundEvent::ScanFinished {
+                    result,
+                    cancelled: cancellation.is_cancelled(),
+                },
+            );
         });
     }
 
     fn load_run_async(&self, run_dir: PathBuf) {
+        self.progress_heading
+            .set_text(&self.locale().text("openingRun"));
+        self.progress_bar.set_fraction(0.0);
+        self.progress_stage
+            .set_text(&self.locale().text("reading_manifest"));
+        self.progress_detail.set_text("");
+        self.scan_cancel_button.set_visible(false);
+        self.title.set_subtitle(
+            run_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default(),
+        );
+        self.stack.set_visible_child_name("scanning");
+        self.review_actions.set_visible(false);
+        self.back_button.set_visible(false);
         self.set_busy(true);
         let events = self.events.clone();
         thread::spawn(move || {
-            let result = load_run(run_dir).map_err(|error| format!("{error:#}"));
+            let progress_events = events.clone();
+            let reporter = ProgressReporter::new(move |update| {
+                push_event(&progress_events, BackgroundEvent::Progress(update));
+            });
+            let result =
+                load_run_with_progress(run_dir, reporter).map_err(|error| format!("{error:#}"));
             push_event(&events, BackgroundEvent::RunLoaded(result));
         });
+    }
+
+    fn cancel_scan(&self) {
+        let cancellation = self.state.borrow().scan_cancellation.clone();
+        let Some(cancellation) = cancellation else {
+            return;
+        };
+        cancellation.cancel();
+        self.scan_cancel_button.set_sensitive(false);
+        self.progress_stage
+            .set_text(&self.locale().text("cancellingScan"));
     }
 
     fn reload_current_run(&self) {
@@ -677,16 +823,37 @@ impl Controller {
             let mut state = self.state.borrow_mut();
             if state.payload.as_ref().map(|value| &value.run_dir) != Some(&payload.run_dir) {
                 state.expanded_clusters.clear();
+                let assets_by_id: HashMap<_, _> = payload
+                    .manifest
+                    .assets
+                    .iter()
+                    .map(|asset| (asset.id.as_str(), asset))
+                    .collect();
+                let decisions_by_id: HashMap<_, _> = payload
+                    .review
+                    .decisions
+                    .iter()
+                    .filter_map(|decision| {
+                        decision
+                            .decision
+                            .map(|value| (decision.asset_id.as_str(), value))
+                    })
+                    .collect();
                 for cluster in &payload.manifest.clusters {
                     let all_kept = cluster.asset_ids.iter().all(|asset_id| {
-                        payload
-                            .manifest
-                            .assets
-                            .iter()
-                            .find(|asset| &asset.id == asset_id)
-                            .is_some_and(|asset| {
-                                final_action_for_asset(asset, &payload.review) == UserDecision::Keep
-                            })
+                        assets_by_id.get(asset_id.as_str()).is_some_and(|asset| {
+                            decisions_by_id
+                                .get(asset_id.as_str())
+                                .copied()
+                                .unwrap_or_else(|| match asset.suggestion.action {
+                                    SuggestedAction::Keep => UserDecision::Keep,
+                                    SuggestedAction::Reject => UserDecision::Reject,
+                                    SuggestedAction::Review | SuggestedAction::Error => {
+                                        UserDecision::Review
+                                    }
+                                })
+                                == UserDecision::Keep
+                        })
                     });
                     if cluster.asset_ids.len() > 1 && !all_kept {
                         state.expanded_clusters.insert(cluster.id);
@@ -708,8 +875,18 @@ impl Controller {
     fn update_progress(&self, update: &ProgressUpdate) {
         self.progress_bar
             .set_fraction(f64::from(update.overall_fraction));
+        let cancelling = self
+            .state
+            .borrow()
+            .scan_cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled);
         self.progress_stage
-            .set_text(&self.locale().text(update.stage.locale_key()));
+            .set_text(&self.locale().text(if cancelling {
+                "cancellingScan"
+            } else {
+                update.stage.locale_key()
+            }));
         let detail = update
             .detail
             .as_deref()
@@ -792,12 +969,7 @@ impl Controller {
             button.set_child(Some(&row));
             let events = self.events.clone();
             button.connect_clicked(move |_| {
-                let path = path.clone();
-                let events = events.clone();
-                thread::spawn(move || {
-                    let result = load_run(path).map_err(|error| format!("{error:#}"));
-                    push_event(&events, BackgroundEvent::RunLoaded(result));
-                });
+                push_event(&events, BackgroundEvent::OpenRun(path.clone()));
             });
             self.welcome_recent.append(&button);
         }
@@ -2768,36 +2940,44 @@ fn welcome_page(
     identity.append(&identity_text);
     outer.append(&identity);
 
-    let columns = gtk::Box::new(gtk::Orientation::Horizontal, 34);
-    columns.set_homogeneous(false);
     let quick = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    quick.set_size_request(300, -1);
     let quick_title = left_label(&locale.text("quickStart"));
     quick_title.add_css_class("section-title");
     let new_scan = gtk::Button::builder()
         .label(locale.text("newScan"))
+        .icon_name("list-add-symbolic")
         .halign(gtk::Align::Fill)
-        .height_request(46)
+        .height_request(48)
+        .hexpand(true)
         .build();
     new_scan.add_css_class("suggested-action");
     let open_run = gtk::Button::builder()
         .label(locale.text("openRun"))
+        .icon_name("folder-open-symbolic")
         .halign(gtk::Align::Fill)
-        .height_request(42)
+        .height_request(48)
+        .hexpand(true)
         .build();
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    actions.set_homogeneous(true);
+    actions.append(&new_scan);
+    actions.append(&open_run);
     let stored = left_label(&locale.text("resultsStoredIn"));
     stored.add_css_class("muted");
     let results_path = left_label(&config.results_root.display().to_string());
-    results_path.set_wrap(true);
+    results_path.set_hexpand(true);
+    results_path.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     results_path.add_css_class("muted");
+    let storage = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    storage.append(&stored);
+    storage.append(&results_path);
     quick.append(&quick_title);
-    quick.append(&new_scan);
-    quick.append(&open_run);
-    quick.append(&stored);
-    quick.append(&results_path);
-    columns.append(&quick);
-    let separator = gtk::Separator::new(gtk::Orientation::Vertical);
-    columns.append(&separator);
+    quick.append(&actions);
+    quick.append(&storage);
+    outer.append(&quick);
+
+    let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+    outer.append(&separator);
     let history = gtk::Box::new(gtk::Orientation::Vertical, 10);
     history.set_hexpand(true);
     let history_title = left_label(&locale.text("runHistory"));
@@ -2807,15 +2987,21 @@ fn welcome_page(
     recent.set_selection_mode(gtk::SelectionMode::None);
     history.append(&history_title);
     history.append(&recent);
-    columns.append(&history);
-    outer.append(&columns);
+    outer.append(&history);
 
     (outer.upcast(), recent, results_path, new_scan, open_run)
 }
 
 fn scanning_page(
     locale: &LocaleCatalog,
-) -> (gtk::Widget, gtk::ProgressBar, gtk::Label, gtk::Label) {
+) -> (
+    gtk::Widget,
+    gtk::Label,
+    gtk::ProgressBar,
+    gtk::Label,
+    gtk::Label,
+    gtk::Button,
+) {
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 20);
     outer.set_margin_top(64);
     outer.set_margin_start(80);
@@ -2830,11 +3016,17 @@ fn scanning_page(
     let detail = left_label("");
     detail.add_css_class("muted");
     detail.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    let cancel = gtk::Button::builder()
+        .label(locale.text("cancelScan"))
+        .icon_name("process-stop-symbolic")
+        .halign(gtk::Align::End)
+        .build();
     outer.append(&heading);
     outer.append(&progress);
     outer.append(&stage);
     outer.append(&detail);
-    (outer.upcast(), progress, stage, detail)
+    outer.append(&cancel);
+    (outer.upcast(), heading, progress, stage, detail, cancel)
 }
 
 fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {

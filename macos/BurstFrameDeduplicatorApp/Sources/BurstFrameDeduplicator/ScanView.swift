@@ -12,11 +12,13 @@ struct ScanView: View {
             Group {
                 if model.phase == .scanning {
                     scanningContent
+                } else if model.phase == .loading {
+                    loadingContent
                 } else {
                     startContent
                 }
             }
-            .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: 980, alignment: .leading)
             .padding(.horizontal, 38)
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity)
@@ -28,12 +30,12 @@ struct ScanView: View {
     }
 
     private var startContent: some View {
-        VStack(alignment: .leading, spacing: 30) {
+        VStack(alignment: .leading, spacing: 26) {
             HStack(alignment: .top, spacing: 16) {
-                Image(systemName: "camera.viewfinder")
-                    .font(.system(size: 34, weight: .medium))
-                    .foregroundStyle(.tint)
-                    .symbolRenderingMode(.hierarchical)
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(locale.text("appTitle"))
                         .font(.largeTitle.weight(.semibold))
@@ -47,48 +49,50 @@ struct ScanView: View {
                 }
             }
 
-            HStack(alignment: .top, spacing: 34) {
-                quickStart
-                    .frame(maxWidth: 340, alignment: .topLeading)
-                Divider()
-                recentRuns
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            quickStart
+            Divider()
+            recentRuns
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            HStack(spacing: 9) {
+                Image(systemName: "folder.badge.gearshape")
+                    .foregroundStyle(.secondary)
+                Text(locale.text("resultsStoredIn"))
+                    .foregroundStyle(.secondary)
+                Text(model.resultsRootPath)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
             }
+            .font(.caption)
         }
     }
 
     private var quickStart: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Label(locale.text("quickStart"), systemImage: "sparkles")
                 .font(.headline)
 
-            Button(action: startNewRun) {
-                Label(locale.text("newScan"), systemImage: "plus.circle.fill")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 5)
-            }
-            .primaryActionStyle()
-            .tint(.accentColor)
-            .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
+            HStack(spacing: 12) {
+                Button(action: startNewRun) {
+                    Label(locale.text("newScan"), systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                .primaryActionStyle()
+                .tint(.accentColor)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
 
-            Button(action: openRun) {
-                Label(locale.text("openRun"), systemImage: "folder")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: openRun) {
+                    Label(locale.text("openRun"), systemImage: "folder")
+                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
-            .controlSize(.large)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(locale.text("resultsStoredIn"))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(model.resultsRootPath)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-            .padding(.top, 6)
         }
     }
 
@@ -111,7 +115,11 @@ struct ScanView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 210)
             } else {
-                LazyVStack(spacing: 8) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 330, maximum: 470), spacing: 10)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
                     ForEach(runLibrary.entries.prefix(8)) { entry in
                         Button {
                             model.openRun(at: URL(fileURLWithPath: entry.path, isDirectory: true))
@@ -144,7 +152,7 @@ struct ScanView: View {
                                     .foregroundStyle(.tertiary)
                             }
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
+                            .padding(.vertical, 11)
                             .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
                             .contentShape(Rectangle())
                         }
@@ -176,6 +184,55 @@ struct ScanView: View {
         }
     }
 
+    private var loadingContent: some View {
+        VStack(spacing: 22) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.quaternary.opacity(0.45))
+                    .frame(width: 76, height: 76)
+                Image(systemName: "photo.stack")
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.hierarchical)
+            }
+
+            VStack(spacing: 6) {
+                Text(locale.text("openingRun"))
+                    .font(.title2.weight(.semibold))
+                Text(model.loadingRunName)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            VStack(spacing: 10) {
+                if let update = model.loadingProgress {
+                    ProgressView(value: update.overallFraction)
+                        .animation(.smooth(duration: 0.2), value: update.overallFraction)
+                    HStack {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(locale.text(update.stage))
+                        Spacer()
+                        Text(update.overallFraction, format: .percent.precision(.fractionLength(0)))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                    }
+                    .font(.callout)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text(locale.text("reading_manifest"))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 520)
+        }
+        .frame(maxWidth: .infinity, minHeight: 420)
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+    }
+
     private var progressView: some View {
         VStack(alignment: .leading, spacing: 20) {
             let fraction = model.progress?.overallFraction ?? 0
@@ -184,7 +241,7 @@ struct ScanView: View {
                 .animation(.smooth(duration: 0.2), value: fraction)
 
             HStack(alignment: .firstTextBaseline) {
-                Text(stageLabel)
+                Text(model.scanCancellationRequested ? locale.text("cancellingScan") : stageLabel)
                     .font(.headline)
                 Spacer()
                 Text(fraction, format: .percent.precision(.fractionLength(0)))
@@ -221,6 +278,17 @@ struct ScanView: View {
                 }
             }
             .font(.callout)
+
+            HStack {
+                Spacer()
+                Button(role: .cancel, action: model.cancelScan) {
+                    Label(
+                        locale.text(model.scanCancellationRequested ? "cancellingScan" : "cancelScan"),
+                        systemImage: "xmark.circle"
+                    )
+                }
+                .disabled(model.scanCancellationRequested)
+            }
         }
         .padding(.vertical, 8)
     }

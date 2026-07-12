@@ -6,6 +6,7 @@ import SwiftUI
 enum AppPhase: Equatable {
     case setup
     case scanning
+    case loading
     case review
 }
 
@@ -93,11 +94,10 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var progress: ProgressUpdate?
-    @Published var payload: ReviewPayload? {
-        didSet {
-            assetIndex = Dictionary(uniqueKeysWithValues: (payload?.manifest.assets ?? []).map { ($0.id, $0) })
-        }
-    }
+    @Published var loadingProgress: ProgressUpdate?
+    @Published var loadingRunName = ""
+    @Published var scanCancellationRequested = false
+    @Published var payload: ReviewPayload?
     @Published var manualDecisions: [String: String] = [:]
     @Published var expandedStackIDs: Set<Int> = []
     @Published var searchText = ""
@@ -119,6 +119,9 @@ final class AppModel: ObservableObject {
     private var decisionGenerations: [String: Int] = [:]
     private var assetIndex: [String: AssetRecord] = [:]
     private var pendingRelocation: DispatchWorkItem?
+    private var activeScanCancellation: ScanCancellation?
+    private let scanGroup = DispatchGroup()
+    private var operationGeneration = 0
 
     init(
         bridge: RustBridge = RustBridge(),
@@ -184,8 +187,10 @@ final class AppModel: ObservableObject {
         viewerAssetID = nil
         counterpartPlan = nil
         counterpartCardURL = nil
-        decisionQueue.async {
-            DispatchQueue.main.async(execute: completion)
+        activeScanCancellation?.cancel()
+        let completionWork = DispatchWorkItem(block: completion)
+        scanGroup.notify(queue: decisionQueue) {
+            DispatchQueue.main.async(execute: completionWork)
         }
     }
 
@@ -258,31 +263,67 @@ final class AppModel: ObservableObject {
 
     func startScan() {
         guard let sourceURL else { return }
+        operationGeneration += 1
+        let generation = operationGeneration
         let destination = automaticRunDirectory()
+        let cancellation = ScanCancellation()
+        activeScanCancellation = cancellation
         outputURL = destination
         phase = .scanning
         progress = nil
+        loadingProgress = nil
+        loadingRunName = ""
+        scanCancellationRequested = false
         errorMessage = nil
         let options = options
+        let scanGroup = scanGroup
+        scanGroup.enter()
         DispatchQueue.global(qos: .userInitiated).async { [bridge] in
+            defer { scanGroup.leave() }
             do {
                 let response = try bridge.scan(
                     root: sourceURL.path,
                     output: destination.path,
-                    options: options
+                    options: options,
+                    cancellation: cancellation
                 ) { [weak self] update in
                     DispatchQueue.main.async {
+                        guard self?.operationGeneration == generation else { return }
                         self?.progress = update
                     }
                 }
-                let payload = try bridge.loadRun(at: response.runDir)
                 DispatchQueue.main.async { [weak self] in
-                    self?.install(payload)
+                    guard self?.operationGeneration == generation else { return }
+                    self?.phase = .loading
+                    self?.loadingRunName = URL(fileURLWithPath: response.runDir).lastPathComponent
+                    self?.loadingProgress = nil
+                }
+                let payload = try bridge.loadRun(at: response.runDir) { [weak self] update in
+                    DispatchQueue.main.async {
+                        guard self?.operationGeneration == generation else { return }
+                        self?.loadingProgress = update
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, operationGeneration == generation else { return }
+                    activeScanCancellation = nil
+                    scanCancellationRequested = false
+                    loadingProgress = nil
+                    install(payload)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
-                    self?.phase = .setup
-                    self?.errorMessage = error.localizedDescription
+                    guard let self, operationGeneration == generation else { return }
+                    let cancelled = scanCancellationRequested
+                    activeScanCancellation = nil
+                    scanCancellationRequested = false
+                    phase = .setup
+                    progress = nil
+                    loadingProgress = nil
+                    loadingRunName = ""
+                    if !cancelled {
+                        errorMessage = error.localizedDescription
+                    }
                 }
             }
         }
@@ -294,23 +335,57 @@ final class AppModel: ObservableObject {
     }
 
     func openRun(at directory: URL) {
+        guard phase != .scanning else { return }
+        operationGeneration += 1
+        let generation = operationGeneration
         errorMessage = nil
+        phase = .loading
+        loadingRunName = directory.lastPathComponent
+        loadingProgress = nil
         DispatchQueue.global(qos: .userInitiated).async { [bridge] in
             do {
-                let payload = try bridge.loadRun(at: directory.path)
-                DispatchQueue.main.async { [weak self] in self?.install(payload) }
+                let payload = try bridge.loadRun(at: directory.path) { [weak self] update in
+                    DispatchQueue.main.async {
+                        guard self?.operationGeneration == generation else { return }
+                        self?.loadingProgress = update
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, operationGeneration == generation else { return }
+                    loadingProgress = nil
+                    install(payload)
+                }
             } catch {
-                DispatchQueue.main.async { [weak self] in self?.errorMessage = error.localizedDescription }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, operationGeneration == generation else { return }
+                    phase = .setup
+                    loadingProgress = nil
+                    loadingRunName = ""
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }
 
+    func cancelScan() {
+        guard phase == .scanning, !scanCancellationRequested else { return }
+        scanCancellationRequested = true
+        activeScanCancellation?.cancel()
+    }
+
     func resetForNewScan() {
+        if phase == .scanning {
+            cancelScan()
+            return
+        }
+        operationGeneration += 1
         pendingRelocation?.cancel()
         phase = .setup
         sourceURL = nil
         payload = nil
         progress = nil
+        loadingProgress = nil
+        loadingRunName = ""
         outputURL = nil
         manualDecisions.removeAll()
         expandedStackIDs.removeAll()
@@ -319,6 +394,7 @@ final class AppModel: ObservableObject {
         viewerAssetID = nil
         counterpartPlan = nil
         counterpartCardURL = nil
+        assetIndex.removeAll()
     }
 
     func finalAction(for asset: AssetRecord) -> FrameDecision {
@@ -595,27 +671,42 @@ final class AppModel: ObservableObject {
     }
 
     private func install(_ payload: ReviewPayload) {
+        let decisions: [String: String] = Dictionary(
+            uniqueKeysWithValues: payload.review.decisions.compactMap {
+            guard let decision = $0.decision else { return nil }
+            return ($0.assetId, decision)
+            }
+        )
+        let indexedAssets = Dictionary(uniqueKeysWithValues: payload.manifest.assets.map { ($0.id, $0) })
+        let expanded = payload.manifest.clusters.lazy.filter { stack in
+            guard stack.assetIds.count > 1 else { return false }
+            return !stack.assetIds.allSatisfy { assetID in
+                guard let asset = indexedAssets[assetID] else { return false }
+                return (decisions[assetID] ?? asset.suggestion.action) == FrameDecision.keep.rawValue
+            }
+        }.map(\.id)
+
+        assetIndex = indexedAssets
+        manualDecisions = decisions
+        expandedStackIDs = Set(expanded)
         self.payload = payload
         sourceURL = URL(fileURLWithPath: payload.manifest.root)
         outputURL = URL(fileURLWithPath: payload.runDir)
-        manualDecisions = Dictionary(uniqueKeysWithValues: payload.review.decisions.compactMap {
-            guard let decision = $0.decision else { return nil }
-            return ($0.assetId, decision)
-        })
-        expandedStackIDs = Set(payload.manifest.clusters.filter { $0.assetIds.count > 1 }.map(\.id))
-        for stack in payload.manifest.clusters {
-            autoCollapseStack(stack.id)
-        }
+        loadingProgress = nil
+        loadingRunName = ""
         phase = .review
         RunCacheManager.registerRun(payload.runDir)
     }
 
     private func refresh(_ payload: ReviewPayload) {
-        self.payload = payload
         manualDecisions = Dictionary(uniqueKeysWithValues: payload.review.decisions.compactMap {
             guard let decision = $0.decision else { return nil }
             return ($0.assetId, decision)
         })
+        if assetIndex.count != payload.manifest.assets.count {
+            assetIndex = Dictionary(uniqueKeysWithValues: payload.manifest.assets.map { ($0.id, $0) })
+        }
+        self.payload = payload
     }
 
     private func autoCollapseStack(_ stackID: Int) {
