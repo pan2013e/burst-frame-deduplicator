@@ -16,15 +16,16 @@
 
 ```toml
 default = ["macos-native", "linux-native"]
-linux-native = ["avx2-accel"]
+linux-native = ["avx2-accel", "onnx-detector"]
 avx2-accel = []
+onnx-detector = ["dep:ort"]
 cuda-accel = ["linux-native", "dep:cudarc", "dep:libloading"]
 macos-native = ["metal-accel", "macos-vision"]
 metal-accel = ["dep:metal"]
 macos-vision = ["dep:objc"]
 ```
 
-The Apple dependencies are declared only for macOS targets, and CUDA dependencies only for Linux targets, so an ordinary `cargo build` does not try to link another platform's frameworks. Use a portable scalar CPU build with:
+The Apple dependencies are declared only for macOS targets, and CUDA/ONNX dependencies only for Linux targets, so an ordinary `cargo build` does not try to link another platform's frameworks. ONNX Runtime itself is loaded dynamically only after an explicit ML detector selects an external pack. Use a portable scalar CPU build with:
 
 ```bash
 cargo build --release --no-default-features
@@ -126,6 +127,10 @@ Linux exposes the CPU choice explicitly. `--acceleration cpu` runs the portable 
 
 Metal and CUDA accelerate whole-frame focus metrics only. Both kernels reduce Laplacian and gradient sums into compact partial results; CUDA uses per-call streams, `f64` partials, a process-cached driver/CUDA 12 NVRTC module, and dynamic library loading. CUDA is selected only by explicit `--acceleration cuda` while device parity and throughput testing is pending. Missing libraries, unavailable devices, initialization failures, or per-frame failures disable CUDA for the process and fall back to the best available CPU scorer. Saliency, descriptors, subject focus, clustering, and ranking remain CPU-side.
 
+The optional Linux ML detector uses a dynamically loaded, pinned ONNX Runtime pack. One session is created before the Rayon scoring loop and protected by a mutex; image preprocessing and mask postprocessing stay outside the session lock. `ml-light` uses U²-Net-P at 320×320, while `ml-heavy` uses IS-Net General Use at 1024×1024. Inputs follow the projects' per-image maximum normalization, with a guarded all-zero case. Raw sigmoid outputs are thresholded without output min/max normalization. Connected components produce a subject count, confidence, union box, and border-contact risk. CUDA registration uses an ordered CUDA→CPU provider path with heuristic cuDNN convolution selection and a bounded search workspace. A post-initialization CUDA error rebuilds the session on the CPU provider and retries once; a subsequent CPU error disables ML for the scan. No-GPU CPU scans and provider fallbacks are tested; CUDA inference remains unexecuted while the available devices are occupied.
+
+ML metrics are advisory. `pipeline::score_asset` clones the heuristic metrics before invoking any native detector, and the stable portable snapshot remains the input to similarity descriptors. A missing runtime/model, checksum mismatch, bad tensor contract, provider failure, or inference failure is recorded once and falls back to heuristic saliency. Reports include only model ID, SHA-256, byte size, runtime, provider, and generic fallback notes; model-pack paths are never serialized.
+
 The native settings workload bar is intentionally an estimate, not telemetry. It combines preview/refinement pixel area, candidates per stack, detector cost, and acceleration choice, normalized against logical CPU count, physical memory, and Metal availability. The About window reports runtime hardware/OS diagnostics plus build-time commit, Rust, Swift, and Apple toolchain versions injected into `Info.plist` by the packaging script.
 
 Platform acceleration remains isolated behind Rust feature gates and target `cfg` checks. The final manifest derives acceleration selection from per-asset backend usage and records the actual Rayon worker count, compiled/runtime capabilities, and fallback notes. Future backends must preserve that contract and must not introduce CUDA or OpenCL claims for Apple Silicon macOS.
@@ -136,6 +141,8 @@ Platform acceleration remains isolated behind Rust feature gates and target `cfg
 | --- | --- |
 | `heuristic` | Uses the portable two-resolution local-saliency algorithm, border contact, and object-like edge concentration. This is the self-contained Linux detector and the fallback on every platform. |
 | `vision` | Uses macOS Vision objectness saliency for advisory completeness/quality metrics, with per-frame heuristic fallback. Stable compact saliency remains responsible for duplicate descriptors. |
+| `ml-light` | Uses the external 4.57 MB U²-Net-P ONNX model on Linux. Explicit CPU/CUDA provider selection and checksum validation precede one serialized session. |
+| `ml-heavy` | Uses the external 178.65 MB IS-Net General Use ONNX model at 1024×1024 on Linux, with the same provider/fallback contract. |
 | `off` | Disables detector output and keeps deterministic scoring metrics only. |
 
 ## Web RAW Preview
@@ -178,10 +185,15 @@ The static scanner snapshots the selected `FileList` before clearing the input, 
 - `scoring_total`: parallel scoring wall time
 - `decode_worker_sum`: sum of per-worker decode time
 - `feature_scoring_worker_sum`: sum of per-worker feature time
+- `detector_initialization`: model verification plus ONNX Runtime/session initialization wall time
 - `refinement_total`: wall time for targeted high-resolution refinement
 - `refinement_decode_worker_sum`: sum of per-worker refinement decode time
 - `refinement_feature_worker_sum`: sum of per-worker refinement feature time
 - `detector_worker_sum`: sum of per-worker detector time
+- `detector_preprocessing_worker_sum`: local ML input resize/normalization time
+- `detector_session_queue_wait_worker_sum`: time workers spent waiting for the serialized ONNX session
+- `detector_inference_worker_sum`: time inside successful ONNX Runtime calls
+- `detector_postprocessing_worker_sum`: local ML connected-component and box extraction time
 - `thumbnail_generation_worker_sum`: sum of per-worker thumbnail time
 - `burst_and_stack_grouping`: temporal burst and subject-aware complete-link grouping
 - `ranking_and_suggestions`: within-stack quality ranking and confidence-gated decisions

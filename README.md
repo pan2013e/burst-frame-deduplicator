@@ -14,6 +14,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Treats matching RAW/JPEG files and sidecars as one review asset.
 - Reapplies reviewed rejects to a second RAW/JPEG card by filename stem, even when folder and mount paths differ, with ambiguity checks and restore support.
 - Uses explicit scalar or AVX2 CPU focus scoring on Linux, optional CUDA on NVIDIA systems, and Metal on macOS, with runtime checks and recorded fallbacks.
+- Offers optional offline U²-Net-P and IS-Net subject detectors on Linux, with explicit CPU/CUDA provider selection and heuristic fallback.
 - Includes a native SwiftUI macOS scan and review app, a headless CLI, a local review server, and a static WASM edition.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
 - Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
@@ -87,6 +88,20 @@ cargo run --release --features cuda-accel -- scan /path/to/photos --acceleration
 
 The CUDA feature loads the NVIDIA driver and CUDA 12 NVRTC dynamically. A CUDA-enabled binary still runs on CPU-only Linux when CUDA is not requested, and an unavailable or failed CUDA scorer falls back to the best available CPU path.
 
+Linux can also use one of two explicit local ML subject detectors. Models and ONNX Runtime live in a separately installed, checksum-verified pack; scans never download them:
+
+```bash
+pack="$HOME/.local/share/burst-frame-deduplicator/ml-model-pack"
+scripts/install_linux_ml_models.sh --dest "$pack" --runtime cpu --models both
+
+cargo run --release -- scan /path/to/photos \
+  --detector ml-light \
+  --detector-device cpu \
+  --detector-model-pack "$pack"
+```
+
+`ml-light` is the 4.57 MB U²-Net-P model; `ml-heavy` is the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML CPU execution is separate from `--acceleration cpu|avx2`: `cpu` scoring is explicitly scalar, `avx2` scoring is explicitly runtime-checked AVX2, and `--detector-device cpu` selects ONNX Runtime's CPU provider. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
+
 Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
 
 Release CLI archives are standalone: the local review HTML/CSS/JavaScript, English and Chinese catalogs, and LibRaw-WASM worker are compiled into the executable. `scan`, `export`, and `serve` therefore work outside the repository. ImageMagick remains an optional system dependency for RAW formats that a platform's native/image-rs decoders cannot handle.
@@ -111,7 +126,7 @@ The **Build distributable binaries** GitHub Actions workflow tests and packages:
 
 | Artifact | Runner | Contents |
 | --- | --- | --- |
-| Linux CLI | Ubuntu 24.04 x86_64 | Standalone AVX2/CUDA-capable executable for Ubuntu 24.04 or newer, with runtime fallbacks, notices, and archive checksum |
+| Linux CLI | Ubuntu 24.04 x86_64 | Standalone AVX2/CUDA-capable executable for Ubuntu 24.04 or newer, with runtime fallbacks, model-pack installer/guide, notices, and archive checksum |
 | macOS CLI | macOS 26 Apple Silicon | Standalone executable, notices, archive checksum |
 | macOS app | macOS 26 Apple Silicon | Ad-hoc signed drag-to-Applications DMG and checksum |
 
@@ -143,6 +158,7 @@ Do not reuse an existing release tag.
 | Swift 6 / Apple Command Line Tools | Required | Not required | Not required |
 | ImageMagick | Optional compatibility fallback | Recommended for RAW | Not used |
 | NVIDIA driver + NVRTC | Not used | Optional for `--acceleration cuda` on Linux | Not used |
+| ONNX Runtime model pack | Not used | Optional for `--detector ml-light` or `ml-heavy` on Linux | Not used |
 | Git LFS | Benchmark fixture only | Benchmark fixture only | Benchmark fixture only |
 | `wasm-pack` | Optional | Optional | Required |
 | Modern browser | Optional local review | Optional local review | Required |
@@ -185,6 +201,7 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | Metal focus scoring | ✅ | — | — | — |
 | Heuristic subject detector | ✅ | ✅ | ✅ | ✅ |
 | macOS Vision detector | ✅ | — | — | — |
+| Local ML subject detector | — | ✅ opt-in CPU | ✅ opt-in CUDA→CPU | — |
 | CUDA focus scoring | — | — | ✅ opt-in | — |
 | TensorRT learned detector | — | — | 🧭 | 🧭 |
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |

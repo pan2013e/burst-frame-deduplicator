@@ -90,6 +90,20 @@ cargo run --release --features cuda-accel -- app /path/to/photos --open --accele
 
 The CUDA binary loads the NVIDIA driver and NVRTC only when CUDA is explicitly requested. Initialization or scoring failures are recorded and fall back to AVX2 or scalar CPU scoring.
 
+Optional Linux ML detection is a separate choice from focus acceleration. Install the offline model pack, then select the light or heavy model explicitly:
+
+```bash
+pack="$HOME/.local/share/burst-frame-deduplicator/ml-model-pack"
+scripts/install_linux_ml_models.sh --dest "$pack" --models both --runtime cpu
+
+cargo run --release -- scan /path/to/photos \
+  --detector ml-light \
+  --detector-device cpu \
+  --detector-model-pack "$pack"
+```
+
+`--detector-device cpu` uses ONNX Runtime's CPU provider; it does not change whether photo scoring uses scalar `--acceleration cpu` or explicit `--acceleration avx2`. Device `auto` is also CPU-safe and never initializes a GPU; only explicit `--detector-device cuda` does so. See [the Linux ML guide](LINUX_ML_MODELS.md) for the `ml-heavy` tradeoff, CUDA→CPU setup, checksums, and model provenance.
+
 The app writes a timestamped run directory under `runs/`. That directory contains the review manifest, thumbnails, CSV exports, and move reports.
 
 <details>
@@ -310,7 +324,7 @@ cargo run --release -- scan /path/to/photos \
   --detector vision
 ```
 
-For the reviewed high-quality Linux CLI configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration avx2 --detector heuristic` or explicitly use `--acceleration cuda` in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic is the self-contained Linux subject detector; macOS Vision remains an advisory Apple-only backend.
+For the reviewed high-quality Linux CLI configuration, use the same preview/refinement settings but keep `--max-duplicate-distance 0.20`, then select `--acceleration avx2 --detector heuristic` or explicitly use `--acceleration cuda` in a `cuda-accel` build. A `0.18` radius over-separates two reviewed must-link pairs in the current `2048px` descriptor path. The portable two-resolution heuristic remains the self-contained fallback. An installed model pack additionally enables explicit `--detector ml-light|ml-heavy`; macOS Vision remains an advisory Apple-only backend.
 
 This preset makes posture grouping more conservative and gives tiny or uncertain subjects a higher-resolution localization pass. The benchmark fixture retained `100%` reviewed pair accuracy and posture coverage at `3.29` assets/sec with about `1.89 GB` peak RSS. Use Balanced when turnaround matters more than the additional small-subject margin.
 
@@ -341,7 +355,10 @@ Common options:
 - `--min-duplicate-confidence`: minimum evidence required for an automatic reject; lower-confidence frames remain review items.
 - `--no-refine`: skip high-resolution refinement for faster but less careful scans.
 - `--acceleration auto|cpu|avx2|metal|cuda|opencl`: choose the focus-scoring backend. `cpu` is the scalar reference; `avx2` is explicit and runtime-checked; CUDA requires a `cuda-accel` Linux build. Unsupported choices record a CPU fallback.
-- `--detector heuristic|vision|off|auto`: choose the local subject detector.
+- `--detector auto|heuristic|vision|ml-light|ml-heavy|off`: choose the local subject detector. `auto` stays heuristic; ML choices require the offline Linux model pack.
+- `--detector-device auto|cpu|cuda`: choose the ONNX Runtime provider for an ML detector. `auto` stays on CPU even when CUDA is installed; explicit CUDA falls back to the runtime's CPU provider.
+- `--detector-model-pack DIR`: select the verified offline model/runtime directory. `BFD_ML_MODEL_PACK` is the environment equivalent.
+- `--detector-threads N`: set the serialized ONNX Runtime session's CPU thread count; the default is the scan worker count capped at eight.
 - `--keepers-per-cluster N`: force a fixed keep count for every near-duplicate stack.
 - `--cull-singletons`: allow unique non-burst images to be rejected when they score poorly.
 - `--workers N`: set worker count for parallel scoring.
@@ -383,7 +400,7 @@ shasum -a 256 -c Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
 sha256sum -c burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
 ```
 
-The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. The Linux x86_64 archive is built on Ubuntu 24.04 and targets Ubuntu 24.04 or newer; build from source on an older glibc distribution. It includes the scalar, runtime-dispatched AVX2, and dynamically loaded CUDA paths, and does not require CUDA unless `--acceleration cuda` is requested. Optional external RAW compatibility tools such as ImageMagick are not bundled.
+The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. The Linux x86_64 archive is built on Ubuntu 24.04 and targets Ubuntu 24.04 or newer; build from source on an older glibc distribution. It includes the scalar, runtime-dispatched AVX2, and dynamically loaded CUDA focus paths, and does not require CUDA unless `--acceleration cuda` is requested. The optional ONNX detector runtime and model files remain a separate checksum-verified pack because the heavy model alone is about 179 MB. Optional external RAW compatibility tools such as ImageMagick are not bundled.
 
 The CI-built macOS app is **ad-hoc signed and not notarized**. Gatekeeper cannot establish an identified developer for it. Prefer a Developer ID signed/notarized build when one is available. If you have verified the checksum and trust the repository artifact, first attempt to open the app, then use **System Settings > Privacy & Security > Security > Open Anyway**. Apple warns that overriding this protection can expose the Mac to malicious software; see [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
 
