@@ -138,6 +138,9 @@ jobs:
           cargo build --release --bin burst-frame-deduplicator
           target/release/burst-frame-deduplicator --version
 
+      - name: Test macOS C ABI and Swift bridge
+        run: ./scripts/test_macos_app.sh
+
       - name: Build ad-hoc signed app and DMG
         env:
           BFD_BUILD_COMMIT: ${{ github.sha }}
