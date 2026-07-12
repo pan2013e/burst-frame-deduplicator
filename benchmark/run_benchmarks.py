@@ -55,46 +55,56 @@ DARWIN_CASES = [
     ),
 ]
 
-LINUX_CASES = [
-    ("balanced_scalar", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
-    ("balanced_avx2", "Balanced", ["--acceleration", "avx2", "--detector", "heuristic"]),
-    (
-        "best_quality_avx2",
-        "Best Quality",
-        [
-            "--preview-size", "2048",
-            "--refine-size", "4096",
-            "--refine-candidates-per-cluster", "4",
-            "--max-duplicate-distance", "0.20",
-            "--min-duplicate-confidence", "0.60",
-            "--acceleration", "avx2",
-            "--detector", "heuristic",
-        ],
-    ),
-    (
-        "faster_avx2",
-        "Faster",
-        [
-            "--preview-size", "960",
-            "--refine-size", "1536",
-            "--refine-candidates-per-cluster", "1",
-            "--acceleration", "avx2",
-            "--detector", "heuristic",
-        ],
-    ),
-]
-
-
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
+def linux_simd_backend() -> str:
+    machine = platform.machine().lower()
+    return "neon" if machine in {"aarch64", "arm64"} else "avx2"
+
+
+def linux_cases() -> list[tuple[str, str, list[str]]]:
+    simd = linux_simd_backend()
+    return [
+        ("balanced_scalar", "Balanced", ["--acceleration", "cpu", "--detector", "heuristic"]),
+        (f"balanced_{simd}", "Balanced", ["--acceleration", simd, "--detector", "heuristic"]),
+        (
+            f"best_quality_{simd}",
+            "Best Quality",
+            [
+                "--preview-size", "2048",
+                "--refine-size", "4096",
+                "--refine-candidates-per-cluster", "4",
+                "--max-duplicate-distance", "0.20",
+                "--min-duplicate-confidence", "0.60",
+                "--acceleration", simd,
+                "--detector", "heuristic",
+            ],
+        ),
+        (
+            f"faster_{simd}",
+            "Faster",
+            [
+                "--preview-size", "960",
+                "--refine-size", "1536",
+                "--refine-candidates-per-cluster", "1",
+                "--acceleration", simd,
+                "--detector", "heuristic",
+            ],
+        ),
+    ]
+
+
 def benchmark_cases() -> list[tuple[str, str, list[str]]]:
-    return LINUX_CASES if is_linux() else DARWIN_CASES
+    return linux_cases() if is_linux() else DARWIN_CASES
 
 
 def report_path() -> Path:
-    return RESULTS / ("latest-linux.md" if is_linux() else "latest.md")
+    if is_linux():
+        suffix = "-arm64" if linux_simd_backend() == "neon" else ""
+        return RESULTS / f"latest-linux{suffix}.md"
+    return RESULTS / "latest.md"
 
 
 def platform_name() -> str:
