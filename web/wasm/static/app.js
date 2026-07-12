@@ -1,4 +1,8 @@
-import initWasm, { BrowserSession } from "./pkg/burst_wasm.js";
+import initWasm, {
+  BrowserSession,
+  WebGpuFocusScorer,
+  portable_focus_rgba,
+} from "./pkg/burst_wasm.js";
 import { createTutorialProgressStore } from "./tutorial-progress.mjs";
 
 const RAW_EXTS = new Set([
@@ -12,13 +16,46 @@ const IMAGE_EXTS = new Set([
 ]);
 const SIDECAR_EXTS = new Set(["aae", "dop", "json", "pp3", "xmp"]);
 const BROWSER_FIRST = ["jpg", "jpeg", "png", "webp", "avif", "bmp", "gif", "heic", "heif", "tif", "tiff"];
-const PREVIEW_LONG_EDGE = 1280;
 const runtimeOptions = new URLSearchParams(location.search);
-const requestedDecodeConcurrency = Number(runtimeOptions.get("decode-concurrency"));
-const DECODE_CONCURRENCY = Number.isFinite(requestedDecodeConcurrency) && requestedDecodeConcurrency > 0
-  ? Math.max(1, Math.min(8, Math.floor(requestedDecodeConcurrency)))
-  : Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
 const WEB_CODECS_ENABLED = runtimeOptions.get("decode-backend") !== "image-bitmap";
+const SETTINGS_KEY = "burst-wasm-settings-v1";
+const ML_INFERENCE_BATCH = 4;
+const QUALITY_PRESETS = {
+  best: {
+    previewLongEdge: 2048,
+    acceleration: "auto",
+    detector: "ml",
+    maxDuplicateDistance: 0.18,
+    minDuplicateConfidence: 0.60,
+  },
+  balanced: {
+    previewLongEdge: 1280,
+    acceleration: "auto",
+    detector: "auto",
+    maxDuplicateDistance: 0.20,
+    minDuplicateConfidence: 0.52,
+  },
+  fast: {
+    previewLongEdge: 960,
+    acceleration: "auto",
+    detector: "heuristic",
+    maxDuplicateDistance: 0.22,
+    minDuplicateConfidence: 0.50,
+  },
+};
+const DEFAULT_SETTINGS = {
+  qualityPreset: "balanced",
+  previewLongEdge: 1280,
+  acceleration: "auto",
+  detector: "auto",
+  decodeConcurrency: Math.max(2, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2))),
+  maxSeqGap: 12,
+  maxTimeGapMs: 1250,
+  maxClusterSpanMs: 1800,
+  maxHashGap: 30,
+  maxDuplicateDistance: 0.20,
+  minDuplicateConfidence: 0.52,
+};
 const tutorialProgress = createTutorialProgressStore({
   legacyKeys: ["burst-tutorial-wasm-v1"],
 });
@@ -26,6 +63,41 @@ const tutorialProgress = createTutorialProgressStore({
 const supportedLocales = new Set(["en", "zh-CN"]);
 let messages = {};
 let languageNames = {};
+
+function clampNumber(value, minimum, maximum, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+}
+
+function normalizeSettings(value = {}) {
+  const settings = { ...DEFAULT_SETTINGS, ...value };
+  settings.qualityPreset = ["best", "balanced", "fast", "custom"].includes(settings.qualityPreset)
+    ? settings.qualityPreset : "custom";
+  settings.previewLongEdge = Math.round(clampNumber(settings.previewLongEdge, 640, 2048, 1280) / 128) * 128;
+  settings.acceleration = ["auto", "webgpu", "portable"].includes(settings.acceleration)
+    ? settings.acceleration : "auto";
+  settings.detector = ["auto", "heuristic", "ml", "off"].includes(settings.detector)
+    ? settings.detector : "auto";
+  settings.decodeConcurrency = Math.round(clampNumber(settings.decodeConcurrency, 1, 8, DEFAULT_SETTINGS.decodeConcurrency));
+  settings.maxSeqGap = Math.round(clampNumber(settings.maxSeqGap, 1, 100, 12));
+  settings.maxTimeGapMs = Math.round(clampNumber(settings.maxTimeGapMs, 100, 30_000, 1250));
+  settings.maxClusterSpanMs = Math.round(clampNumber(settings.maxClusterSpanMs, 100, 60_000, 1800));
+  settings.maxHashGap = Math.round(clampNumber(settings.maxHashGap, 0, 64, 30));
+  settings.maxDuplicateDistance = clampNumber(settings.maxDuplicateDistance, 0.01, 1, 0.20);
+  settings.minDuplicateConfidence = clampNumber(settings.minDuplicateConfidence, 0, 1, 0.52);
+  return settings;
+}
+
+function initialSettings() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); } catch {}
+  const settings = normalizeSettings(stored);
+  if (runtimeOptions.has("acceleration")) settings.acceleration = runtimeOptions.get("acceleration");
+  if (runtimeOptions.has("detector")) settings.detector = runtimeOptions.get("detector");
+  if (runtimeOptions.has("decode-concurrency")) settings.decodeConcurrency = runtimeOptions.get("decode-concurrency");
+  if (runtimeOptions.has("preview-size")) settings.previewLongEdge = runtimeOptions.get("preview-size");
+  return normalizeSettings(settings);
+}
 
 const elements = Object.fromEntries([
   "folderInput", "pickBtn", "emptyPickBtn", "emptyState", "progressView", "reviewView",
@@ -41,15 +113,38 @@ const elements = Object.fromEntries([
   "tutorialDialog", "tutorialLabel", "tutorialProgress", "tutorialDemoSource", "tutorialDemoReject",
   "tutorialDemoKeep", "tutorialDemoReview", "tutorialTitle", "tutorialBody", "tutorialSkip",
   "tutorialBack", "tutorialNext",
+  "settingsBtn", "settingsDialog", "settingsForm", "settingsTitle", "settingsSubtitle",
+  "closeSettingsBtn", "cancelSettingsBtn", "resetSettingsBtn", "applySettingsBtn",
+  "qualityPresetSelect", "previewSizeInput", "previewSizeOutput", "accelerationSelect",
+  "detectorSelect", "mlDetectorNote", "decodeConcurrencyInput", "decodeConcurrencyOutput",
+  "maxSeqGapInput", "maxTimeGapInput", "maxClusterSpanInput", "maxHashGapInput",
+  "duplicateDistanceInput", "duplicateConfidenceInput",
 ].map(id => [id, document.getElementById(id)]));
 
 const queryLocale = new URLSearchParams(location.search).get("lang");
 const requestedLocale = supportedLocales.has(queryLocale) ? queryLocale : null;
 const defaultLocale = navigator.language.startsWith("zh") ? "zh-CN" : "en";
 const storedLocale = localStorage.getItem("burst-locale");
+const configuredSettings = initialSettings();
 const state = {
   locale: requestedLocale || (supportedLocales.has(storedLocale) ? storedLocale : defaultLocale),
   wasmReady: null,
+  webGpuReady: null,
+  webGpuScorer: null,
+  webGpuAdapter: null,
+  webGpuFailure: null,
+  focusMode: configuredSettings.acceleration === "portable" ? "portable" : "pending",
+  focusCalibration: null,
+  focusBackends: {},
+  mlReady: null,
+  mlDetector: null,
+  mlAdapter: null,
+  mlFailure: null,
+  detectorBackends: {},
+  settings: configuredSettings,
+  settingsDraft: null,
+  settingsTab: "quality",
+  scanSettings: null,
   result: null,
   assets: new Map(),
   decisions: new Map(),
@@ -128,6 +223,8 @@ function applyLocale() {
   elements.filterSelect.setAttribute("aria-label", t("filter"));
   setButtonLabel(elements.tutorialBtn, t("tutorial"));
   setButtonLabel(elements.aboutBtn, t("about"));
+  setButtonLabel(elements.settingsBtn, t("settings"));
+  setButtonLabel(elements.closeSettingsBtn, t("close"));
   setButtonLabel(elements.closeAboutBtn, t("close"));
   elements.aboutDialogTitle.textContent = t("aboutTitle");
   elements.aboutDescription.textContent = t("aboutDescription");
@@ -140,7 +237,13 @@ function applyLocale() {
   elements.tutorialDemoReview.textContent = t("tutorialDemoReview");
   elements.tutorialSkip.textContent = t("tutorialSkip");
   elements.tutorialBack.textContent = t("tutorialBack");
+  elements.settingsTitle.textContent = t("settingsTitle");
+  elements.settingsSubtitle.textContent = t("settingsSubtitle");
+  document.querySelector('[data-settings-tab="quality"]').textContent = t("quality");
+  document.querySelector('[data-settings-tab="processing"]').textContent = t("processing");
+  document.querySelector('[data-settings-tab="grouping"]').textContent = t("groupingSettings");
   renderTutorial();
+  renderSettings();
   if (state.result) {
     renderReview();
     updateSaveDialog();
@@ -178,6 +281,95 @@ function finishTutorial(outcome) {
   if (elements.tutorialDialog.open) elements.tutorialDialog.close();
 }
 
+function renderSettings() {
+  if (!elements.settingsForm) return;
+  const settings = state.settingsDraft || state.settings;
+  elements.qualityPresetSelect.value = settings.qualityPreset;
+  elements.previewSizeInput.value = String(settings.previewLongEdge);
+  elements.previewSizeOutput.textContent = `${settings.previewLongEdge} px`;
+  elements.accelerationSelect.value = settings.acceleration;
+  elements.detectorSelect.value = settings.detector;
+  elements.mlDetectorNote.hidden = settings.detector !== "ml";
+  elements.decodeConcurrencyInput.value = String(settings.decodeConcurrency);
+  elements.decodeConcurrencyOutput.textContent = String(settings.decodeConcurrency);
+  elements.maxSeqGapInput.value = String(settings.maxSeqGap);
+  elements.maxTimeGapInput.value = (settings.maxTimeGapMs / 1000).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  elements.maxClusterSpanInput.value = (settings.maxClusterSpanMs / 1000).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  elements.maxHashGapInput.value = String(settings.maxHashGap);
+  elements.duplicateDistanceInput.value = settings.maxDuplicateDistance.toFixed(2);
+  elements.duplicateConfidenceInput.value = settings.minDuplicateConfidence.toFixed(2);
+  document.querySelectorAll("[data-settings-tab]").forEach(button => {
+    const selected = button.dataset.settingsTab === state.settingsTab;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  document.querySelectorAll("[data-settings-panel]").forEach(panel => {
+    panel.hidden = panel.dataset.settingsPanel !== state.settingsTab;
+  });
+}
+
+function readSettingsForm() {
+  return normalizeSettings({
+    qualityPreset: elements.qualityPresetSelect.value,
+    previewLongEdge: elements.previewSizeInput.value,
+    acceleration: elements.accelerationSelect.value,
+    detector: elements.detectorSelect.value,
+    decodeConcurrency: elements.decodeConcurrencyInput.value,
+    maxSeqGap: elements.maxSeqGapInput.value,
+    maxTimeGapMs: Number(elements.maxTimeGapInput.value) * 1000,
+    maxClusterSpanMs: Number(elements.maxClusterSpanInput.value) * 1000,
+    maxHashGap: elements.maxHashGapInput.value,
+    maxDuplicateDistance: elements.duplicateDistanceInput.value,
+    minDuplicateConfidence: elements.duplicateConfidenceInput.value,
+  });
+}
+
+function selectSettingsTab(tab) {
+  state.settingsTab = ["quality", "processing", "grouping"].includes(tab) ? tab : "quality";
+  renderSettings();
+}
+
+function openSettings() {
+  state.settingsDraft = { ...state.settings };
+  renderSettings();
+  elements.settingsDialog.showModal();
+}
+
+function closeSettings() {
+  state.settingsDraft = null;
+  if (elements.settingsDialog.open) elements.settingsDialog.close();
+}
+
+function applyQualityPreset(preset) {
+  if (!QUALITY_PRESETS[preset]) return;
+  state.settingsDraft = normalizeSettings({
+    ...(state.settingsDraft || state.settings),
+    ...QUALITY_PRESETS[preset],
+    qualityPreset: preset,
+  });
+  renderSettings();
+}
+
+function updateCustomSettingsDraft(event) {
+  if (event.target === elements.qualityPresetSelect) return;
+  state.settingsDraft = { ...readSettingsForm(), qualityPreset: "custom" };
+  renderSettings();
+}
+
+function saveSettings() {
+  state.settings = readSettingsForm();
+  state.settingsDraft = null;
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+  state.focusMode = state.settings.acceleration === "portable" ? "portable" : "pending";
+  state.focusCalibration = null;
+  if (state.settings.detector === "ml" && !state.mlDetector) {
+    state.mlReady = null;
+    state.mlFailure = null;
+  }
+  elements.settingsDialog.close();
+  showToast(t("settingsSaved"));
+}
+
 function browserDiagnostics() {
   const brands = navigator.userAgentData?.brands
     ?.map(item => `${item.brand} ${item.version}`)
@@ -199,12 +391,26 @@ async function openAbout() {
     if (response.ok) build = await response.json();
   } catch {}
   const browser = browserDiagnostics();
+  const acceleration = state.focusMode === "webgpu"
+    ? "WebGPU · wgpu"
+    : state.focusMode === "portable"
+      ? "Portable WASM CPU"
+      : `Automatic (${state.settings.acceleration})`;
+  const detector = state.mlDetector
+    ? "ML · U2-Net-P · Burn WebGPU"
+    : state.settings.detector === "off" ? "Off (baseline descriptors remain active)" : "Heuristic saliency";
   renderDiagnostics([
     ["diagVersion", build.app_version],
     ["diagCommit", build.commit],
     ["diagRustc", build.rustc],
     ["diagCargo", build.cargo],
     ["diagWasmPack", build.wasm_pack],
+    ["diagAcceleration", acceleration],
+    ["diagGpuAdapter", state.webGpuAdapter],
+    ["diagGpuFallback", state.webGpuFailure],
+    ["diagDetector", detector],
+    ["diagMlAdapter", state.mlAdapter],
+    ["diagMlFallback", state.mlFailure],
     ["diagTarget", build.build_target],
     ["diagBrowser", browser.browser],
     ["diagPlatform", browser.platform],
@@ -305,18 +511,111 @@ async function ensureWasm() {
   await state.wasmReady;
 }
 
+function activeSettings() {
+  return state.scanSettings || state.settings;
+}
+
+async function ensureWebGpu() {
+  if (activeSettings().acceleration === "portable" || !navigator.gpu || state.webGpuFailure) return null;
+  if (!state.webGpuReady) {
+    state.webGpuReady = WebGpuFocusScorer.create()
+      .then(scorer => {
+        state.webGpuScorer = scorer;
+        state.webGpuAdapter = scorer.adapter_name();
+        return scorer;
+      })
+      .catch(error => {
+        state.webGpuFailure = String(error?.message || error);
+        console.info("WebGPU focus scoring unavailable; using portable WASM CPU", error);
+        return null;
+      });
+  }
+  return state.webGpuReady;
+}
+
+async function ensureMlDetector() {
+  if (activeSettings().detector !== "ml" || state.mlFailure) return null;
+  if (!navigator.gpu) {
+    state.mlFailure = "WebGPU is unavailable in this browser";
+    return null;
+  }
+  if (!state.mlReady) {
+    state.mlReady = (async () => {
+      const module = await import("./ml-pkg/burst_ml_wasm.js");
+      await module.default();
+      const response = await fetch("./models/u2netp.bpk");
+      if (!response.ok) throw new Error(`U2-Net-P weights: HTTP ${response.status}`);
+      const weights = new Uint8Array(await response.arrayBuffer());
+      const detector = await module.U2NetDetector.create(weights);
+      state.mlDetector = detector;
+      state.mlAdapter = detector.adapter_name();
+      return detector;
+    })().catch(error => {
+      state.mlFailure = String(error?.message || error);
+      console.warn("Browser ML detector unavailable; using heuristic saliency", error);
+      return null;
+    });
+  }
+  return state.mlReady;
+}
+
+async function acceleratedFocus(decoded, scorer) {
+  if (!scorer || !state.webGpuScorer || state.focusMode === "portable") return null;
+  if (state.focusMode === "webgpu" || activeSettings().acceleration === "webgpu") {
+    state.focusMode = "webgpu";
+    return scorer.score_rgba(decoded.width, decoded.height, decoded.rgba);
+  }
+
+  // Warm both paths before timing so Wasm JIT and the first browser GPU submission
+  // do not bias the per-scan backend choice.
+  portable_focus_rgba(decoded.width, decoded.height, decoded.rgba);
+  await scorer.score_rgba(decoded.width, decoded.height, decoded.rgba);
+  const cpuStarted = performance.now();
+  const portable = portable_focus_rgba(decoded.width, decoded.height, decoded.rgba);
+  const portableMs = performance.now() - cpuStarted;
+  const gpuStarted = performance.now();
+  const webgpu = await scorer.score_rgba(decoded.width, decoded.height, decoded.rgba);
+  const webgpuMs = performance.now() - gpuStarted;
+  const useWebGpu = webgpuMs <= portableMs * 0.85;
+  state.focusMode = useWebGpu ? "webgpu" : "portable";
+  state.focusCalibration = { portable_ms: portableMs, webgpu_ms: webgpuMs, selected: state.focusMode };
+  return useWebGpu ? webgpu : portable;
+}
+
+function detectorRgba(decoded) {
+  const source = createCanvas(decoded.width, decoded.height);
+  source.getContext("2d").putImageData(
+    new ImageData(new Uint8ClampedArray(decoded.rgba), decoded.width, decoded.height),
+    0,
+    0,
+  );
+  const target = createCanvas(320, 320);
+  const context = target.getContext("2d", { alpha: false, willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, 320, 320);
+  return context.getImageData(0, 0, 320, 320).data;
+}
+
 async function scanFiles(fileList) {
   const benchmarkStarted = performance.now();
   const benchmarkStages = {
     discovery_ms: 0,
     wasm_initialization_ms: 0,
+    detector_initialization_ms: 0,
     decode_ms: 0,
+    detector_preprocessing_ms: 0,
+    detector_inference_ms: 0,
     scoring_ms: 0,
     clustering_ms: 0,
     render_ms: 0,
   };
   const token = ++state.scanToken;
   resetResult();
+  state.scanSettings = { ...state.settings };
+  state.focusMode = state.scanSettings.acceleration === "portable" ? "portable" : "pending";
+  state.focusCalibration = null;
+  elements.settingsBtn.disabled = true;
   elements.emptyState.hidden = true;
   elements.reviewView.hidden = true;
   elements.progressView.hidden = false;
@@ -343,18 +642,32 @@ async function scanFiles(fileList) {
     showEmpty(t("scanFailed"));
     return;
   }
+  const webGpuScorer = await ensureWebGpu();
   benchmarkStages.wasm_initialization_ms = performance.now() - wasmStarted;
+  if (token !== state.scanToken) return;
+
+  let mlDetector = null;
+  if (state.scanSettings.detector === "ml") {
+    setProgress("loadingMl", 0.07);
+    await nextPaint();
+    const detectorStarted = performance.now();
+    mlDetector = await ensureMlDetector();
+    benchmarkStages.detector_initialization_ms = performance.now() - detectorStarted;
+  }
   if (token !== state.scanToken) return;
 
   const session = new BrowserSession();
   const failed = [];
   state.decodeBackends = {};
-  for (let offset = 0; offset < groups.length; offset += DECODE_CONCURRENCY) {
+  state.focusBackends = {};
+  state.detectorBackends = {};
+  const decodeConcurrency = state.scanSettings.decodeConcurrency;
+  for (let offset = 0; offset < groups.length; offset += decodeConcurrency) {
     if (token !== state.scanToken) {
       showEmpty(t("scanCancelled"));
       return;
     }
-    const batch = groups.slice(offset, offset + DECODE_CONCURRENCY);
+    const batch = groups.slice(offset, offset + decodeConcurrency);
     const fraction = 0.08 + 0.80 * (offset / groups.length);
     setProgress("decoding", fraction, `${offset + 1}–${Math.min(groups.length, offset + batch.length)} / ${groups.length}`);
     await nextPaint();
@@ -367,6 +680,51 @@ async function scanFiles(fileList) {
       }
     }));
     benchmarkStages.decode_ms += performance.now() - decodeStarted;
+
+    const detectionsById = new Map();
+    if (mlDetector) {
+      const detectorEntries = outcomes.filter(outcome => outcome.decoded);
+      if (detectorEntries.length) {
+        try {
+          for (let detectorOffset = 0; detectorOffset < detectorEntries.length; detectorOffset += ML_INFERENCE_BATCH) {
+            const detectorBatch = detectorEntries.slice(detectorOffset, detectorOffset + ML_INFERENCE_BATCH);
+            const lastPosition = Math.min(groups.length, offset + detectorOffset + detectorBatch.length);
+            setProgress(
+              "detectingSubjects",
+              0.08 + 0.80 * (lastPosition / groups.length),
+              `${offset + detectorOffset + 1}–${lastPosition} / ${groups.length}`,
+            );
+            await nextPaint();
+            const preprocessingStarted = performance.now();
+            const imageBytes = 320 * 320 * 4;
+            const detectorPixels = new Uint8Array(detectorBatch.length * imageBytes);
+            detectorBatch.forEach((outcome, index) => {
+              detectorPixels.set(detectorRgba(outcome.decoded), index * imageBytes);
+            });
+            benchmarkStages.detector_preprocessing_ms += performance.now() - preprocessingStarted;
+            const inferenceStarted = performance.now();
+            const detections = await mlDetector.detect_rgba_batch(
+              320,
+              320,
+              detectorBatch.length,
+              detectorPixels,
+            );
+            benchmarkStages.detector_inference_ms += performance.now() - inferenceStarted;
+            detectorBatch.forEach((outcome, index) => {
+              const detection = detections[index];
+              if (detection?.confidence > 0 && detection?.subject_count > 0) {
+                detectionsById.set(outcome.group.id, detection);
+              }
+            });
+          }
+        } catch (error) {
+          state.mlFailure = String(error?.message || error);
+          state.mlDetector = null;
+          mlDetector = null;
+          console.warn("Browser ML inference failed; continuing with heuristic saliency", error);
+        }
+      }
+    }
 
     for (const outcome of outcomes) {
       const { group, decoded, error } = outcome;
@@ -390,8 +748,52 @@ async function scanFiles(fileList) {
         metadata: decoded.metadata,
       };
       const scoringStarted = performance.now();
-      session.add_rgba(input, decoded.width, decoded.height, decoded.rgba);
+      let focusBackend = "wasm_cpu_portable";
+      let focus = null;
+      if (webGpuScorer && state.webGpuScorer) {
+        try {
+          focus = await acceleratedFocus(decoded, webGpuScorer);
+          if (focus) focusBackend = focus.backend;
+        } catch (error) {
+          state.webGpuFailure = String(error?.message || error);
+          state.webGpuScorer = null;
+          console.warn("WebGPU focus scoring failed; continuing on portable WASM CPU", error);
+        }
+      }
+
+      const detection = detectionsById.get(group.id) || null;
+
+      if (detection) {
+        if (!focus) focus = portable_focus_rgba(decoded.width, decoded.height, decoded.rgba);
+        focusBackend = focus.backend;
+        session.add_rgba_with_analysis(
+          input,
+          decoded.width,
+          decoded.height,
+          decoded.rgba,
+          {
+            sharpness: focus.sharpness,
+            tenengrad: focus.tenengrad,
+            focus_backend: focus.backend,
+            detector: detection,
+          },
+        );
+      } else if (focus) {
+        session.add_rgba_with_focus(
+          input,
+          decoded.width,
+          decoded.height,
+          decoded.rgba,
+          focus.sharpness,
+          focus.tenengrad,
+        );
+      } else {
+        session.add_rgba(input, decoded.width, decoded.height, decoded.rgba);
+      }
       benchmarkStages.scoring_ms += performance.now() - scoringStarted;
+      state.focusBackends[focusBackend] = (state.focusBackends[focusBackend] || 0) + 1;
+      const detectorBackend = detection?.backend || "heuristic_saliency";
+      state.detectorBackends[detectorBackend] = (state.detectorBackends[detectorBackend] || 0) + 1;
       state.decodeBackends[decoded.backend] = (state.decodeBackends[decoded.backend] || 0) + 1;
       state.assets.set(group.id, { ...group, previewUrl: decoded.previewUrl, rawPreview: group.rawOnly });
       state.objectUrls.set(group.id, decoded.previewUrl);
@@ -407,7 +809,14 @@ async function scanFiles(fileList) {
   await nextPaint();
   const clusteringStarted = performance.now();
   try {
-    state.result = session.finish(undefined);
+    state.result = session.finish({
+      max_seq_gap: state.scanSettings.maxSeqGap,
+      max_time_gap_ms: state.scanSettings.maxTimeGapMs,
+      max_cluster_span_ms: state.scanSettings.maxClusterSpanMs,
+      max_hash_gap: state.scanSettings.maxHashGap,
+      max_duplicate_distance: state.scanSettings.maxDuplicateDistance,
+      min_duplicate_confidence: state.scanSettings.minDuplicateConfidence,
+    });
   } catch (error) {
     console.error(error);
     showEmpty(t("scanFailed"));
@@ -425,7 +834,10 @@ async function scanFiles(fileList) {
   elements.reviewView.hidden = false;
   elements.saveBtn.hidden = false;
   publishBenchmark(benchmarkStarted, benchmarkStages, groups.length, failed.length);
+  state.scanSettings = null;
+  elements.settingsBtn.disabled = false;
   if (failed.length) showToast(`${t("unsupportedSkipped")} (${failed.length})`);
+  else if (state.settings.detector === "ml" && state.mlFailure) showToast(t("mlFallback"));
 }
 
 function publishBenchmark(started, stages, selectedAssets, failedAssets) {
@@ -440,7 +852,15 @@ function publishBenchmark(started, stages, selectedAssets, failedAssets) {
     assets_per_second: totalMs > 0 ? completedAssets * 1000 / totalMs : 0,
     stages: stages,
     decode_backends: state.decodeBackends,
-    decode_concurrency: DECODE_CONCURRENCY,
+    focus_backends: state.focusBackends,
+    detector_backends: state.detectorBackends,
+    webgpu_adapter: state.webGpuAdapter,
+    webgpu_fallback: state.webGpuFailure,
+    focus_calibration: state.focusCalibration,
+    ml_adapter: state.mlAdapter,
+    ml_fallback: state.mlFailure,
+    settings: { ...state.scanSettings },
+    decode_concurrency: state.scanSettings.decodeConcurrency,
     assignments: (state.result?.assets || []).map(asset => ({
       filename: asset.rel_path.split("/").at(-1),
       stack_id: asset.stack_id,
@@ -485,7 +905,7 @@ async function decodeWithWebCodecs(file) {
   const sourceWidth = track.displayWidth || track.codedWidth;
   const sourceHeight = track.displayHeight || track.codedHeight;
   probe.close();
-  const scale = Math.min(1, PREVIEW_LONG_EDGE / Math.max(sourceWidth, sourceHeight));
+  const scale = Math.min(1, activeSettings().previewLongEdge / Math.max(sourceWidth, sourceHeight));
   const desiredWidth = Math.max(1, Math.round(sourceWidth * scale));
   const desiredHeight = Math.max(1, Math.round(sourceHeight * scale));
   const decoder = new ImageDecoder({
@@ -532,7 +952,7 @@ async function decodeWithImageBitmap(file) {
   try {
     const sourceWidth = bitmap.width;
     const sourceHeight = bitmap.height;
-    const canvas = drawScaled(bitmap, sourceWidth, sourceHeight, PREVIEW_LONG_EDGE);
+    const canvas = drawScaled(bitmap, sourceWidth, sourceHeight, activeSettings().previewLongEdge);
     const context = canvas.getContext("2d", { willReadFrequently: true });
     const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
     return {
@@ -573,7 +993,7 @@ async function decodeRaw(file) {
   sourceCanvas.width = decoded.width;
   sourceCanvas.height = decoded.height;
   sourceCanvas.getContext("2d").putImageData(new ImageData(rgba, decoded.width, decoded.height), 0, 0);
-  const preview = drawScaled(sourceCanvas, decoded.width, decoded.height, PREVIEW_LONG_EDGE);
+  const preview = drawScaled(sourceCanvas, decoded.width, decoded.height, activeSettings().previewLongEdge);
   const previewContext = preview.getContext("2d", { willReadFrequently: true });
   const previewRgba = previewContext.getImageData(0, 0, preview.width, preview.height).data;
   const previewUrl = URL.createObjectURL(await canvasBlob(preview));
@@ -1221,6 +1641,7 @@ function resetResult() {
   state.moveDestinationHandle = null;
   elements.searchInput.value = "";
   elements.filterSelect.value = "all";
+  delete document.documentElement.dataset.benchmarkComplete;
 }
 
 async function chooseSourceFolder() {
@@ -1267,6 +1688,8 @@ async function collectDirectoryFiles(rootHandle) {
 }
 
 function showEmpty(message) {
+  state.scanSettings = null;
+  elements.settingsBtn.disabled = false;
   elements.progressView.hidden = true;
   elements.reviewView.hidden = true;
   elements.emptyState.hidden = false;
@@ -1314,6 +1737,27 @@ function escapeHtml(value) {
 
 elements.pickBtn.addEventListener("click", chooseSourceFolder);
 elements.emptyPickBtn.addEventListener("click", chooseSourceFolder);
+elements.settingsBtn.addEventListener("click", openSettings);
+elements.closeSettingsBtn.addEventListener("click", closeSettings);
+elements.cancelSettingsBtn.addEventListener("click", closeSettings);
+elements.resetSettingsBtn.addEventListener("click", () => {
+  state.settingsDraft = normalizeSettings(DEFAULT_SETTINGS);
+  selectSettingsTab("quality");
+});
+elements.qualityPresetSelect.addEventListener("change", event => applyQualityPreset(event.target.value));
+elements.settingsForm.addEventListener("input", updateCustomSettingsDraft);
+elements.settingsForm.addEventListener("change", updateCustomSettingsDraft);
+elements.settingsForm.addEventListener("submit", event => {
+  event.preventDefault();
+  saveSettings();
+});
+elements.settingsDialog.addEventListener("cancel", event => {
+  event.preventDefault();
+  closeSettings();
+});
+document.querySelectorAll("[data-settings-tab]").forEach(button => {
+  button.addEventListener("click", () => selectSettingsTab(button.dataset.settingsTab));
+});
 elements.tutorialBtn.addEventListener("click", openTutorial);
 elements.aboutBtn.addEventListener("click", openAbout);
 elements.closeAboutBtn.addEventListener("click", () => elements.aboutDialog.close());

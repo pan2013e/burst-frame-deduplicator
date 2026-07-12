@@ -7,6 +7,8 @@
 /benchmark/assets/*/
 /web/dist/
 /web/wasm/pkg/
+/web/ml-wasm/pkg/
+/web/ml-wasm/target/
 node_modules/
 .build/
 .swiftpm/

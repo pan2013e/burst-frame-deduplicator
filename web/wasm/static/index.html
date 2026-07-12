@@ -16,6 +16,7 @@
       <div id="sourceLabel" class="source-label" data-i18n="browserMode"></div>
     </div>
     <div class="header-actions">
+      <button type="button" id="settingsBtn" class="icon-button utility-button">⚙</button>
       <button type="button" id="tutorialBtn" class="icon-button utility-button">?</button>
       <button type="button" id="aboutBtn" class="icon-button utility-button">ⓘ</button>
       <details id="localeMenu" class="locale-menu">
@@ -72,6 +73,85 @@
   </main>
 
   <div id="toast" class="toast" hidden role="status"></div>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form id="settingsForm" class="dialog-shell">
+      <header class="dialog-header">
+        <div>
+          <h2 id="settingsTitle"></h2>
+          <p id="settingsSubtitle"></p>
+        </div>
+        <button type="button" id="closeSettingsBtn" class="icon-button">×</button>
+      </header>
+      <div class="settings-layout">
+        <div class="settings-tabs" role="tablist">
+          <button type="button" role="tab" data-settings-tab="quality"></button>
+          <button type="button" role="tab" data-settings-tab="processing"></button>
+          <button type="button" role="tab" data-settings-tab="grouping"></button>
+        </div>
+        <div class="settings-content">
+          <section data-settings-panel="quality">
+            <h3 data-i18n="quality"></h3>
+            <label class="setting-row">
+              <span data-i18n="qualityPreset"></span>
+              <select id="qualityPresetSelect">
+                <option value="best" data-i18n="bestQualityPreset"></option>
+                <option value="balanced" data-i18n="balancedPreset"></option>
+                <option value="fast" data-i18n="fastPreset"></option>
+                <option value="custom" data-i18n="customPreset"></option>
+              </select>
+            </label>
+            <label class="setting-row range-row">
+              <span data-i18n="analysisPreviewSize"></span>
+              <input id="previewSizeInput" type="range" min="640" max="2048" step="128">
+              <output id="previewSizeOutput"></output>
+            </label>
+          </section>
+          <section data-settings-panel="processing" hidden>
+            <h3 data-i18n="processing"></h3>
+            <label class="setting-row">
+              <span data-i18n="acceleration"></span>
+              <select id="accelerationSelect">
+                <option value="auto" data-i18n="automaticOption"></option>
+                <option value="webgpu" data-i18n="webgpuOption"></option>
+                <option value="portable" data-i18n="portableCpuOption"></option>
+              </select>
+            </label>
+            <label class="setting-row">
+              <span data-i18n="detector"></span>
+              <select id="detectorSelect">
+                <option value="auto" data-i18n="automaticOption"></option>
+                <option value="heuristic" data-i18n="heuristicOption"></option>
+                <option value="ml" data-i18n="mlOption"></option>
+                <option value="off" data-i18n="offOption"></option>
+              </select>
+            </label>
+            <p id="mlDetectorNote" class="setting-note" data-i18n="browserMlNote"></p>
+            <label class="setting-row range-row">
+              <span data-i18n="decodeConcurrency"></span>
+              <input id="decodeConcurrencyInput" type="range" min="1" max="8" step="1">
+              <output id="decodeConcurrencyOutput"></output>
+            </label>
+          </section>
+          <section data-settings-panel="grouping" hidden>
+            <h3 data-i18n="groupingSettings"></h3>
+            <label class="setting-row"><span data-i18n="maxSequenceGap"></span><input id="maxSeqGapInput" type="number" min="1" max="100" step="1"></label>
+            <label class="setting-row"><span data-i18n="maxTimeGap"></span><input id="maxTimeGapInput" type="number" min="0.1" max="30" step="0.05"></label>
+            <label class="setting-row"><span data-i18n="maxClusterSpan"></span><input id="maxClusterSpanInput" type="number" min="0.1" max="60" step="0.05"></label>
+            <label class="setting-row"><span data-i18n="maxHashGap"></span><input id="maxHashGapInput" type="number" min="0" max="64" step="1"></label>
+            <label class="setting-row"><span data-i18n="duplicateDistance"></span><input id="duplicateDistanceInput" type="number" min="0.01" max="1" step="0.01"></label>
+            <label class="setting-row"><span data-i18n="duplicateConfidence"></span><input id="duplicateConfidenceInput" type="number" min="0" max="1" step="0.01"></label>
+          </section>
+        </div>
+      </div>
+      <footer class="dialog-actions">
+        <button type="button" id="resetSettingsBtn" class="secondary" data-i18n="resetDefaults"></button>
+        <span class="action-spacer"></span>
+        <button type="button" id="cancelSettingsBtn" class="secondary" data-i18n="cancel"></button>
+        <button type="submit" id="applySettingsBtn" class="primary" data-i18n="apply"></button>
+      </footer>
+    </form>
+  </dialog>
 
   <dialog id="aboutDialog" class="info-dialog">
     <div class="dialog-shell">

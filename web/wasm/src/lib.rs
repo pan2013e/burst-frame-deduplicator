@@ -1,10 +1,16 @@
 use burst_core::{
-    QualityMetrics, SimilarityFeatures, compare_similarity, hash_distance, score_image,
-    similarity_features,
+    FocusMetrics, FocusResult, QualityMetrics, SimilarityFeatures, compare_similarity,
+    hash_distance, merge_subject_detection, score_image, score_image_with, similarity_features,
+    update_subject_focus,
 };
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+mod webgpu;
+#[cfg(target_arch = "wasm32")]
+pub use webgpu::WebGpuFocusScorer;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -53,6 +59,28 @@ struct BrowserMetadata {
     focal_length_35mm: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct BrowserDetectorInput {
+    backend: String,
+    confidence: f64,
+    subject_count: usize,
+    truncation_risk: f64,
+    bbox_x1: f64,
+    bbox_y1: f64,
+    bbox_x2: f64,
+    bbox_y2: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct BrowserAnalysisInput {
+    sharpness: f64,
+    tenengrad: f64,
+    focus_backend: String,
+    detector: BrowserDetectorInput,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct BrowserSimilarity {
     subject_confidence: f64,
@@ -62,6 +90,13 @@ struct BrowserSimilarity {
     nearest_global_distance: f64,
     duplicate_confidence: f64,
     pose_novelty: f64,
+}
+
+#[derive(Serialize)]
+struct BrowserFocusResult {
+    sharpness: f64,
+    tenengrad: f64,
+    backend: &'static str,
 }
 
 #[derive(Debug)]
@@ -78,6 +113,7 @@ struct BrowserAsset {
     files: Vec<String>,
     metadata: BrowserMetadata,
     metrics: QualityMetrics,
+    detector_backend: String,
     features: SimilarityFeatures,
     burst_id: usize,
     stack_id: usize,
@@ -149,6 +185,7 @@ struct BrowserResultAsset {
     source_height: u32,
     metadata: BrowserMetadata,
     metrics: QualityMetrics,
+    detector_backend: String,
     burst_id: usize,
     stack_id: usize,
     similarity: BrowserSimilarity,
@@ -196,19 +233,87 @@ impl BrowserSession {
         preview_height: u32,
         rgba: &[u8],
     ) -> Result<(), JsValue> {
-        let input: BrowserInput = serde_wasm_bindgen::from_value(input)
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let expected = preview_width as usize * preview_height as usize * 4;
-        if preview_width < 8 || preview_height < 8 || rgba.len() != expected {
-            return Err(JsValue::from_str("invalid RGBA preview buffer"));
-        }
-        let mut rgb = Vec::with_capacity(preview_width as usize * preview_height as usize * 3);
-        for pixel in rgba.chunks_exact(4) {
-            rgb.extend_from_slice(&pixel[..3]);
-        }
-        let image = RgbImage::from_raw(preview_width, preview_height, rgb)
-            .ok_or_else(|| JsValue::from_str("could not construct RGB preview"))?;
+        let input = browser_input(input)?;
+        let image = rgba_image(preview_width, preview_height, rgba)?;
         self.push_image(input, image);
+        Ok(())
+    }
+
+    pub fn add_rgba_with_focus(
+        &mut self,
+        input: JsValue,
+        preview_width: u32,
+        preview_height: u32,
+        rgba: &[u8],
+        sharpness: f64,
+        tenengrad: f64,
+    ) -> Result<(), JsValue> {
+        if !sharpness.is_finite() || !tenengrad.is_finite() {
+            return Err(JsValue::from_str("invalid WebGPU focus metrics"));
+        }
+        let input = browser_input(input)?;
+        let image = rgba_image(preview_width, preview_height, rgba)?;
+        let score = score_image_with(&image, |_gray, _width, _height| FocusResult {
+            metrics: FocusMetrics {
+                sharpness,
+                tenengrad,
+            },
+            backend: "webgpu_wgpu".to_string(),
+            notes: Vec::new(),
+        });
+        self.push_scored_image(
+            input,
+            image,
+            score.metrics,
+            "heuristic_saliency".to_string(),
+        );
+        Ok(())
+    }
+
+    pub fn add_rgba_with_analysis(
+        &mut self,
+        input: JsValue,
+        preview_width: u32,
+        preview_height: u32,
+        rgba: &[u8],
+        analysis: JsValue,
+    ) -> Result<(), JsValue> {
+        let analysis: BrowserAnalysisInput = serde_wasm_bindgen::from_value(analysis)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        if !analysis.sharpness.is_finite() || !analysis.tenengrad.is_finite() {
+            return Err(JsValue::from_str("invalid WebGPU focus metrics"));
+        }
+        let input = browser_input(input)?;
+        let image = rgba_image(preview_width, preview_height, rgba)?;
+        let score = score_image_with(&image, |_gray, _width, _height| FocusResult {
+            metrics: FocusMetrics {
+                sharpness: analysis.sharpness,
+                tenengrad: analysis.tenengrad,
+            },
+            backend: analysis.focus_backend,
+            notes: Vec::new(),
+        });
+        let mut metrics = score.metrics;
+        let detection = analysis.detector;
+        let detector_backend = if detection.confidence > 0.0 && detection.subject_count > 0 {
+            merge_subject_detection(
+                &mut metrics,
+                &burst_core::SubjectDetection {
+                    confidence: detection.confidence,
+                    subject_count: detection.subject_count,
+                    truncation_risk: detection.truncation_risk,
+                    bbox_x1: detection.bbox_x1,
+                    bbox_y1: detection.bbox_y1,
+                    bbox_x2: detection.bbox_x2,
+                    bbox_y2: detection.bbox_y2,
+                },
+            );
+            update_subject_focus(&image, &mut metrics);
+            detection.backend
+        } else {
+            "heuristic_saliency".to_string()
+        };
+        self.push_scored_image(input, image, metrics, detector_backend);
         Ok(())
     }
 
@@ -224,10 +329,47 @@ impl BrowserSession {
     }
 }
 
+#[wasm_bindgen]
+pub fn portable_focus_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<JsValue, JsValue> {
+    let expected = width as usize * height as usize * 4;
+    if width < 3 || height < 3 || rgba.len() != expected {
+        return Err(JsValue::from_str("invalid RGBA focus buffer"));
+    }
+    let mut gray = Vec::with_capacity(width as usize * height as usize);
+    for pixel in rgba.chunks_exact(4) {
+        let luma =
+            (54 * u32::from(pixel[0]) + 183 * u32::from(pixel[1]) + 19 * u32::from(pixel[2]) + 128)
+                >> 8;
+        gray.push(luma as u8);
+    }
+    let metrics = burst_core::cpu_focus_metrics(&gray, width as usize, height as usize);
+    serde_wasm_bindgen::to_value(&BrowserFocusResult {
+        sharpness: metrics.sharpness,
+        tenengrad: metrics.tenengrad,
+        backend: "wasm_cpu_portable",
+    })
+    .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 impl BrowserSession {
     fn push_image(&mut self, input: BrowserInput, image: RgbImage) {
         let score = score_image(&image);
-        let features = similarity_features(&image, &score.metrics);
+        self.push_scored_image(
+            input,
+            image,
+            score.metrics,
+            "heuristic_saliency".to_string(),
+        );
+    }
+
+    fn push_scored_image(
+        &mut self,
+        input: BrowserInput,
+        image: RgbImage,
+        metrics: QualityMetrics,
+        detector_backend: String,
+    ) {
+        let features = similarity_features(&image, &metrics);
         let (directory, stem) = split_path(&input.rel_path);
         let (prefix, seq) = split_sequence(&stem);
         self.assets.push(BrowserAsset {
@@ -242,7 +384,8 @@ impl BrowserSession {
             source_height: input.source_height,
             files: input.files,
             metadata: input.metadata,
-            metrics: score.metrics,
+            metrics,
+            detector_backend,
             features,
             burst_id: 0,
             stack_id: 0,
@@ -253,6 +396,61 @@ impl BrowserSession {
             reason_key: "decode_error",
         });
     }
+}
+
+fn browser_input(input: JsValue) -> Result<BrowserInput, JsValue> {
+    serde_wasm_bindgen::from_value(input).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn rgba_image(width: u32, height: u32, rgba: &[u8]) -> Result<RgbImage, JsValue> {
+    let expected = width as usize * height as usize * 4;
+    if width < 8 || height < 8 || rgba.len() != expected {
+        return Err(JsValue::from_str("invalid RGBA preview buffer"));
+    }
+    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+    for pixel in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+    RgbImage::from_raw(width, height, rgb)
+        .ok_or_else(|| JsValue::from_str("could not construct RGB preview"))
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn reduce_focus_partials(
+    partials: &[i32],
+    width: usize,
+    height: usize,
+) -> Result<FocusMetrics, &'static str> {
+    if width < 3 || height < 3 || partials.is_empty() || !partials.len().is_multiple_of(4) {
+        return Err("invalid WebGPU focus partials");
+    }
+    let mut lap_sum = 0i64;
+    let mut lap_sq_sum = 0u64;
+    let mut dx_sum = 0u64;
+    let mut dy_sum = 0u64;
+    for partial in partials.chunks_exact(4) {
+        if partial[1] < 0 || partial[2] < 0 || partial[3] < 0 {
+            return Err("WebGPU focus partial overflow");
+        }
+        lap_sum += i64::from(partial[0]);
+        lap_sq_sum += partial[1] as u64;
+        dx_sum += partial[2] as u64;
+        dy_sum += partial[3] as u64;
+    }
+    let lap_count = (width - 2)
+        .checked_mul(height - 2)
+        .ok_or("WebGPU Laplacian count overflow")? as f64;
+    let dx_count = height
+        .checked_mul(width - 1)
+        .ok_or("WebGPU horizontal-gradient count overflow")? as f64;
+    let dy_count = (height - 1)
+        .checked_mul(width)
+        .ok_or("WebGPU vertical-gradient count overflow")? as f64;
+    let mean = lap_sum as f64 / lap_count;
+    Ok(FocusMetrics {
+        sharpness: lap_sq_sum as f64 / lap_count - mean * mean,
+        tenengrad: dx_sum as f64 / dx_count + dy_sum as f64 / dy_count,
+    })
 }
 
 fn build_result(assets: &mut [BrowserAsset], options: &BrowserOptions) -> BrowserScanResult {
@@ -311,6 +509,7 @@ fn build_result(assets: &mut [BrowserAsset], options: &BrowserOptions) -> Browse
                 source_height: asset.source_height,
                 metadata: asset.metadata.clone(),
                 metrics: asset.metrics.clone(),
+                detector_backend: asset.detector_backend.clone(),
                 burst_id: asset.burst_id,
                 stack_id: asset.stack_id,
                 similarity: asset.similarity,
@@ -639,12 +838,23 @@ fn split_sequence(stem: &str) -> (String, Option<i64>) {
 mod tests {
     use image::{Rgb, RgbImage};
 
-    use super::{BrowserInput, BrowserOptions, BrowserSession, build_result, split_sequence};
+    use super::{
+        BrowserInput, BrowserOptions, BrowserSession, build_result, reduce_focus_partials,
+        split_sequence,
+    };
 
     #[test]
     fn filename_counter_split_matches_native_expectation() {
         assert_eq!(split_sequence("DSC_0042"), ("DSC_".to_string(), Some(42)));
         assert_eq!(split_sequence("image"), ("image".to_string(), None));
+    }
+
+    #[test]
+    fn webgpu_partial_reduction_preserves_integer_focus_sums() {
+        let metrics = reduce_focus_partials(&[0, 100, 80, 60], 3, 3).unwrap();
+        assert_eq!(metrics.sharpness, 100.0);
+        assert!((metrics.tenengrad - (80.0 / 6.0 + 60.0 / 6.0)).abs() < 1e-12);
+        assert!(reduce_focus_partials(&[0, -1, 0, 0], 3, 3).is_err());
     }
 
     fn synthetic_frame(x: u32, vertical: bool) -> RgbImage {

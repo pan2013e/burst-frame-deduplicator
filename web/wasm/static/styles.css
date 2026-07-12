@@ -256,6 +256,21 @@ pre { max-height: 260px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 
 .utility-button { flex: 0 0 auto; font-size: 15px; font-weight: 700; }
 .info-dialog { width: min(700px, calc(100vw - 28px)); max-height: min(780px, calc(100vh - 28px)); }
+.settings-dialog { width: min(780px, calc(100vw - 28px)); max-height: min(820px, calc(100vh - 28px)); }
+.settings-layout { min-height: 390px; display: grid; grid-template-columns: 160px minmax(0, 1fr); border-block: 1px solid var(--line); }
+.settings-tabs { padding: 12px 10px 12px 0; border-right: 1px solid var(--line); }
+.settings-tabs button { width: 100%; min-height: 38px; border: 0; text-align: left; background: transparent; }
+.settings-tabs button[aria-selected="true"] { background: color-mix(in srgb, var(--primary) 10%, var(--panel)); color: var(--primary); font-weight: 700; }
+.settings-content { min-width: 0; padding: 16px 0 16px 20px; }
+.settings-content section { display: grid; gap: 0; }
+.settings-content h3 { margin: 0 0 8px; font-size: 15px; }
+.setting-row { min-height: 48px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, 210px); gap: 16px; align-items: center; border-bottom: 1px solid var(--line); }
+.setting-row > span { min-width: 0; }
+.setting-row select, .setting-row input[type="number"] { width: 100%; padding: 0 9px; text-align: right; }
+.range-row { grid-template-columns: minmax(180px, 1fr) minmax(120px, 1fr) 58px; }
+.range-row input { width: 100%; }
+.range-row output { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.setting-note { margin: 10px 0; color: var(--muted); font-size: 12px; }
 .info-dialog h3 { margin: 0 0 10px; font-size: 14px; }
 .repository-link { width: fit-content; color: var(--primary); font-weight: 650; }
 .diagnostics-list {
@@ -328,6 +343,14 @@ pre { max-height: 260px; margin: 0; padding: 12px; overflow: auto; border: 1px s
   .tutorial-frames { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tutorial-frame { padding: 7px; }
   .tutorial-frame > span { font-size: 25px; }
+  .settings-layout { min-height: 0; grid-template-columns: 1fr; }
+  .settings-tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 8px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .settings-tabs button { text-align: center; }
+  .settings-content { padding: 14px 0; }
+  .setting-row { grid-template-columns: minmax(0, 1fr) minmax(120px, 45%); }
+  .range-row { grid-template-columns: 1fr 56px; padding-block: 8px; }
+  .range-row input { grid-column: 1 / -1; grid-row: 2; }
+  .range-row output { grid-column: 2; grid-row: 1; }
 }
 
 
