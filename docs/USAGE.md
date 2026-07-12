@@ -64,7 +64,7 @@ cargo run --release --features linux-gui --bin burst-frame-deduplicator-gtk
 
 Select **New Scan** and choose the photo folder or mounted card. The button is always available and starts the scan as soon as the folder is selected. New run folders are created under the result directory configured in **Settings > General**; the default is `~/Pictures/Burst Frame Deduplicator Runs`.
 
-The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. The window shows the active stage, current file, item count, and weighted overall progress. When scanning finishes, the same window becomes a native review workspace; it does not open a browser.
+The Get Started view also lists recent completed runs. Select one to resume its review, even when the original card is currently disconnected. Opening a large run switches to a staged loading view: the first half of the progress bar follows manifest bytes, then the app loads decisions and move history and prepares the native review. An activity indicator remains visible during parsing and Swift/GTK model preparation. A scan shows the current file, item count, weighted overall progress, and **Cancel Scan**; cancellation finishes in-flight frame work safely, skips later stages, and removes the newly created partial run. When scanning finishes, the same window becomes a native review workspace; it does not open a browser.
 
 Change language and system/light/dark appearance in **Settings > General**. The app supplies localized titles, messages, and buttons to its file panels instead of relying on the operating-system language. The review state remains intact. On macOS 26, native controls use the system Liquid Glass treatment. Linux uses GTK 4/libadwaita controls that adapt to GNOME appearance and accessibility settings.
 
@@ -144,6 +144,8 @@ The command line reports each long-running stage with overall percentage, item p
 cargo run --release -- scan /path/to/photos 2> scan-progress.log
 ```
 
+Press `Ctrl+C` once to request cancellation. The worker finishes the frame already inside a decoder or detector, prevents new scoring/refinement work from starting, and removes the partial run directory when that directory was created by the cancelled scan. It never removes a pre-existing output directory.
+
 A downloaded release CLI does not need the repository checkout. Its local review UI, locale catalogs, and browser RAW decoder are embedded, so the equivalent standalone commands are:
 
 ```bash
@@ -172,11 +174,11 @@ git lfs pull
 python3 -m http.server 4173 --directory web/dist
 ```
 
-Open `http://127.0.0.1:4173` and select a folder. The page reports the current stage, frame, and overall percentage while it decodes and scores previews; `Cancel` stops the run and releases partial previews. Everything runs locally in the browser. Browser formats use built-in decoding; RAW-only assets use the bundled LibRaw-WASM worker. The Rust WASM module performs subject scoring, burst grouping, posture-aware stack separation, and recommendation ranking.
+Open `http://127.0.0.1:4173` and select a folder. The page reports the current stage, frame, and overall percentage while it decodes, scores, and selectively refines previews; `Cancel` stops at the next decode/inference boundary and releases partial previews. Everything runs locally in the browser. Browser formats use built-in decoding; RAW-only assets use the bundled LibRaw-WASM worker. The Rust WASM module performs subject scoring, burst grouping, posture-aware stack separation, targeted refinement, and recommendation ranking.
 
-Open **Settings** before a scan to choose Best Quality, Balanced, Fast, or a custom configuration. The browser exposes analysis resolution, automatic/WebGPU/portable focus scoring, heuristic/U²-Net-P/off detector choice, decode concurrency, filename-counter and capture-time limits, burst span, hash guard, visual duplicate radius, and minimum reject confidence. Settings are stored locally in the browser and snapshotted when a scan starts, so edits affect the next scan only.
+Open **Settings** before a scan to choose Best Quality, Balanced, Fast, or a custom configuration. The browser exposes first-pass and refinement resolution, refinement candidates and minimum keepers per stack, automatic/WebGPU/portable focus scoring, heuristic/U²-Net-P/off detector choice, decode concurrency, filename-counter and capture-time limits, burst span, hash guard, visual duplicate radius, and minimum reject confidence. Settings are stored locally in the browser and snapshotted when a scan starts, so edits affect the next scan only.
 
-![Static browser processing settings with local U²-Net-P selected](assets/usage-browser-settings.jpg)
+![Static browser quality and targeted refinement settings](assets/usage-browser-settings.jpg)
 
 Automatic focus mode calibrates Rust/WGPU compute against the portable WASM scorer and falls back without changing results when WebGPU is unavailable or slower. Selecting ML lazily downloads the separate Burn/WGPU module and U²-Net-P weights, then runs inference in batches of at most four previews. The model is not downloaded for heuristic or off scans.
 
@@ -186,7 +188,7 @@ The static edition supports English and Simplified Chinese, preselected decision
 
 When a Chromium-style browser supplies read-write File System Access handles, `Save review` can copy, size-check, and move grouped files to a selected local folder, then restore them during the same browser session. A normal folder upload exposes read-only handles instead; in that case, direct move is disabled and the modal provides review JSON plus macOS/Linux and Windows scripts.
 
-Browser-only analysis is not quality-equivalent to the native pipeline. It has no reliable native EXIF/filesystem metadata fallback, Rayon, platform Vision, or second high-resolution refinement pass. RAW uses LibRaw-WASM's bounded preview decode, and browser decoder behavior varies by format. On the included 120-frame aircraft fixture, heuristic WebGPU and U²-Net-P both reach `95.5%` reviewed pair accuracy and `100%` posture-phase coverage; ML creates two additional subject/posture stacks but is roughly four times slower on the measured Apple Silicon browser. Native balanced and best-quality paths reach `100%` on both labels. Use native **Best Quality** for distant aircraft, birds, or other small subjects.
+Browser-only analysis is not quality-equivalent to the native pipeline. It now performs the same targeted second-pass candidate policy and can use WebGPU for refinement focus, but it has no reliable native EXIF/filesystem fallback, Rayon, platform Vision, or full native RAW decoder stack. RAW uses LibRaw-WASM's bounded preview decode, and browser decoder behavior varies by format. On the included 120-frame aircraft fixture, the measured heuristic WebGPU and U²-Net-P paths both reach `95.5%` reviewed pair accuracy and `100%` posture-phase coverage; ML creates two additional subject/posture stacks but takes about `2.7x` as long (`75.9 s` versus `27.7 s`) on the measured Apple Silicon browser. Native balanced and best-quality paths reach `100%` on both labels. Use native **Best Quality** for distant aircraft, birds, or other small subjects.
 
 The repository’s Pages workflow deploys `web/dist` automatically after GitHub Pages is configured with **GitHub Actions** as its source.
 
@@ -234,7 +236,7 @@ The native option matrix writes `latest.md` on macOS, `latest-linux.md` on Linux
 Open one of the benchmark review runs:
 
 ```bash
-cargo run --release -- serve --run benchmark/runs/balanced_neon --open
+cargo run --release -- serve --run benchmark/runs/balanced_cpu --open
 ```
 
 The benchmark output is safe to use as a practice review because the raw benchmark run directory is ignored by Git.
@@ -399,7 +401,6 @@ Common options:
 - `--detector-model-pack DIR`: select the verified offline model/runtime directory. `BFD_ML_MODEL_PACK` is the environment equivalent.
 - `--detector-threads N`: set the serialized ONNX Runtime session's CPU thread count; the default is the scan worker count capped at eight.
 - `--keepers-per-cluster N`: force a fixed keep count for every near-duplicate stack.
-- `--cull-singletons`: allow unique non-burst images to be rejected when they score poorly.
 - `--workers N`: set worker count for parallel scoring.
 
 </details>
@@ -438,7 +439,7 @@ shasum -a 256 -c Burst-Frame-Deduplicator-macos-arm64.dmg.sha256
 # Linux
 sha256sum -c burst-frame-deduplicator-linux-x86_64.tar.gz.sha256
 sha256sum -c burst-frame-deduplicator-linux-arm64.tar.gz.sha256
-sha256sum -c burst-frame-deduplicator_0.6.0_arm64.deb.sha256
+sha256sum -c burst-frame-deduplicator_0.7.0_arm64.deb.sha256
 ```
 
 The Linux and macOS CLI archives are standalone and can be unpacked outside the checkout. Linux x86_64 and ARM64 archives are built on Ubuntu 24.04 and target Ubuntu 24.04 or newer; build from source on an older glibc distribution. The x86_64 archive includes runtime-dispatched AVX2 and dynamically loaded CUDA; ARM64 uses the NEON target baseline. Neither requires an accelerator or model runtime to start. The optional ONNX detector remains a separate checksum-verified pack because the accurate model alone is about 179 MB. Optional external RAW tools are not bundled with CLI archives.
@@ -446,8 +447,8 @@ The Linux and macOS CLI archives are standalone and can be unpacked outside the 
 The Linux `.deb` installs both executables plus the launcher, icon, and desktop metadata. It declares GTK 4.14, libadwaita 1.5, LibRaw, and ImageMagick dependencies, so `apt` installs the RAW-preview runtime. Install the package with:
 
 ```bash
-sudo apt install ./burst-frame-deduplicator_0.6.0_amd64.deb
-# or: sudo apt install ./burst-frame-deduplicator_0.6.0_arm64.deb
+sudo apt install ./burst-frame-deduplicator_0.7.0_amd64.deb
+# or: sudo apt install ./burst-frame-deduplicator_0.7.0_arm64.deb
 ```
 
 The CI-built macOS app is **ad-hoc signed and not notarized**. Gatekeeper cannot establish an identified developer for it. Prefer a Developer ID signed/notarized build when one is available. If you have verified the checksum and trust the repository artifact, first attempt to open the app, then use **System Settings > Privacy & Security > Security > Open Anyway**. Apple warns that overriding this protection can expose the Mac to malicious software; see [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).

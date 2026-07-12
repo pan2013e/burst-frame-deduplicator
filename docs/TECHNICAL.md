@@ -49,8 +49,8 @@ The default Rust CLI has no windowing dependency. Build the Linux app explicitly
 The root Rust crate produces both `rlib` and `cdylib` artifacts. Its versioned C boundary accepts UTF-8 JSON requests and returns owned JSON envelopes for:
 
 - default scan options
-- synchronous scans with a progress callback
-- loading a completed run
+- synchronous scans with progress plus an optional cross-thread cancellation control
+- loading a completed run with staged parse/preparation progress
 - persisting a decision
 - preparing a full-image or cached RAW preview
 - exporting reviewed artifacts
@@ -59,7 +59,7 @@ The root Rust crate produces both `rlib` and `cdylib` artifacts. Its versioned C
 - planning, moving, and restoring basename-matched assets on a swapped RAW/JPEG card
 - relocating a complete run with progress and restore-journal path repair
 
-Every exported function catches Rust panics before crossing the ABI. Callers release returned strings with `bfd_free_string`. The Swift bridge centralizes JSON encoding, decoding, callback lifetime, and error conversion; views do not call C functions directly.
+Every exported function catches Rust panics before crossing the ABI. Callers release returned strings with `bfd_free_string`. API v5 adds reference-count-independent scan-control IDs: the caller creates a control, the scan clones its atomic token, another thread may cancel it, and the caller releases the registry entry after the synchronous scan returns. The Swift bridge centralizes JSON encoding, decoding, callback lifetime, and error conversion; views do not call C functions directly.
 
 The SwiftUI app uses system folder panels, pickers, steppers, checkboxes, menus, split navigation, confirmation dialogs, and SF Symbols. Standard controls automatically adopt macOS 26 Liquid Glass, with native fallback on earlier supported releases. Scan work, relocation, and decision writes run off the main actor. The review grid is lazy, thumbnail images use a bounded `NSCache`, and full-image RAW previews use a progressive memory/disk cache.
 
@@ -67,7 +67,7 @@ The full-image viewer uses `NSScrollView` rather than a gesture-only SwiftUI tra
 
 Appearance selection is applied at `NSApplication` and existing-window level, so auxiliary Settings/About scenes follow a dark-to-system transition instead of retaining a stale view override. System mode resolves the current Aqua/high-contrast appearance explicitly and observes macOS theme-change notifications, avoiding a partially repainted window while continuing to follow later OS changes. Settings tabs publish content-specific window heights capped by `NSScreen.visibleFrame`; native `Form` scrolling remains available only when the screen is shorter than the requested content.
 
-Known run paths are persisted separately from scan manifests. The Get Started view merges that registry with discovered children of the configured and legacy result roots, validates `manifest.json`, and computes directory usage off the main actor. Cleanup only accepts non-symlink directories with a manifest and excludes the currently open run.
+Known run paths are persisted separately from scan manifests. The Get Started view merges that registry with discovered children of the configured and legacy result roots, validates `manifest.json`, and computes directory usage off the main actor. Reopening a run reports manifest, decision, move-history, and review-preparation phases. Manifest JSON uses a 256 KiB buffered reader and emits byte-level progress; review state and move journals are buffered as well. This avoids the one-byte `serde_json::from_reader(File)` read pattern on large runs. Stack expansion is derived with indexed asset/decision lookup instead of repeated full-manifest scans. Cleanup only accepts non-symlink directories with a manifest and excludes the currently open run.
 
 Changing the result root for an open run is debounced in Swift and executed by Rust. Same-filesystem relocation uses `rename`; cross-filesystem relocation copies into a destination-volume staging folder, verifies every regular-file size, moves the old run to a cleanup tombstone, then atomically publishes the staged folder. Internal moved-reject destinations are rewritten before the new run is exposed. Existing destination names receive a suffix rather than being overwritten.
 
@@ -81,7 +81,7 @@ Counterpart-card matching is a metadata-only discovery pass over the selected ca
 
 ## Native GTK Application
 
-The Linux app is a non-unique `adw::Application`, allowing independent concurrent processes. Main and preview controllers are retained in per-thread registries until their windows close; signal handlers use weak references to avoid window/controller cycles. Scan, decision, export, move/restore, counterpart, relocation, and cache work run off the GTK main loop and publish typed events through a bounded UI poll.
+The Linux app is a non-unique `adw::Application`, allowing independent concurrent processes. Main and preview controllers are retained in per-thread registries until their windows close; signal handlers use weak references to avoid window/controller cycles. Scan, decision, export, move/restore, counterpart, relocation, and cache work run off the GTK main loop and publish typed events through a periodic UI poll. Window close and `Ctrl+Q` cancel an active scan and keep the event loop alive until the worker acknowledges cancellation.
 
 The review surface flattens expanded clusters into a `gio::ListStore` consumed by `GtkListView`. Only visible rows allocate thumbnails and controls. Cluster headers are ordered expanded-first, suggested decisions initialize tri-state checkboxes, and EXIF differences/quality/details are computed from the same manifest used by the web and macOS interfaces.
 
@@ -91,9 +91,9 @@ Settings and tutorial state use the XDG config directory. Tutorial completion/sk
 
 ## Progress Reporting
 
-`ProgressReporter` emits serializable updates with a stable stage enum, stage item counts, optional current-file detail, stage fraction, and weighted overall fraction. The stages are preparation, discovery, preview analysis, burst/stack grouping, high-resolution refinement, ranking, manifest writing, review export, and completion.
+`ProgressReporter` emits serializable updates with a stable stage enum, stage item counts, optional current-file detail, stage fraction, and weighted overall fraction. Scan stages are preparation, discovery, preview analysis, burst/stack grouping, high-resolution refinement, ranking, manifest writing, review export, and completion. Existing-run loading reuses the payload shape with manifest, decision, move-history, and review-preparation stages.
 
-The CLI installs a throttled terminal renderer. Swift receives the same serialized updates through the FFI callback, while GTK consumes the typed Rust update directly, so neither reconstructs progress accounting. Run relocation emits the same JSON field shape with a `relocating` stage, allowing native and CLI paths to reuse their progress plumbing.
+The CLI installs a throttled terminal renderer and listens for `Ctrl+C` on the async runtime while the synchronous pipeline runs in a blocking worker. The shared `CancellationToken` is checked during discovery, before each Rayon scoring/refinement item, between refinement batches, and before every write/export boundary. Active decoder or inference calls finish; new work does not start. Swift receives the same serialized updates through the FFI callback, while GTK consumes the typed Rust update directly, so neither reconstructs progress accounting. Run relocation emits the same JSON field shape with a `relocating` stage, allowing native and CLI paths to reuse their progress plumbing.
 
 ## Locale Loading
 
@@ -171,15 +171,15 @@ This makes ordinary review light: opening a JPEG/PNG/WebP/BMP/GIF streams the ex
 
 ## Static WASM Application
 
-`web/wasm` keeps decoded descriptors inside a `BrowserSession`. Browser JavaScript supplies a downscaled RGBA preview and file metadata; Rust computes shared quality metrics and descriptors, then performs temporal burst grouping, complete-link near-duplicate grouping, ranking, and confidence-gated suggestions. Users can persist quality preset, analysis size, focus backend, detector, decode concurrency, filename/time/hash limits, visual radius, and reject-confidence settings; each scan snapshots the settings so changes apply coherently to the next run.
+`web/wasm` keeps decoded descriptors inside a `BrowserSession`. Browser JavaScript supplies a downscaled RGBA preview and file metadata; Rust computes shared quality metrics and descriptors, then performs temporal burst grouping, complete-link near-duplicate grouping, ranking, and confidence-gated suggestions. Users can persist quality preset, first-pass/refinement sizes, refinement budget, minimum keeper count, focus backend, detector, decode concurrency, filename/time/hash limits, visual radius, and reject-confidence settings; each scan snapshots the settings so changes apply coherently to the next run.
 
 Browser formats are decoded in deterministic batches with bounded parallelism (up to four jobs by default, configurable from one to eight). The app prefers `ImageDecoder` scaled output where WebCodecs is available, then falls back to `createImageBitmap` and `OffscreenCanvas`. RAW-only assets are decoded serially by the stateful vendored LibRaw-WASM worker, converted to the configured bounded preview, and cached for repeat viewing. Same-basename files are grouped before analysis.
 
-The primary WASM module uses `wgpu` compute shaders for integer-luma Laplacian and Tenengrad reductions. Automatic mode calibrates and keeps WebGPU only when it wins; any initialization or scoring failure falls back to the exact portable WASM CPU scorer. `web/ml-wasm` is deliberately separate so ordinary scans do not download a roughly 14 MB uncompressed ML runtime. Selecting ML fetches the 4.3 MB burnpack and Burn/WGPU module, verifies the model at build time, and runs U²-Net-P in batches capped at four images. Native ONNX and browser Burn outputs share the same probability-mask postprocessing in `burst-core`.
+The primary WASM module uses `wgpu` compute shaders for integer-luma Laplacian and Tenengrad reductions. Automatic mode calibrates and keeps WebGPU only when it wins; any initialization or scoring failure falls back to the exact portable WASM CPU scorer. After provisional grouping, Rust selects the same top quality candidates used by the native policy; JavaScript decodes only those at the configured refinement size, and Rust replaces quality metrics without changing first-pass similarity descriptors. `web/ml-wasm` is deliberately separate so ordinary scans do not download a roughly 14 MB uncompressed ML runtime. Selecting ML fetches the 4.3 MB burnpack and Burn/WGPU module, verifies the model at build time, and runs U²-Net-P in batches capped at four images. Native ONNX and browser Burn outputs share the same probability-mask postprocessing in `burst-core`.
 
 The Pages build includes a same-origin isolation service worker because the current LibRaw-WASM binary uses shared WebAssembly memory. The app remains usable for browser-decodable formats when RAW support is unavailable.
 
-The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Reliable native EXIF/filesystem fallback, Rayon, platform Vision, and the second high-resolution refinement pass are unavailable in the browser edition.
+The static application performs verified copy/remove/restore only when the source was opened with a read-write File System Access directory handle and the user confirms the operation. This API is not portable: normal folder uploads and unsupported browsers remain read-only and expose review JSON plus generated POSIX/PowerShell scripts. In-browser restore state lasts for the current session, unlike the durable native `move_state.json` journal. Reliable native EXIF/filesystem fallback, Rayon, platform Vision, native RAW decoding, and durable move journals remain unavailable in the browser edition. Cancellation invalidates the scan token, releases partial object URLs, and is checked between every decode, ML, focus, and refinement batch.
 
 `web/wasm/build.sh` creates an ignored `web/dist` directory. `.github/workflows/pages.yml` builds that directory and deploys it with the official GitHub Pages actions. Its path allow-list covers only static-app, shared-browser, shared-core, locale, and workflow inputs, so documentation-only commits do not start a Pages deployment.
 
@@ -191,7 +191,7 @@ Pushes and pull requests that contain non-documentation changes, plus manual run
 
 CI has no Developer ID or notarization credentials: its DMG is deliberately ad-hoc signed and must be described as such. A maintainer can produce a hardened-runtime Developer ID build by supplying `CODE_SIGN_IDENTITY` and `NOTARY_PROFILE` to `scripts/build_macos_dmg.sh` outside that workflow.
 
-The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM/WebGPU initialization, optional detector initialization/preprocessing/inference, browser decode, Rust scoring, clustering, rendering, total time, throughput, selected adapters, fallback notes, and the settings snapshot. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
+The static scanner snapshots the selected `FileList` before clearing the input, then publishes a local `burst-benchmark-complete` event containing discovery, WASM/WebGPU initialization, optional detector initialization/preprocessing/inference, browser decode, Rust scoring, refinement candidate/decode/scoring work, clustering, rendering, total time, throughput, selected adapters, fallback notes, and the settings snapshot. `benchmark/wasm_benchmark.mjs` consumes this event in local headless Chrome.
 
 ## Timing Fields
 

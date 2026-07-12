@@ -16,6 +16,7 @@ Burst Frame Deduplicator scans a camera card or local photo folder, separates te
 - Exposes stable `auto`, `cpu`, `gpu`, and `portable` processing policies while selecting Metal, CUDA, AVX2, or ARM NEON only where that capability actually exists.
 - Exposes one optional ML detector: GPU-backed Vision on macOS, offline U²-Net-P or IS-Net through ONNX Runtime on Linux, and lazy U²-Net-P through WebGPU in the static browser app.
 - Includes native SwiftUI macOS and GTK/libadwaita Linux scan/review apps, a headless CLI, a local review server, and a static WASM edition.
+- Opens large completed runs with visible staged progress and cancels active scans safely from every interface, including `Ctrl+C` in the CLI.
 - Supports English and Simplified Chinese through editable JSON locale catalogs.
 - Opens with a skippable interactive tour, remembers completion on every interface, and exposes build/runtime diagnostics without reading a photo folder.
 
@@ -38,7 +39,7 @@ The native app targets Apple Silicon and requires macOS 14 or newer. It uses cur
 open "target/macos/Burst Frame Deduplicator.app"
 ```
 
-The Get Started view opens a source folder directly, resumes recent runs, and keeps result storage in Settings. Scans show weighted stage progress and become a native review workspace in the same window. `Command-N` launches another app process so multiple scans can run concurrently; collision-resistant run names keep their outputs separate.
+The Get Started view presents equal-size new/open actions, uses the full width for recent runs, and keeps result storage in Settings. Scans and large-run loading show staged progress in the same window; manifest loading reports byte-level progress through a buffered parser. Cancel waits for in-flight frame work, stops later stages, and removes a newly created partial run. `Command-N` launches another app process so multiple scans can run concurrently; collision-resistant run names keep their outputs separate.
 
 RAW preview opens from the camera's embedded ImageIO preview first. The viewer requests a reusable `4096px` JPEG through the system `sips` tool only when the embedded image cannot cover the current Retina viewport or zoom level, and skips rendering when the possible resolution gain is marginal. The decoder writes directly into the run cache without a second Rust decode/re-encode pass. ImageMagick is not bundled and is only an optional compatibility fallback for formats the installed macOS release cannot decode.
 
@@ -118,7 +119,7 @@ cargo run --release -- scan /path/to/photos \
 
 `--detector-model fast` selects the 4.57 MB U²-Net-P model; `accurate` selects the higher-detail 178.65 MB IS-Net General Use model. `--detector auto` stays heuristic, and `--detector-device auto` stays on CPU even when a CUDA runtime is installed. ML inference device selection, focus acceleration, and Rayon parallelism are independent. See [Linux local ML setup, provenance, and CUDA requirements](docs/LINUX_ML_MODELS.md).
 
-Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts.
+Default scoring uses a `1280px` long-edge preview and refines up to two candidates per stack at `2048px`. Long runs report discovery, analysis, grouping, refinement, ranking, writing, and export progress with current item counts. Press `Ctrl+C` once to request cooperative cancellation; the CLI finishes the active frame safely and removes a newly created partial run directory.
 
 Release CLI archives are standalone: the local review HTML/CSS/JavaScript, English and Chinese catalogs, and LibRaw-WASM worker are compiled into the executable. `scan`, `export`, and `serve` therefore work outside the repository. ImageMagick remains an optional system dependency for RAW formats that a platform's native/image-rs decoders cannot handle.
 
@@ -131,9 +132,9 @@ git lfs pull
 python3 -m http.server 4173 --directory web/dist
 ```
 
-Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. Settings expose quality presets, analysis resolution, focus acceleration, detector, decode concurrency, and temporal/visual grouping thresholds. The decoder runs bounded parallel jobs, prefers scaled WebCodecs when the browser exposes it, and falls back to `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker.
+Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Photos stay in the browser process. Settings expose quality presets, first-pass and refinement resolution, candidates and minimum keepers per stack, focus acceleration, detector, decode concurrency, and temporal/visual grouping thresholds. The decoder runs bounded parallel jobs, prefers scaled WebCodecs when the browser exposes it, and falls back to `createImageBitmap`; RAW-only assets use the bundled LibRaw-WASM worker.
 
-WebGPU can accelerate focus metrics through Rust `wgpu`. Selecting browser ML lazily loads a separate Burn/WGPU U²-Net-P module and model, batches up to four previews per inference, and falls back to heuristic saliency if WebGPU or the model cannot initialize. The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. It does not use native high-resolution refinement or Rayon.
+WebGPU can accelerate both first-pass and targeted refinement focus metrics through Rust `wgpu`. Selecting browser ML lazily loads a separate Burn/WGPU U²-Net-P module and model, batches up to four previews per inference, and falls back to heuristic saliency if WebGPU or the model cannot initialize. The static edition can move and restore grouped files only when the folder was opened through a browser that provides read-write File System Access handles. Other browsers keep the workflow read-only and provide review JSON plus macOS/Linux and Windows scripts. Browser refinement follows the native candidate policy, but decoding, metadata, threading, and subject-model capabilities still differ from native execution.
 
 The GitHub Pages workflow builds the same static directory.
 
@@ -157,7 +158,7 @@ Pushes to `main` and pull requests that include non-documentation changes, plus 
 The publish job is intentionally guarded by `startsWith(github.ref, 'refs/tags/v')`. It is therefore skipped on branch pushes, pull requests, and manual runs launched from a branch, even when the Linux and macOS package jobs succeed. Create and push a Semantic Versioning tag to publish a release:
 
 ```bash
-VERSION=0.6.0 # choose the next unused Semantic Versioning release
+VERSION=0.7.0 # choose the next unused Semantic Versioning release
 git tag -a "v${VERSION}" -m "v${VERSION}"
 git push origin main "v${VERSION}"
 ```
@@ -240,6 +241,7 @@ Legend: ✅ supported · 🟡 partial or browser-dependent · 🧭 planned · �
 | OpenCL on Apple Silicon | — deprecated/limited | — | — | — |
 | OpenVINO | — | 🧭 | 🧭 | 🧭 |
 | English / Simplified Chinese | ✅ | ✅ | ✅ | ✅ |
+| Graceful scan cancellation | ✅ | ✅ | ✅ | ✅ browser |
 | CI release binary | ✅ CLI + app | ✅ CLI + app | ✅ CUDA-capable CLI + app | 🧭 |
 
 Requested and selected backends, capabilities, and fallback notes are recorded in every `manifest.json`.
